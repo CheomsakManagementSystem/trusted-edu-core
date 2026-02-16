@@ -1,32 +1,47 @@
 import { useState } from "react";
 import { useLocation, Link } from "react-router-dom";
+import { useAuth } from "@/hooks/useAuth";
 import {
   BarChart3,
   Users,
-  Upload,
   ClipboardCheck,
-  GraduationCap,
   Settings,
   ChevronLeft,
   ChevronRight,
   LayoutDashboard,
   BookOpen,
+  UserPlus,
+  LogOut,
 } from "lucide-react";
-
-const menuItems = [
-  { icon: LayoutDashboard, label: "대시보드", path: "/" },
-  { icon: Users, label: "학생 관리", path: "/students" },
-  { icon: BookOpen, label: "수업 관리", path: "/classes" },
-  { icon: ClipboardCheck, label: "성적 관리", path: "/scores" },
-  { icon: Upload, label: "자료 업로드", path: "/uploads" },
-  { icon: BarChart3, label: "통계 분석", path: "/analytics" },
-  { icon: GraduationCap, label: "입시 관리", path: "/admissions" },
-  { icon: Settings, label: "설정", path: "/settings" },
-];
 
 const AppSidebar = () => {
   const [collapsed, setCollapsed] = useState(false);
   const location = useLocation();
+  const { role, profileName, signOut } = useAuth();
+
+  const menuItems = (() => {
+    if (role === "admin") {
+      return [
+        { icon: LayoutDashboard, label: "대시보드", path: "/" },
+        { icon: BookOpen, label: "수업 관리", path: "/classes" },
+        { icon: Users, label: "학생 관리", path: "/students" },
+        { icon: UserPlus, label: "계정 관리", path: "/accounts" },
+        { icon: ClipboardCheck, label: "성적 입력", path: "/scores" },
+      ];
+    }
+    if (role === "teacher") {
+      return [
+        { icon: LayoutDashboard, label: "대시보드", path: "/" },
+        { icon: ClipboardCheck, label: "성적 입력", path: "/scores" },
+      ];
+    }
+    // student
+    return [
+      { icon: LayoutDashboard, label: "내 성적", path: "/" },
+    ];
+  })();
+
+  const roleLabel = role === "admin" ? "관리자" : role === "teacher" ? "강사" : "학생";
 
   return (
     <aside
@@ -44,6 +59,14 @@ const AppSidebar = () => {
           <span className="text-xl">📝</span>
         )}
       </div>
+
+      {/* User info */}
+      {!collapsed && (
+        <div className="border-b border-sidebar-border px-4 py-3">
+          <p className="text-sm font-medium text-sidebar-foreground">{profileName || "사용자"}</p>
+          <p className="text-xs text-sidebar-muted">{roleLabel}</p>
+        </div>
+      )}
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1 px-2 py-4">
@@ -65,6 +88,15 @@ const AppSidebar = () => {
           );
         })}
       </nav>
+
+      {/* Logout */}
+      <button
+        onClick={signOut}
+        className="flex items-center gap-3 border-t border-sidebar-border px-5 py-3 text-sm text-sidebar-muted hover:text-sidebar-foreground transition-colors"
+      >
+        <LogOut className="h-4 w-4" />
+        {!collapsed && <span>로그아웃</span>}
+      </button>
 
       {/* Collapse toggle */}
       <button
