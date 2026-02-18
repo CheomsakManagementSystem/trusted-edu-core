@@ -1,32 +1,30 @@
 import { useState } from "react";
 import { useLocation, Link } from "react-router-dom";
 import {
-  BarChart3,
-  Users,
-  Upload,
-  ClipboardCheck,
-  GraduationCap,
-  Settings,
   ChevronLeft,
   ChevronRight,
   LayoutDashboard,
-  BookOpen,
+  Upload,
+  LineChart,
 } from "lucide-react";
-
-const menuItems = [
-  { icon: LayoutDashboard, label: "대시보드", path: "/" },
-  { icon: Users, label: "학생 관리", path: "/students" },
-  { icon: BookOpen, label: "수업 관리", path: "/classes" },
-  { icon: ClipboardCheck, label: "성적 관리", path: "/scores" },
-  { icon: Upload, label: "자료 업로드", path: "/uploads" },
-  { icon: BarChart3, label: "통계 분석", path: "/analytics" },
-  { icon: GraduationCap, label: "입시 관리", path: "/admissions" },
-  { icon: Settings, label: "설정", path: "/settings" },
-];
+import { useAuth } from "@/contexts/AuthContext";
 
 const AppSidebar = () => {
   const [collapsed, setCollapsed] = useState(false);
   const location = useLocation();
+  const { user } = useAuth();
+
+  const staffMenu = [
+    { icon: LayoutDashboard, label: "관리자 대시보드", path: "/admin" },
+    { icon: Upload, label: "PDF 업로드", path: "/admin" },
+  ];
+
+  const studentMenu = [
+    { icon: LayoutDashboard, label: "학생 대시보드", path: "/dashboard" },
+    { icon: LineChart, label: "점수 추이", path: "/dashboard" },
+  ];
+
+  const menuItems = user?.role === "staff" ? staffMenu : studentMenu;
 
   return (
     <aside
@@ -34,24 +32,22 @@ const AppSidebar = () => {
         collapsed ? "w-16" : "w-56"
       }`}
     >
-      {/* Logo */}
       <div className="flex h-16 items-center justify-center border-b border-sidebar-border px-4">
         {!collapsed ? (
           <span className="text-lg font-bold tracking-tight text-sidebar-primary-foreground">
-            📝 논술학원
+            LOGOS EDU
           </span>
         ) : (
-          <span className="text-xl">📝</span>
+          <span className="text-sm font-bold">LE</span>
         )}
       </div>
 
-      {/* Navigation */}
       <nav className="flex-1 space-y-1 px-2 py-4">
         {menuItems.map((item) => {
           const isActive = location.pathname === item.path;
           return (
             <Link
-              key={item.path}
+              key={`${item.path}-${item.label}`}
               to={item.path}
               className={`flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition-colors ${
                 isActive
@@ -66,12 +62,15 @@ const AppSidebar = () => {
         })}
       </nav>
 
-      {/* Collapse toggle */}
       <button
         onClick={() => setCollapsed(!collapsed)}
-        className="flex items-center justify-center border-t border-sidebar-border py-3 text-sidebar-muted hover:text-sidebar-foreground transition-colors"
+        className="flex items-center justify-center border-t border-sidebar-border py-3 text-sidebar-muted transition-colors hover:text-sidebar-foreground"
       >
-        {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+        {collapsed ? (
+          <ChevronRight className="h-4 w-4" />
+        ) : (
+          <ChevronLeft className="h-4 w-4" />
+        )}
       </button>
     </aside>
   );

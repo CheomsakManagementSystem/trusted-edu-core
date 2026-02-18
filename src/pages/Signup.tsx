@@ -38,12 +38,14 @@ const Signup = () => {
         instructorCode.trim() === INSTRUCTOR_SECRET_CODE ? "staff" : "student";
 
       const studentKey = `${name}_${phoneSuffix}`;
+      const studentId = phoneSuffix;
 
       const userDoc = {
         uid,
         name,
         email,
         role,
+        studentId,
         studentKey,
         phoneSuffix,
       };
@@ -152,4 +154,3 @@ const Signup = () => {
 };
 
 export default Signup;
-

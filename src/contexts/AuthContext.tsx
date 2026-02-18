@@ -20,6 +20,7 @@ interface AppUser {
   name: string;
   email: string | null;
   role: Role;
+  studentId?: string;
   studentKey?: string;
   phoneSuffix?: string;
 }
@@ -61,15 +62,22 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
             name: string;
             email: string;
             role: Role;
+            studentId?: string;
             studentKey?: string;
             phoneSuffix?: string;
           };
+
+          const inferredStudentId =
+            data.studentId ??
+            data.phoneSuffix ??
+            data.studentKey?.match(/_(\d{4})$/)?.[1];
 
           setUser({
             uid: firebaseUser.uid,
             name: data.name,
             email: data.email,
             role: data.role,
+            studentId: inferredStudentId,
             studentKey: data.studentKey,
             phoneSuffix: data.phoneSuffix,
           });
@@ -104,4 +112,3 @@ export const useAuth = () => {
   }
   return ctx;
 };
-
