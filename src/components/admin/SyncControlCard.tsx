@@ -2,7 +2,7 @@ import { useDriveSync } from "@/hooks/useDriveSync";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { CloudSync, Play, Database } from "lucide-react";
+import { Cloud, Play, Database } from "lucide-react";
 
 const SyncControlCard = () => {
   const {
@@ -35,7 +35,7 @@ const SyncControlCard = () => {
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-sky-500/10 text-sky-400">
-            <CloudSync className="h-5 w-5" />
+            <Cloud className="h-5 w-5" />
           </div>
           <div>
             <h2 className="text-sm font-semibold text-slate-50">

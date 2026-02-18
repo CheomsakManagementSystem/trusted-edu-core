@@ -103,6 +103,7 @@ const StudentDashboard = () => {
         {/* 성적 시각화 */}
         <PerformanceChart data={chartData} />
       </div>
+      </div>
 
       {/* PDF Viewer Dialog */}
       <Dialog
