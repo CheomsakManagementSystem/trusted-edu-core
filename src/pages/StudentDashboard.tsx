@@ -12,6 +12,9 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { FileText } from "lucide-react";
+import { useStudentStats } from "@/hooks/useStudentStats";
+import PerformanceChart from "@/components/student/PerformanceChart";
+import MaterialGrid from "@/components/student/MaterialGrid";
 
 type MaterialDoc = {
   id: string;
@@ -26,6 +29,7 @@ const StudentDashboard = () => {
   const { user } = useAuth();
   const [materials, setMaterials] = useState<MaterialDoc[]>([]);
   const [selected, setSelected] = useState<MaterialDoc | null>(null);
+  const { chartData } = useStudentStats({ studentUid: user?.uid });
 
   useEffect(() => {
     if (!user?.classId) {
@@ -65,7 +69,9 @@ const StudentDashboard = () => {
           </p>
         </div>
 
-        <div className="rounded-lg border border-border bg-card p-6 shadow-card">
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+          {/* 자료 리스트 */}
+          <div className="rounded-lg border border-border bg-card p-6 shadow-card">
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-base font-semibold text-card-foreground">
@@ -81,40 +87,21 @@ const StudentDashboard = () => {
               </span>
             )}
           </div>
-
-          <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-            {materials.map((m) => (
-              <button
-                key={m.id}
-                onClick={() => setSelected(m)}
-                className="flex flex-col items-start rounded-lg border border-border bg-background p-4 text-left shadow-sm transition hover:border-primary hover:shadow-md"
-              >
-                <div className="mb-2 flex items-center gap-2">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary/10 text-primary">
-                    <FileText className="h-4 w-4" />
-                  </div>
-                  <p className="text-sm font-semibold text-card-foreground">
-                    {m.title}
-                  </p>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {m.className || "배정 반"}
-                </p>
-                <p className="mt-2 text-[11px] text-muted-foreground">
-                  클릭하면 새 창 없이 바로 PDF를 확인할 수 있습니다.
-                </p>
-              </button>
-            ))}
-            {materials.length === 0 && (
-              <p className="text-sm text-muted-foreground">
-                아직 이 반에 배포된 자료가 없습니다. 추후 관리자가 업로드하면 이곳에
-                표시됩니다.
-              </p>
-            )}
-          </div>
+          <MaterialGrid
+            items={materials.map((m) => ({
+              id: m.id,
+              title: m.title,
+              className: m.className,
+            }))}
+            onSelect={(id) => {
+              const found = materials.find((m) => m.id === id) ?? null;
+              setSelected(found);
+            }}
+          />
         </div>
 
-        {/* 추가적인 학생용 콘텐츠는 이후 이 아래에 확장 가능 */}
+        {/* 성적 시각화 */}
+        <PerformanceChart data={chartData} />
       </div>
 
       {/* PDF Viewer Dialog */}
