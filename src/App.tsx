@@ -7,8 +7,9 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import { RequireAuth, RequireStaff } from "@/components/RequireAuth";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
-import AdminDashboard from "./pages/AdminDashboard";
-import StudentDashboard from "./pages/StudentDashboard";
+import UploadDashboard from "./pages/Admin/UploadDashboard";
+import ClassManager from "./pages/Admin/ClassManager";
+import ReportView from "./pages/Student/ReportView";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -21,32 +22,36 @@ const App = () => (
       <BrowserRouter>
         <AuthProvider>
           <Routes>
-            {/* Auth */}
             <Route path="/" element={<Navigate to="/login" replace />} />
             <Route path="/login" element={<Login />} />
             <Route path="/signup" element={<Signup />} />
 
-            {/* Student */}
             <Route
               path="/dashboard"
               element={
                 <RequireAuth>
-                  <StudentDashboard />
+                  <ReportView />
                 </RequireAuth>
               }
             />
 
-            {/* Staff-only */}
             <Route
               path="/admin"
               element={
                 <RequireStaff>
-                  <AdminDashboard />
+                  <UploadDashboard />
+                </RequireStaff>
+              }
+            />
+            <Route
+              path="/admin/class-manager"
+              element={
+                <RequireStaff>
+                  <ClassManager />
                 </RequireStaff>
               }
             />
 
-            {/* 404 */}
             <Route path="*" element={<NotFound />} />
           </Routes>
         </AuthProvider>

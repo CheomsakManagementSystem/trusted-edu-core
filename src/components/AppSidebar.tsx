@@ -1,12 +1,6 @@
 import { useState } from "react";
 import { useLocation, Link } from "react-router-dom";
-import {
-  ChevronLeft,
-  ChevronRight,
-  LayoutDashboard,
-  Upload,
-  LineChart,
-} from "lucide-react";
+import { ChevronLeft, ChevronRight, LayoutDashboard, Upload, Users } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 
 const AppSidebar = () => {
@@ -15,14 +9,11 @@ const AppSidebar = () => {
   const { user } = useAuth();
 
   const staffMenu = [
-    { icon: LayoutDashboard, label: "관리자 대시보드", path: "/admin" },
     { icon: Upload, label: "PDF 업로드", path: "/admin" },
+    { icon: Users, label: "반 관리", path: "/admin/class-manager" },
   ];
 
-  const studentMenu = [
-    { icon: LayoutDashboard, label: "학생 대시보드", path: "/dashboard" },
-    { icon: LineChart, label: "점수 추이", path: "/dashboard" },
-  ];
+  const studentMenu = [{ icon: LayoutDashboard, label: "리포트 분석", path: "/dashboard" }];
 
   const menuItems = user?.role === "staff" ? staffMenu : studentMenu;
 
