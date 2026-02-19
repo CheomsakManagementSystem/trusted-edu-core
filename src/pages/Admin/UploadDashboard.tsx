@@ -1,9 +1,10 @@
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -13,10 +14,12 @@ import {
 } from "@/components/ui/select";
 import {
   fetchClasses,
+  fetchReportsByClassId,
   fetchStudents,
   prepareUploadCandidates,
   publishReportBatch,
   type ClassLite,
+  type ReportRecord,
   type ScoreBreakdown,
   type StudentLite,
   type UploadCandidate,
@@ -39,12 +42,16 @@ const statusLabel = {
 
 const UploadDashboard = () => {
   const { user } = useAuth();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
   const [classes, setClasses] = useState<ClassLite[]>([]);
   const [students, setStudents] = useState<StudentLite[]>([]);
+  const [classReports, setClassReports] = useState<ReportRecord[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string>("none");
   const [rows, setRows] = useState<UploadCandidate[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const [message, setMessage] = useState("");
   const [progress, setProgress] = useState(0);
   const [studentSearch, setStudentSearch] = useState<Record<string, string>>({});
@@ -52,6 +59,11 @@ const UploadDashboard = () => {
   const selectedClass = useMemo(
     () => classes.find((item) => item.id === selectedClassId) ?? null,
     [classes, selectedClassId],
+  );
+
+  const classStudents = useMemo(
+    () => students.filter((student) => student.classId === selectedClassId),
+    [selectedClassId, students],
   );
 
   useEffect(() => {
@@ -64,13 +76,20 @@ const UploadDashboard = () => {
     run();
   }, []);
 
-  const classStudents = useMemo(
-    () => students.filter((student) => student.classId === selectedClassId),
-    [selectedClassId, students],
-  );
+  useEffect(() => {
+    const run = async () => {
+      if (!selectedClass || selectedClassId === "none") {
+        setClassReports([]);
+        return;
+      }
+      const reports = await fetchReportsByClassId(selectedClass.id);
+      setClassReports(reports);
+    };
 
-  const handleFiles = async (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
+    run();
+  }, [selectedClass, selectedClassId]);
+
+  const parseAndAppendFiles = async (files: File[]) => {
     if (files.length === 0) {
       return;
     }
@@ -85,13 +104,23 @@ const UploadDashboard = () => {
 
     try {
       const parsedRows = await prepareUploadCandidates(files, classStudents, students);
-      setRows(parsedRows);
+      setRows((prev) => {
+        const ids = new Set(prev.map((row) => row.id));
+        const deduped = parsedRows.filter((row) => !ids.has(row.id));
+        return [...prev, ...deduped];
+      });
       setProgress(0);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "PDF 파싱에 실패했습니다.");
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleDrop = async (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsDragging(false);
+    await parseAndAppendFiles(Array.from(event.dataTransfer.files ?? []));
   };
 
   const updateRow = (id: string, updater: (row: UploadCandidate) => UploadCandidate) => {
@@ -102,7 +131,11 @@ const UploadDashboard = () => {
     updateRow(id, (row) => ({ ...row, parsed: { ...row.parsed, name } }));
   };
 
-  const handleMetaEdit = (id: string, field: "essayTopic" | "grade" | "feedback", value: string) => {
+  const handleMetaEdit = (
+    id: string,
+    field: "essayTopic" | "grade" | "feedback",
+    value: string,
+  ) => {
     updateRow(id, (row) => ({ ...row, parsed: { ...row.parsed, [field]: value } }));
   };
 
@@ -136,9 +169,10 @@ const UploadDashboard = () => {
     });
   };
 
-  const readyToPublish = useMemo(
-    () => rows.filter((row) => row.selectedStudentUid),
-    [rows],
+  const readyToPublish = useMemo(() => rows.filter((row) => row.selectedStudentUid), [rows]);
+  const readByReportId = useMemo(
+    () => new Map(classReports.map((report) => [report.id, report.isRead])),
+    [classReports],
   );
 
   const handlePublish = async () => {
@@ -167,15 +201,46 @@ const UploadDashboard = () => {
 
     try {
       const result = await publishReportBatch(rows, selectedClass, students, user.uid, setProgress);
+
+      setRows((prev) => {
+        const mapById = new Map(result.results.map((item) => [item.candidateId, item]));
+        return prev.map((row) => {
+          const current = mapById.get(row.id);
+          if (!current) {
+            return row;
+          }
+          if (current.success) {
+            return {
+              ...row,
+              sent: true,
+              sentReportId: current.reportId,
+              isRead: false,
+            };
+          }
+          return { ...row, sent: false };
+        });
+      });
+
       setMessage(`배포 완료: 성공 ${result.successCount}건, 실패 ${result.failureCount}건`);
       if (result.failureCount > 0) {
         setMessage((prev) => `${prev}\n${result.failures.join("\n")}`);
       }
+
+      const reports = await fetchReportsByClassId(selectedClass.id);
+      setClassReports(reports);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "배포 중 오류가 발생했습니다.");
     } finally {
       setUploading(false);
     }
+  };
+
+  const handleRefreshReadStatus = async () => {
+    if (!selectedClass) {
+      return;
+    }
+    const reports = await fetchReportsByClassId(selectedClass.id);
+    setClassReports(reports);
   };
 
   return (
@@ -184,7 +249,7 @@ const UploadDashboard = () => {
         <div>
           <h2 className="text-xl font-bold text-foreground">PDF 업로드 & 무결성 보정</h2>
           <p className="text-sm text-muted-foreground">
-            1) 반 선택 2) PDF 업로드 3) 파싱/매칭 보정 4) 일괄 배포 순서로 진행합니다.
+            반별 다중 업로드 후 자동 매칭하고, 필요한 항목만 수동 보정하여 배포합니다.
           </p>
         </div>
 
@@ -206,20 +271,47 @@ const UploadDashboard = () => {
                 </SelectContent>
               </Select>
             </div>
+
             <div className="space-y-2 md:col-span-2">
-              <p className="text-xs text-muted-foreground">Step 2. PDF 다중 업로드</p>
+              <p className="text-xs text-muted-foreground">Step 2. 드래그 앤 드롭 다중 업로드</p>
+              <div
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  setIsDragging(true);
+                }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={handleDrop}
+                className={`flex min-h-28 items-center justify-center rounded-md border-2 border-dashed px-4 text-sm transition-colors ${
+                  isDragging ? "border-primary bg-primary/5" : "border-border"
+                }`}
+              >
+                <div className="text-center">
+                  <p className="text-card-foreground">PDF 파일을 여기로 끌어오세요</p>
+                  <button
+                    type="button"
+                    className="mt-2 text-xs text-primary underline"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={!selectedClass || loading || uploading}
+                  >
+                    파일 선택 열기
+                  </button>
+                </div>
+              </div>
               <Input
+                ref={fileInputRef}
                 type="file"
                 accept=".pdf,application/pdf"
                 multiple
-                onChange={handleFiles}
+                className="hidden"
                 disabled={!selectedClass || loading || uploading}
+                onChange={(event) => parseAndAppendFiles(Array.from(event.target.files ?? []))}
               />
             </div>
           </div>
+
           <div className="mt-4">
             <Progress value={progress} className="h-2" />
-            <p className="mt-2 text-xs text-muted-foreground">진행률 {Math.round(progress)}%</p>
+            <p className="mt-2 text-xs text-muted-foreground">업로드/배포 진행률 {Math.round(progress)}%</p>
           </div>
         </div>
 
@@ -239,16 +331,24 @@ const UploadDashboard = () => {
                     <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                       {statusLabel[row.status]}
                     </span>
+                    {row.sent && (
+                      <span className="rounded bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-700">
+                        ✅ 전송 완료
+                      </span>
+                    )}
+                    {row.sent && (
+                      <span className="rounded bg-sky-500/10 px-2 py-0.5 text-xs text-sky-700">
+                        {row.sentReportId && readByReportId.get(row.sentReportId) ? "읽음" : "미확인"}
+                      </span>
+                    )}
                     {row.parseError && (
                       <span className="rounded bg-destructive/10 px-2 py-0.5 text-xs text-destructive">
-                        파싱 오류
+                        파싱 오류(수동 입력 가능)
                       </span>
                     )}
                   </div>
 
-                  {row.parseError && (
-                    <p className="mb-3 text-xs text-destructive">{row.parseError}</p>
-                  )}
+                  {row.parseError && <p className="mb-3 text-xs text-destructive">{row.parseError}</p>}
 
                   <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                     <Input
@@ -304,15 +404,13 @@ const UploadDashboard = () => {
                       <Input
                         key={`${row.id}-${field.key}`}
                         value={row.parsed.scores[field.key] ?? ""}
-                        onChange={(event) =>
-                          handleScoreEdit(row.id, field.key, event.target.value)
-                        }
+                        onChange={(event) => handleScoreEdit(row.id, field.key, event.target.value)}
                         placeholder={field.label}
                       />
                     ))}
                   </div>
 
-                  <Input
+                  <Textarea
                     className="mt-3"
                     value={row.parsed.feedback}
                     onChange={(event) => handleMetaEdit(row.id, "feedback", event.target.value)}
@@ -335,12 +433,53 @@ const UploadDashboard = () => {
             <div>
               <h3 className="text-sm font-semibold text-card-foreground">Step 4. 일괄 배포</h3>
               <p className="text-xs text-muted-foreground">
-                파일명 형식과 무관하게 현재 보정된 값으로 `reports` 컬렉션에 저장됩니다.
+                데이터가 유효한 행만 `reports` 컬렉션으로 전송되며 기본 `isRead=false`로 저장됩니다.
               </p>
             </div>
             <Button onClick={handlePublish} disabled={uploading || rows.length === 0}>
               {uploading ? "배포 중..." : "일괄 배포"}
             </Button>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-card p-5 shadow-card">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-card-foreground">Step 5. 전송/수신 확인</h3>
+            <div className="flex items-center gap-2">
+              <p className="text-xs text-muted-foreground">선택 반 최근 배포 {classReports.length}건</p>
+              <Button size="sm" variant="outline" onClick={handleRefreshReadStatus} disabled={!selectedClass}>
+                새로고침
+              </Button>
+            </div>
+          </div>
+          <div className="space-y-2">
+            {classReports.slice(0, 20).map((report) => (
+              <div
+                key={report.id}
+                className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2"
+              >
+                <div>
+                  <p className="text-sm font-medium text-card-foreground">
+                    {report.studentName} | {report.essayTopic || "논제 미기재"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    총점 {report.totalScore} / 등급 {report.grade || "-"}
+                  </p>
+                </div>
+                <span
+                  className={`rounded px-2 py-0.5 text-xs ${
+                    report.isRead
+                      ? "bg-emerald-500/10 text-emerald-700"
+                      : "bg-amber-500/10 text-amber-700"
+                  }`}
+                >
+                  {report.isRead ? "읽음" : "미확인"}
+                </span>
+              </div>
+            ))}
+            {classReports.length === 0 && (
+              <p className="text-sm text-muted-foreground">아직 배포된 리포트가 없습니다.</p>
+            )}
           </div>
         </div>
 

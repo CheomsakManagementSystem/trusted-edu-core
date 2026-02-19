@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/contexts/AuthContext";
-import { fetchReportsByStudentUid, type ReportRecord } from "@/lib/pdfProcessor";
+import {
+  fetchReportsByStudentUid,
+  markReportAsRead,
+  type ReportRecord,
+} from "@/lib/pdfProcessor";
 import {
   CartesianGrid,
   Line,
@@ -81,44 +85,49 @@ const ReportView = () => {
     [reports],
   );
 
+  const handleOpenReport = async (report: ReportRecord) => {
+    setSelectedReportId(report.id);
+
+    if (!report.isRead) {
+      await markReportAsRead(report.id);
+      setReports((prev) => prev.map((item) => (item.id === report.id ? { ...item, isRead: true } : item)));
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
         <div>
           <h2 className="text-xl font-bold text-foreground">학생 리포트 분석</h2>
-          <p className="text-sm text-muted-foreground">
-            레이더 차트와 총점 추이를 통해 회차별 성장을 확인합니다.
-          </p>
+          <p className="text-sm text-muted-foreground">총점 추이와 회차별 리포트를 확인합니다.</p>
         </div>
 
         {loading && <p className="text-sm text-muted-foreground">리포트를 불러오는 중입니다...</p>}
         {!loading && error && <p className="text-sm text-destructive">{error}</p>}
 
         {!loading && !error && reports.length === 0 && (
-          <p className="text-sm text-muted-foreground">등록된 리포트가 없습니다.</p>
+          <p className="text-sm text-muted-foreground">아직 배포된 리포트가 없습니다.</p>
         )}
 
         {!loading && !error && reports.length > 0 && selectedReport && (
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
             <div className="space-y-4 xl:col-span-2">
               <div className="rounded-lg border border-border bg-card p-5 shadow-card">
-                <div className="mb-4 flex flex-wrap items-center gap-2">
-                  {reports.map((report, index) => (
-                    <button
-                      key={report.id}
-                      type="button"
-                      onClick={() => setSelectedReportId(report.id)}
-                      className={`rounded px-3 py-1 text-xs ${
-                        selectedReport.id === report.id
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-muted text-muted-foreground"
-                      }`}
-                    >
-                      회차 {reports.length - index}
-                    </button>
-                  ))}
+                <h3 className="mb-2 text-sm font-semibold text-card-foreground">총점 추이</h3>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={trendData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <XAxis dataKey="round" />
+                      <YAxis domain={[0, 100]} />
+                      <Tooltip />
+                      <Line type="monotone" dataKey="score" stroke="hsl(var(--primary))" strokeWidth={2} />
+                    </LineChart>
+                  </ResponsiveContainer>
                 </div>
+              </div>
 
+              <div className="rounded-lg border border-border bg-card p-5 shadow-card">
                 <h3 className="mb-2 text-sm font-semibold text-card-foreground">5개 지표 레이더 차트</h3>
                 <div className="h-72">
                   <ResponsiveContainer width="100%" height="100%">
@@ -139,22 +148,41 @@ const ReportView = () => {
               </div>
 
               <div className="rounded-lg border border-border bg-card p-5 shadow-card">
-                <h3 className="mb-2 text-sm font-semibold text-card-foreground">총점 추이</h3>
-                <div className="h-64">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={trendData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                      <XAxis dataKey="round" />
-                      <YAxis domain={[0, 100]} />
-                      <Tooltip />
-                      <Line
-                        type="monotone"
-                        dataKey="score"
-                        stroke="hsl(var(--primary))"
-                        strokeWidth={2}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
+                <h3 className="mb-3 text-sm font-semibold text-card-foreground">리포트 목록</h3>
+                <div className="space-y-2">
+                  {reports.map((report, index) => (
+                    <button
+                      key={report.id}
+                      type="button"
+                      onClick={() => handleOpenReport(report)}
+                      className={`w-full rounded-md border px-3 py-3 text-left transition-colors ${
+                        selectedReport.id === report.id
+                          ? "border-primary bg-primary/5"
+                          : "border-border bg-background hover:border-primary/40"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-card-foreground">
+                          회차 {reports.length - index} / {report.essayTopic || "논제 미기재"}
+                        </p>
+                        <span
+                          className={`rounded px-2 py-0.5 text-xs ${
+                            report.isRead
+                              ? "bg-emerald-500/10 text-emerald-700"
+                              : "bg-amber-500/10 text-amber-700"
+                          }`}
+                        >
+                          {report.isRead ? "읽음" : "새 리포트"}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        점수 {report.totalScore} | 등급 {report.grade || "-"} | 날짜{" "}
+                        {report.createdAt
+                          ? report.createdAt.toDate().toLocaleDateString("ko-KR")
+                          : "-"}
+                      </p>
+                    </button>
+                  ))}
                 </div>
               </div>
             </div>
@@ -167,7 +195,7 @@ const ReportView = () => {
               <iframe
                 title="Report PDF Viewer"
                 src={selectedReport.fileUrl}
-                className="h-[620px] w-full rounded border border-border"
+                className="h-[760px] w-full rounded border border-border"
               />
             </div>
           </div>

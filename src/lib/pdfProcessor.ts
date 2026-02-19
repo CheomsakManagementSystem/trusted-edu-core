@@ -2,9 +2,11 @@ import {
   Timestamp,
   addDoc,
   collection,
+  doc,
   getDocs,
   query,
   serverTimestamp,
+  updateDoc,
   where,
   orderBy,
 } from "firebase/firestore";
@@ -57,6 +59,9 @@ export type UploadCandidate = {
   candidates: StudentLite[];
   selectedStudentUid: string | null;
   parseError?: string;
+  sentReportId?: string;
+  sent?: boolean;
+  isRead?: boolean;
 };
 
 export type ReportRecord = {
@@ -73,6 +78,7 @@ export type ReportRecord = {
   feedback: string;
   scores: ScoreBreakdown;
   totalScore: number;
+  isRead: boolean;
   fileUrl: string;
   fileName: string;
   createdAt: Timestamp | null;
@@ -100,6 +106,17 @@ const parseNumber = (value: string | undefined): number | null => {
   }
   const parsed = Number(value.replace(/,/g, "").trim());
   return Number.isFinite(parsed) ? parsed : null;
+};
+
+const parseFileNameHint = (fileName: string): { name?: string; total?: number | null } => {
+  const base = fileName.replace(/\.pdf$/i, "");
+  const nameMatch = base.match(/([가-힣]{2,5})/);
+  const scoreMatch = base.match(/(\d+(?:\.\d+)?)\s*점?/);
+
+  return {
+    name: nameMatch?.[1]?.trim() || undefined,
+    total: parseNumber(scoreMatch?.[1]),
+  };
 };
 
 const extractField = (text: string, labels: string[]): string => {
@@ -302,6 +319,7 @@ export const prepareUploadCandidates = async (
   const candidates: UploadCandidate[] = [];
 
   for (const file of files) {
+    const fileHint = parseFileNameHint(file.name);
     const base: UploadCandidate = {
       id: `${file.name}-${file.lastModified}`,
       file,
@@ -313,11 +331,27 @@ export const prepareUploadCandidates = async (
 
     try {
       const parsed = await extractPdfData(file);
-      const match = resolveMatchStatus(parsed.name, classStudents, allStudents);
-      candidates.push({ ...base, parsed, ...match });
+      const merged = {
+        ...parsed,
+        name: parsed.name || fileHint.name || "",
+        scores: {
+          ...parsed.scores,
+          total: parsed.scores.total ?? fileHint.total ?? null,
+        },
+      };
+      const match = resolveMatchStatus(merged.name, classStudents, allStudents);
+      candidates.push({ ...base, parsed: merged, ...match });
     } catch (error) {
       candidates.push({
         ...base,
+        parsed: {
+          ...base.parsed,
+          name: fileHint.name || "",
+          scores: {
+            ...base.parsed.scores,
+            total: fileHint.total ?? null,
+          },
+        },
         parseError:
           error instanceof Error ? error.message : "파싱 오류가 발생했습니다.",
       });
@@ -358,13 +392,19 @@ export const publishReportBatch = async (
   allStudents: StudentLite[],
   uid: string,
   onOverallProgress?: (progress: number) => void,
-): Promise<{ successCount: number; failureCount: number; failures: string[] }> => {
+): Promise<{
+  successCount: number;
+  failureCount: number;
+  failures: string[];
+  results: Array<{ candidateId: string; success: boolean; reportId?: string; error?: string }>;
+}> => {
   if (!uploadRows.length) {
-    return { successCount: 0, failureCount: 0, failures: [] };
+    return { successCount: 0, failureCount: 0, failures: [], results: [] };
   }
 
   let successCount = 0;
   const failures: string[] = [];
+  const results: Array<{ candidateId: string; success: boolean; reportId?: string; error?: string }> = [];
 
   for (let i = 0; i < uploadRows.length; i += 1) {
     const row = uploadRows[i];
@@ -384,7 +424,7 @@ export const publishReportBatch = async (
         onOverallProgress?.(baseProgress + fileProgress / uploadRows.length);
       });
 
-      await addDoc(collection(db, "reports"), {
+      const created = await addDoc(collection(db, "reports"), {
         uid,
         classId: selectedClass.id,
         className: selectedClass.name,
@@ -397,19 +437,22 @@ export const publishReportBatch = async (
         feedback: row.parsed.feedback || "",
         scores: row.parsed.scores,
         totalScore: row.parsed.scores.total ?? 0,
+        isRead: false,
         fileUrl: url,
         fileName: row.file.name,
         createdAt: serverTimestamp(),
       });
 
       successCount += 1;
+      results.push({ candidateId: row.id, success: true, reportId: created.id });
       onOverallProgress?.(((i + 1) / uploadRows.length) * 100);
     } catch (error) {
+      const reason =
+        error instanceof Error ? error.message : "배포 처리에 실패했습니다.";
       failures.push(
-        `${row.file.name}: ${
-          error instanceof Error ? error.message : "배포 처리에 실패했습니다."
-        }`,
+        `${row.file.name}: ${reason}`,
       );
+      results.push({ candidateId: row.id, success: false, error: reason });
     }
   }
 
@@ -417,6 +460,7 @@ export const publishReportBatch = async (
     successCount,
     failureCount: failures.length,
     failures,
+    results,
   };
 };
 
@@ -468,7 +512,7 @@ export const fetchReportsByStudentUid = async (studentUid: string): Promise<Repo
 
     return snapshot.docs.map((docSnap) => {
       const data = docSnap.data() as Omit<ReportRecord, "id">;
-      return { id: docSnap.id, ...data };
+      return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
     });
   } catch {
     const snapshot = await getDocs(query(reportsRef, where("studentUid", "==", studentUid)));
@@ -476,12 +520,45 @@ export const fetchReportsByStudentUid = async (studentUid: string): Promise<Repo
     return snapshot.docs
       .map((docSnap) => {
         const data = docSnap.data() as Omit<ReportRecord, "id">;
-        return { id: docSnap.id, ...data };
+        return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
       })
       .sort((a, b) => {
         const aMs = a.createdAt?.toMillis() ?? 0;
         const bMs = b.createdAt?.toMillis() ?? 0;
         return bMs - aMs;
       });
+  }
+};
+
+export const fetchReportsByClassId = async (classId: string): Promise<ReportRecord[]> => {
+  const reportsRef = collection(db, "reports");
+
+  try {
+    const snapshot = await getDocs(
+      query(reportsRef, where("classId", "==", classId), orderBy("createdAt", "desc")),
+    );
+    return snapshot.docs.map((docSnap) => {
+      const data = docSnap.data() as Omit<ReportRecord, "id">;
+      return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
+    });
+  } catch {
+    const snapshot = await getDocs(query(reportsRef, where("classId", "==", classId)));
+    return snapshot.docs
+      .map((docSnap) => {
+        const data = docSnap.data() as Omit<ReportRecord, "id">;
+        return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
+      })
+      .sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0));
+  }
+};
+
+export const markReportAsRead = async (reportId: string): Promise<void> => {
+  try {
+    await updateDoc(doc(db, "reports", reportId), {
+      isRead: true,
+      readAt: serverTimestamp(),
+    });
+  } catch {
+    // 읽음 처리 실패가 사용자 동작을 막지 않도록 무시
   }
 };
