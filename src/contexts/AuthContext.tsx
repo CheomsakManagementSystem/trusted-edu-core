@@ -23,6 +23,8 @@ interface AppUser {
   studentId?: string;
   studentKey?: string;
   phoneSuffix?: string;
+  classId?: string | null;
+  className?: string | null;
 }
 
 interface AuthContextValue {
@@ -65,6 +67,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
             studentId?: string;
             studentKey?: string;
             phoneSuffix?: string;
+            classId?: string | null;
+            className?: string | null;
           };
 
           const inferredStudentId =
@@ -80,6 +84,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
             studentId: inferredStudentId,
             studentKey: data.studentKey,
             phoneSuffix: data.phoneSuffix,
+            classId: data.classId ?? null,
+            className: data.className ?? null,
           });
         }
       } catch (error) {

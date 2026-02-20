@@ -12,6 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
 import {
   fetchClasses,
   fetchReportsByClassId,
@@ -42,6 +43,7 @@ const statusLabel = {
 
 const UploadDashboard = () => {
   const { user } = useAuth();
+  const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [classes, setClasses] = useState<ClassLite[]>([]);
@@ -111,7 +113,13 @@ const UploadDashboard = () => {
       });
       setProgress(0);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "PDF 파싱에 실패했습니다.");
+      const reason = error instanceof Error ? error.message : "PDF 파싱에 실패했습니다.";
+      setMessage(reason);
+      toast({
+        variant: "destructive",
+        title: "파싱 실패",
+        description: reason,
+      });
     } finally {
       setLoading(false);
     }
@@ -133,7 +141,7 @@ const UploadDashboard = () => {
 
   const handleMetaEdit = (
     id: string,
-    field: "essayTopic" | "grade" | "feedback",
+    field: "essayTopic" | "grade" | "feedback" | "writtenAt" | "className" | "reviewer",
     value: string,
   ) => {
     updateRow(id, (row) => ({ ...row, parsed: { ...row.parsed, [field]: value } }));
@@ -224,12 +232,28 @@ const UploadDashboard = () => {
       setMessage(`배포 완료: 성공 ${result.successCount}건, 실패 ${result.failureCount}건`);
       if (result.failureCount > 0) {
         setMessage((prev) => `${prev}\n${result.failures.join("\n")}`);
+        toast({
+          variant: "destructive",
+          title: "일부 전송 실패",
+          description: result.failures[0],
+        });
+      } else {
+        toast({
+          title: "대시보드 전송 완료",
+          description: `${result.successCount}건이 저장되었습니다.`,
+        });
       }
 
       const reports = await fetchReportsByClassId(selectedClass.id);
       setClassReports(reports);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "배포 중 오류가 발생했습니다.");
+      const reason = error instanceof Error ? error.message : "배포 중 오류가 발생했습니다.";
+      setMessage(reason);
+      toast({
+        variant: "destructive",
+        title: "대시보드 전송 실패",
+        description: reason,
+      });
     } finally {
       setUploading(false);
     }
@@ -381,6 +405,24 @@ const UploadDashboard = () => {
 
                   <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
                     <Input
+                      value={row.parsed.writtenAt}
+                      onChange={(event) => handleMetaEdit(row.id, "writtenAt", event.target.value)}
+                      placeholder="작성일"
+                    />
+                    <Input
+                      value={row.parsed.className}
+                      onChange={(event) => handleMetaEdit(row.id, "className", event.target.value)}
+                      placeholder="수강반"
+                    />
+                    <Input
+                      value={row.parsed.reviewer}
+                      onChange={(event) => handleMetaEdit(row.id, "reviewer", event.target.value)}
+                      placeholder="첨삭자"
+                    />
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+                    <Input
                       value={row.parsed.essayTopic}
                       onChange={(event) => handleMetaEdit(row.id, "essayTopic", event.target.value)}
                       placeholder="논제"
@@ -437,7 +479,7 @@ const UploadDashboard = () => {
               </p>
             </div>
             <Button onClick={handlePublish} disabled={uploading || rows.length === 0}>
-              {uploading ? "배포 중..." : "일괄 배포"}
+              {uploading ? "전송 중..." : "대시보드 전송"}
             </Button>
           </div>
         </div>

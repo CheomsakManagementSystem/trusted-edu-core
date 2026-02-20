@@ -3,6 +3,7 @@ import {
   addDoc,
   collection,
   doc,
+  getDoc,
   getDocs,
   query,
   serverTimestamp,
@@ -10,14 +11,15 @@ import {
   where,
   orderBy,
 } from "firebase/firestore";
-import {
-  getDownloadURL,
-  ref,
-  uploadBytesResumable,
-} from "firebase/storage";
+import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 import { db, storage } from "@/lib/firebase";
 
+const STORAGE_UPLOAD_TIMEOUT_MS = 60_000;
+const FIRESTORE_WRITE_TIMEOUT_MS = 20_000;
+const PDFJS_VERSION = "4.10.38";
+
 export type MatchStatus = "auto_matched" | "needs_selection" | "unregistered";
+export type JoinRequestStatus = "pending" | "approved" | "rejected";
 
 export type StudentLite = {
   uid: string;
@@ -44,10 +46,15 @@ export type ScoreBreakdown = {
 
 export type ParsedPdfData = {
   name: string;
+  className: string;
+  writtenAt: string;
   essayTopic: string;
   grade: string;
+  reviewer: string;
   feedback: string;
   scores: ScoreBreakdown;
+  averageScores: ScoreBreakdown;
+  convertedScores: ScoreBreakdown;
   rawText: string;
 };
 
@@ -73,10 +80,15 @@ export type ReportRecord = {
   studentId: string | null;
   studentName: string;
   sourceName: string;
+  writtenAt: string;
+  reviewer: string;
   essayTopic: string;
   grade: string;
   feedback: string;
   scores: ScoreBreakdown;
+  averageScores?: ScoreBreakdown;
+  convertedScores?: ScoreBreakdown;
+  parsedJson?: ParsedPdfData;
   totalScore: number;
   isRead: boolean;
   fileUrl: string;
@@ -84,12 +96,48 @@ export type ReportRecord = {
   createdAt: Timestamp | null;
 };
 
+export type ClassJoinRequestRecord = {
+  id: string;
+  studentUid: string;
+  studentName: string;
+  studentEmail: string;
+  classId: string;
+  className: string;
+  status: JoinRequestStatus;
+  createdAt: Timestamp | null;
+  approvedAt?: Timestamp | null;
+  approvedBy?: string | null;
+};
+
+const METRIC_LABELS = ["독해력", "내용 이해력", "문제 이해력", "구성력", "표현력"] as const;
+
+type MetricLabel = (typeof METRIC_LABELS)[number];
+
 const EMPTY_PARSED: ParsedPdfData = {
   name: "",
+  className: "",
+  writtenAt: "",
   essayTopic: "",
   grade: "",
+  reviewer: "",
   feedback: "",
   scores: {
+    reading: null,
+    comprehension: null,
+    problemUnderstanding: null,
+    organization: null,
+    expression: null,
+    total: null,
+  },
+  averageScores: {
+    reading: null,
+    comprehension: null,
+    problemUnderstanding: null,
+    organization: null,
+    expression: null,
+    total: null,
+  },
+  convertedScores: {
     reading: null,
     comprehension: null,
     problemUnderstanding: null,
@@ -119,15 +167,85 @@ const parseFileNameHint = (fileName: string): { name?: string; total?: number | 
   };
 };
 
+const normalizeText = (text: string) =>
+  text
+    .replace(/\u0000/g, "")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{2,}/g, "\n")
+    .replace(/\(\s*\d+(?:\.\d+)?\s*점\s*만점\s*\)/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 const extractField = (text: string, labels: string[]): string => {
+  const stopTokens = [
+    "작성일",
+    "수강반",
+    "논제",
+    "이름",
+    "독해력",
+    "내용 이해력",
+    "문제 이해력",
+    "구성력",
+    "표현력",
+    "총점",
+    "등급",
+    "첨삭 총평",
+    "첨삭자",
+  ];
+
   for (const label of labels) {
-    const regex = new RegExp(`${label}\\s*[:：]?\\s*([^\\n\\r]+)`, "i");
+    const stopPattern = stopTokens.map((token) => escapeRegex(token)).join("|");
+    const regex = new RegExp(
+      `${escapeRegex(label)}\\s*[:：]?\\s*([^\\n]+?)\\s*(?=${stopPattern}|$)`,
+      "i",
+    );
     const matched = text.match(regex);
     if (matched?.[1]) {
       return matched[1].trim();
     }
   }
+
   return "";
+};
+
+const getMetricSegment = (text: string, label: MetricLabel) => {
+  const start = text.search(new RegExp(escapeRegex(label), "i"));
+  if (start < 0) {
+    return "";
+  }
+
+  const nextLabels = METRIC_LABELS.filter((current) => current !== label)
+    .map((current) => {
+      const idx = text.slice(start + label.length).search(new RegExp(escapeRegex(current), "i"));
+      if (idx < 0) {
+        return Number.POSITIVE_INFINITY;
+      }
+      return start + label.length + idx;
+    })
+    .filter(Number.isFinite);
+
+  const nextTotalIdx = text.slice(start + label.length).search(/총점\s*[:：]?/i);
+  const totalIdx = nextTotalIdx < 0 ? Number.POSITIVE_INFINITY : start + label.length + nextTotalIdx;
+  const end = Math.min(...nextLabels, totalIdx, start + 220);
+
+  return text.slice(start, end);
+};
+
+const parseMetricTriple = (segment: string): [number | null, number | null, number | null] => {
+  const values = (segment.match(/-?\d+(?:\.\d+)?/g) ?? []).map((value) => Number(value));
+  if (values.length < 3) {
+    return [null, null, null];
+  }
+
+  const lastThree = values.slice(-3);
+  return [
+    Number.isFinite(lastThree[0]) ? lastThree[0] : null,
+    Number.isFinite(lastThree[1]) ? lastThree[1] : null,
+    Number.isFinite(lastThree[2]) ? lastThree[2] : null,
+  ];
 };
 
 const extractFeedback = (text: string): string => {
@@ -136,60 +254,73 @@ const extractFeedback = (text: string): string => {
     return "";
   }
 
-  const fromLabel = text.slice(start).replace(/첨삭\s*총평\s*[:：]?/i, "").trim();
-  const stopLabels = [/^논제\s*[:：]?/im, /^등급\s*[:：]?/im, /^총점\s*[:：]?/im];
+  const sliced = text.slice(start).replace(/첨삭\s*총평\s*[:：]?/i, "").trim();
+  const stopLabels = [/\b작성일\b/i, /\b논제\b/i, /\b등급\b/i, /\b총점\b/i, /\d+\s*\/\s*\d+\s*페이지/i];
 
-  let endIndex = fromLabel.length;
+  let endIndex = sliced.length;
   for (const stop of stopLabels) {
-    const idx = fromLabel.search(stop);
-    if (idx >= 0) {
-      endIndex = Math.min(endIndex, idx);
+    const index = sliced.search(stop);
+    if (index >= 0) {
+      endIndex = Math.min(endIndex, index);
     }
   }
 
-  return fromLabel.slice(0, endIndex).trim();
+  return sliced.slice(0, endIndex).trim();
 };
 
-const extractScore = (text: string, label: string): number | null => {
-  const regex = new RegExp(`${label}\\s*[:：]?\\s*(-?\\d+(?:\\.\\d+)?)`, "i");
-  const matched = text.match(regex);
-  return parseNumber(matched?.[1]);
-};
+const parsePdfText = (rawText: string): ParsedPdfData => {
+  const text = normalizeText(rawText);
 
-const parsePdfText = (text: string): ParsedPdfData => {
-  const normalized = text
-    .replace(/\u0000/g, "")
-    .replace(/\r/g, "\n")
-    .replace(/\n{2,}/g, "\n")
-    .trim();
+  const readingSegment = getMetricSegment(text, "독해력");
+  const comprehensionSegment = getMetricSegment(text, "내용 이해력");
+  const problemSegment = getMetricSegment(text, "문제 이해력");
+  const organizationSegment = getMetricSegment(text, "구성력");
+  const expressionSegment = getMetricSegment(text, "표현력");
 
-  const name = extractField(normalized, ["이름", "성명", "학생명"]);
-  const essayTopic = extractField(normalized, ["논제", "주제"]);
-  const grade = extractField(normalized, ["등급"]);
+  const [readingMine, readingAvg, readingConverted] = parseMetricTriple(readingSegment);
+  const [compMine, compAvg, compConverted] = parseMetricTriple(comprehensionSegment);
+  const [problemMine, problemAvg, problemConverted] = parseMetricTriple(problemSegment);
+  const [orgMine, orgAvg, orgConverted] = parseMetricTriple(organizationSegment);
+  const [expMine, expAvg, expConverted] = parseMetricTriple(expressionSegment);
 
-  const reading = extractScore(normalized, "독해력");
-  const comprehension = extractScore(normalized, "내용\s*이해력");
-  const problemUnderstanding = extractScore(normalized, "문제\s*이해력");
-  const organization = extractScore(normalized, "구성력");
-  const expression = extractScore(normalized, "표현력");
-
-  const totalByLabel = extractScore(normalized, "총점");
-  const totalByConverted = extractScore(normalized, "환산\s*점수");
+  const totalByBox = parseNumber(text.match(/총점\s*[:：]?\s*(-?\d+(?:\.\d+)?)/i)?.[1]);
+  const totalByConverted = [readingConverted, compConverted, problemConverted, orgConverted, expConverted]
+    .filter((value): value is number => Number.isFinite(value))
+    .reduce((acc, value) => acc + value, 0);
 
   return {
-    name,
-    essayTopic,
-    grade,
-    feedback: extractFeedback(normalized),
+    name: extractField(text, ["이름", "성명", "학생명"]),
+    className: extractField(text, ["수강반", "반"]),
+    writtenAt: extractField(text, ["작성일", "작성 일자"]),
+    essayTopic: extractField(text, ["논제", "주제"]),
+    grade: extractField(text, ["등급"]),
+    reviewer: extractField(text, ["첨삭자", "채점자"]),
+    feedback: extractFeedback(text),
     scores: {
-      reading,
-      comprehension,
-      problemUnderstanding,
-      organization,
-      expression,
-      total: totalByLabel ?? totalByConverted,
+      reading: readingMine,
+      comprehension: compMine,
+      problemUnderstanding: problemMine,
+      organization: orgMine,
+      expression: expMine,
+      total: totalByBox,
     },
-    rawText: normalized,
+    averageScores: {
+      reading: readingAvg,
+      comprehension: compAvg,
+      problemUnderstanding: problemAvg,
+      organization: orgAvg,
+      expression: expAvg,
+      total: null,
+    },
+    convertedScores: {
+      reading: readingConverted,
+      comprehension: compConverted,
+      problemUnderstanding: problemConverted,
+      organization: orgConverted,
+      expression: expConverted,
+      total: totalByConverted > 0 ? totalByConverted : null,
+    },
+    rawText: text,
   };
 };
 
@@ -208,19 +339,40 @@ type PdfJsModule = {
 };
 
 const loadPdfJs = async (): Promise<PdfJsModule> => {
-  const sources = [
-    "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.mjs",
-    "https://unpkg.com/pdfjs-dist@4.10.38/build/pdf.mjs",
+  const packageCandidates = [
+    {
+      pdf: "pdfjs-dist/build/pdf.mjs",
+      worker: "pdfjs-dist/build/pdf.worker.min.mjs",
+    },
+    {
+      pdf: "pdfjs-dist/legacy/build/pdf.mjs",
+      worker: "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
+    },
+  ];
+
+  for (const source of packageCandidates) {
+    try {
+      const mod = (await import(
+        /* @vite-ignore */ source.pdf
+      )) as unknown as PdfJsModule;
+      mod.GlobalWorkerOptions.workerSrc = source.worker;
+      return mod;
+    } catch {
+      // local dependency 미설치 시 CDN fallback 사용
+    }
+  }
+
+  const cdnCandidates = [
+    `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.mjs`,
+    `https://unpkg.com/pdfjs-dist@${PDFJS_VERSION}/build/pdf.mjs`,
   ];
 
   let lastError: unknown;
-
-  for (const source of sources) {
+  for (const source of cdnCandidates) {
     try {
       const mod = (await import(
         /* @vite-ignore */ source
       )) as unknown as PdfJsModule;
-
       mod.GlobalWorkerOptions.workerSrc = source.replace("pdf.mjs", "pdf.worker.min.mjs");
       return mod;
     } catch (error) {
@@ -229,7 +381,7 @@ const loadPdfJs = async (): Promise<PdfJsModule> => {
   }
 
   throw new Error(
-    `pdfjs-dist 모듈을 로드하지 못했습니다. 네트워크를 확인해주세요. ${
+    `pdfjs-dist 모듈을 로드하지 못했습니다. ${
       lastError instanceof Error ? lastError.message : ""
     }`,
   );
@@ -242,22 +394,28 @@ export const extractPdfData = async (file: File): Promise<ParsedPdfData> => {
     }
 
     const pdfjs = await loadPdfJs();
+
     const bytes = await file.arrayBuffer();
     const pdf = await pdfjs.getDocument({ data: bytes }).promise;
-
     const pageTexts: string[] = [];
 
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
       const page = await pdf.getPage(pageNumber);
       const content = await page.getTextContent();
-      const text = content.items
+      const text = (content.items as Array<{ str?: string }>)
         .map((item) => item.str ?? "")
         .join(" ")
         .trim();
       pageTexts.push(text);
     }
 
-    return parsePdfText(pageTexts.join("\n"));
+    const parsed = parsePdfText(pageTexts.join("\n"));
+
+    if (!parsed.name && !parsed.essayTopic && !parsed.feedback) {
+      throw new Error("양식에서 필요한 텍스트를 추출하지 못했습니다.");
+    }
+
+    return parsed;
   } catch (error) {
     throw new Error(
       error instanceof Error ? error.message : "PDF 파싱 중 오류가 발생했습니다.",
@@ -270,7 +428,7 @@ const byName = (students: StudentLite[], name: string) => {
   if (!normalized) {
     return [];
   }
-  return students.filter((s) => s.name.trim() === normalized);
+  return students.filter((student) => student.name.trim() === normalized);
 };
 
 export const resolveMatchStatus = (
@@ -336,7 +494,7 @@ export const prepareUploadCandidates = async (
         name: parsed.name || fileHint.name || "",
         scores: {
           ...parsed.scores,
-          total: parsed.scores.total ?? fileHint.total ?? null,
+          total: parsed.scores.total ?? parsed.convertedScores.total ?? fileHint.total ?? null,
         },
       };
       const match = resolveMatchStatus(merged.name, classStudents, allStudents);
@@ -352,8 +510,7 @@ export const prepareUploadCandidates = async (
             total: fileHint.total ?? null,
           },
         },
-        parseError:
-          error instanceof Error ? error.message : "파싱 오류가 발생했습니다.",
+        parseError: error instanceof Error ? error.message : "파싱 오류가 발생했습니다.",
       });
     }
   }
@@ -370,6 +527,11 @@ const uploadPdfToStorage = async (
   const task = uploadBytesResumable(storageRef, file);
 
   await new Promise<void>((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      task.cancel();
+      reject(new Error("Storage 업로드 시간 초과(60초). 네트워크/권한을 확인하세요."));
+    }, STORAGE_UPLOAD_TIMEOUT_MS);
+
     task.on(
       "state_changed",
       (snapshot) => {
@@ -378,8 +540,14 @@ const uploadPdfToStorage = async (
         }
         onProgress((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
       },
-      (error) => reject(error),
-      () => resolve(),
+      (error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      },
+      () => {
+        clearTimeout(timeoutId);
+        resolve();
+      },
     );
   });
 
@@ -414,7 +582,7 @@ export const publishReportBatch = async (
         throw new Error("학생 매칭이 완료되지 않았습니다.");
       }
 
-      const student = allStudents.find((s) => s.uid === row.selectedStudentUid);
+      const student = allStudents.find((entry) => entry.uid === row.selectedStudentUid);
       if (!student) {
         throw new Error("매칭된 학생 정보를 찾을 수 없습니다.");
       }
@@ -424,34 +592,43 @@ export const publishReportBatch = async (
         onOverallProgress?.(baseProgress + fileProgress / uploadRows.length);
       });
 
-      const created = await addDoc(collection(db, "reports"), {
-        uid,
-        classId: selectedClass.id,
-        className: selectedClass.name,
-        studentUid: student.uid,
-        studentId: student.studentId ?? null,
-        studentName: student.name,
-        sourceName: row.parsed.name || "",
-        essayTopic: row.parsed.essayTopic || "",
-        grade: row.parsed.grade || "",
-        feedback: row.parsed.feedback || "",
-        scores: row.parsed.scores,
-        totalScore: row.parsed.scores.total ?? 0,
-        isRead: false,
-        fileUrl: url,
-        fileName: row.file.name,
-        createdAt: serverTimestamp(),
-      });
+      const created = await Promise.race([
+        addDoc(collection(db, "reports"), {
+          uid,
+          classId: selectedClass.id,
+          className: selectedClass.name,
+          studentUid: student.uid,
+          studentId: student.studentId ?? null,
+          studentName: student.name,
+          sourceName: row.parsed.name || "",
+          writtenAt: row.parsed.writtenAt || "",
+          reviewer: row.parsed.reviewer || "",
+          essayTopic: row.parsed.essayTopic || "",
+          grade: row.parsed.grade || "",
+          feedback: row.parsed.feedback || "",
+          scores: row.parsed.scores,
+          averageScores: row.parsed.averageScores,
+          convertedScores: row.parsed.convertedScores,
+          parsedJson: row.parsed,
+          totalScore: row.parsed.scores.total ?? 0,
+          isRead: false,
+          fileUrl: url,
+          fileName: row.file.name,
+          createdAt: serverTimestamp(),
+        }),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => {
+            reject(new Error("Firestore 저장 시간 초과(20초). 권한/네트워크를 확인하세요."));
+          }, FIRESTORE_WRITE_TIMEOUT_MS);
+        }),
+      ]);
 
       successCount += 1;
       results.push({ candidateId: row.id, success: true, reportId: created.id });
       onOverallProgress?.(((i + 1) / uploadRows.length) * 100);
     } catch (error) {
-      const reason =
-        error instanceof Error ? error.message : "배포 처리에 실패했습니다.";
-      failures.push(
-        `${row.file.name}: ${reason}`,
-      );
+      const reason = error instanceof Error ? error.message : "배포 처리에 실패했습니다.";
+      failures.push(`${row.file.name}: ${reason}`);
       results.push({ candidateId: row.id, success: false, error: reason });
     }
   }
@@ -500,6 +677,118 @@ export const fetchClasses = async (): Promise<ClassLite[]> => {
   } catch {
     return [];
   }
+};
+
+export const submitClassJoinRequest = async (
+  student: Pick<StudentLite, "uid" | "name" | "email">,
+  classInfo: ClassLite,
+): Promise<void> => {
+  const pendingSnap = await getDocs(
+    query(
+      collection(db, "classJoinRequests"),
+      where("studentUid", "==", student.uid),
+      where("classId", "==", classInfo.id),
+      where("status", "==", "pending"),
+    ),
+  );
+
+  if (!pendingSnap.empty) {
+    throw new Error("이미 해당 반에 가입 신청이 접수되어 있습니다.");
+  }
+
+  await addDoc(collection(db, "classJoinRequests"), {
+    studentUid: student.uid,
+    studentName: student.name,
+    studentEmail: student.email,
+    classId: classInfo.id,
+    className: classInfo.name,
+    status: "pending",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+};
+
+export const fetchMyClassJoinRequests = async (
+  studentUid: string,
+): Promise<ClassJoinRequestRecord[]> => {
+  try {
+    const snapshot = await getDocs(
+      query(
+        collection(db, "classJoinRequests"),
+        where("studentUid", "==", studentUid),
+        orderBy("createdAt", "desc"),
+      ),
+    );
+
+    return snapshot.docs.map((docSnap) => {
+      const data = docSnap.data() as Omit<ClassJoinRequestRecord, "id">;
+      return { id: docSnap.id, ...data };
+    });
+  } catch {
+    const snapshot = await getDocs(
+      query(collection(db, "classJoinRequests"), where("studentUid", "==", studentUid)),
+    );
+
+    return snapshot.docs
+      .map((docSnap) => {
+        const data = docSnap.data() as Omit<ClassJoinRequestRecord, "id">;
+        return { id: docSnap.id, ...data };
+      })
+      .sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0));
+  }
+};
+
+export const fetchPendingClassJoinRequests = async (): Promise<ClassJoinRequestRecord[]> => {
+  try {
+    const snapshot = await getDocs(
+      query(
+        collection(db, "classJoinRequests"),
+        where("status", "==", "pending"),
+        orderBy("createdAt", "asc"),
+      ),
+    );
+
+    return snapshot.docs.map((docSnap) => {
+      const data = docSnap.data() as Omit<ClassJoinRequestRecord, "id">;
+      return { id: docSnap.id, ...data };
+    });
+  } catch {
+    const snapshot = await getDocs(query(collection(db, "classJoinRequests"), where("status", "==", "pending")));
+    return snapshot.docs.map((docSnap) => {
+      const data = docSnap.data() as Omit<ClassJoinRequestRecord, "id">;
+      return { id: docSnap.id, ...data };
+    });
+  }
+};
+
+export const approveClassJoinRequest = async (
+  requestId: string,
+  adminUid: string,
+): Promise<void> => {
+  const requestRef = doc(db, "classJoinRequests", requestId);
+  const requestSnap = await getDoc(requestRef);
+
+  if (!requestSnap.exists()) {
+    throw new Error("가입 신청 문서를 찾을 수 없습니다.");
+  }
+
+  const requestData = requestSnap.data() as ClassJoinRequestRecord;
+  if (requestData.status !== "pending") {
+    throw new Error("이미 처리된 신청입니다.");
+  }
+
+  await updateDoc(doc(db, "users", requestData.studentUid), {
+    classId: requestData.classId,
+    className: requestData.className,
+    updatedAt: serverTimestamp(),
+  });
+
+  await updateDoc(requestRef, {
+    status: "approved",
+    approvedBy: adminUid,
+    approvedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
 };
 
 export const fetchReportsByStudentUid = async (studentUid: string): Promise<ReportRecord[]> => {
