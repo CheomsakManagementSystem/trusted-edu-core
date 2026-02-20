@@ -15,7 +15,6 @@ import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 import { db, storage } from "@/lib/firebase";
 
 const STORAGE_UPLOAD_TIMEOUT_MS = 60_000;
-const FIRESTORE_WRITE_TIMEOUT_MS = 20_000;
 const PDFJS_VERSION = "4.10.38";
 
 export type MatchStatus = "auto_matched" | "needs_selection" | "unregistered";
@@ -110,6 +109,13 @@ export type ClassJoinRequestRecord = {
 };
 
 const METRIC_LABELS = ["독해력", "내용 이해력", "문제 이해력", "구성력", "표현력"] as const;
+const REQUIRED_SCORE_KEYS: Array<keyof ScoreBreakdown> = [
+  "reading",
+  "comprehension",
+  "problemUnderstanding",
+  "organization",
+  "expression",
+];
 
 type MetricLabel = (typeof METRIC_LABELS)[number];
 
@@ -169,7 +175,7 @@ const parseFileNameHint = (fileName: string): { name?: string; total?: number | 
 
 const normalizeText = (text: string) =>
   text
-    .replace(/\u0000/g, "")
+    .replaceAll("\u0000", "")
     .replace(/\r/g, "\n")
     .replace(/[ \t]+/g, " ")
     .replace(/\n{2,}/g, "\n")
@@ -518,12 +524,46 @@ export const prepareUploadCandidates = async (
   return candidates;
 };
 
+const hasScoreIntegrity = (scores: ScoreBreakdown) =>
+  REQUIRED_SCORE_KEYS.every((key) => Number.isFinite(scores[key]));
+
+const sumRequiredScores = (scores: ScoreBreakdown) =>
+  REQUIRED_SCORE_KEYS.reduce((acc, key) => acc + (scores[key] ?? 0), 0);
+
+const isPermissionDeniedError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const lowered = message.toLowerCase();
+  return (
+    lowered.includes("permission_denied") ||
+    lowered.includes("permission denied") ||
+    lowered.includes("permission-denied") ||
+    lowered.includes("storage/unauthorized") ||
+    lowered.includes("storage/unauthenticated")
+  );
+};
+
+const normalizePublishError = (error: unknown) => {
+  const fallback = "배포 처리에 실패했습니다.";
+  const reason = error instanceof Error ? error.message : fallback;
+  const lowered = reason.toLowerCase();
+
+  if (lowered.includes("unauthenticated")) {
+    return "로그인이 필요합니다.";
+  }
+
+  if (isPermissionDeniedError(error)) {
+    return `${reason}\nFirebase Storage 보안 규칙 확인이 필요합니다.`;
+  }
+
+  return reason;
+};
+
 const uploadPdfToStorage = async (
-  studentUid: string,
+  userId: string,
   file: File,
   onProgress?: (progress: number) => void,
 ): Promise<string> => {
-  const storageRef = ref(storage, `reports/${studentUid}/${Date.now()}_${file.name}`);
+  const storageRef = ref(storage, `reports/${userId}/${Date.now()}_${file.name}`);
   const task = uploadBytesResumable(storageRef, file);
 
   await new Promise<void>((resolve, reject) => {
@@ -582,6 +622,16 @@ export const publishReportBatch = async (
         throw new Error("학생 매칭이 완료되지 않았습니다.");
       }
 
+      if (row.parseError) {
+        throw new Error(`파싱 실패: ${row.parseError}`);
+      }
+
+      if (!hasScoreIntegrity(row.parsed.scores)) {
+        throw new Error(
+          "파싱 실패: 점수 5개(독해력/내용 이해력/문제 이해력/구성력/표현력)를 모두 입력해주세요.",
+        );
+      }
+
       const student = allStudents.find((entry) => entry.uid === row.selectedStudentUid);
       if (!student) {
         throw new Error("매칭된 학생 정보를 찾을 수 없습니다.");
@@ -592,42 +642,46 @@ export const publishReportBatch = async (
         onOverallProgress?.(baseProgress + fileProgress / uploadRows.length);
       });
 
-      const created = await Promise.race([
-        addDoc(collection(db, "reports"), {
-          uid,
-          classId: selectedClass.id,
-          className: selectedClass.name,
-          studentUid: student.uid,
-          studentId: student.studentId ?? null,
-          studentName: student.name,
-          sourceName: row.parsed.name || "",
-          writtenAt: row.parsed.writtenAt || "",
-          reviewer: row.parsed.reviewer || "",
-          essayTopic: row.parsed.essayTopic || "",
-          grade: row.parsed.grade || "",
-          feedback: row.parsed.feedback || "",
-          scores: row.parsed.scores,
-          averageScores: row.parsed.averageScores,
-          convertedScores: row.parsed.convertedScores,
-          parsedJson: row.parsed,
-          totalScore: row.parsed.scores.total ?? 0,
-          isRead: false,
-          fileUrl: url,
-          fileName: row.file.name,
-          createdAt: serverTimestamp(),
-        }),
-        new Promise<never>((_, reject) => {
-          setTimeout(() => {
-            reject(new Error("Firestore 저장 시간 초과(20초). 권한/네트워크를 확인하세요."));
-          }, FIRESTORE_WRITE_TIMEOUT_MS);
-        }),
-      ]);
+      const totalScore = row.parsed.scores.total ?? sumRequiredScores(row.parsed.scores);
+
+      const created = await addDoc(collection(db, "reports"), {
+        uid,
+        classId: selectedClass.id,
+        className: selectedClass.name,
+        studentUid: student.uid,
+        studentId: student.studentId ?? null,
+        studentName: student.name,
+        sourceName: row.parsed.name || "",
+        writtenAt: row.parsed.writtenAt || "",
+        reviewer: row.parsed.reviewer || "",
+        essayTopic: row.parsed.essayTopic || "",
+        grade: row.parsed.grade || "",
+        feedback: row.parsed.feedback || "",
+        scores: {
+          ...row.parsed.scores,
+          total: totalScore,
+        },
+        averageScores: row.parsed.averageScores,
+        convertedScores: row.parsed.convertedScores,
+        parsedJson: {
+          ...row.parsed,
+          scores: {
+            ...row.parsed.scores,
+            total: totalScore,
+          },
+        },
+        totalScore,
+        isRead: false,
+        fileUrl: url,
+        fileName: row.file.name,
+        createdAt: serverTimestamp(),
+      });
 
       successCount += 1;
       results.push({ candidateId: row.id, success: true, reportId: created.id });
       onOverallProgress?.(((i + 1) / uploadRows.length) * 100);
     } catch (error) {
-      const reason = error instanceof Error ? error.message : "배포 처리에 실패했습니다.";
+      const reason = normalizePublishError(error);
       failures.push(`${row.file.name}: ${reason}`);
       results.push({ candidateId: row.id, success: false, error: reason });
     }

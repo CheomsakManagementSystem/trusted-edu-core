@@ -106,13 +106,34 @@ export const classifyPdfFiles = (files: File[]) => {
   return { validFiles, invalidFiles };
 };
 
+const normalizeUploadError = (error: unknown) => {
+  const fallback = "업로드 또는 DB 동기화에 실패했습니다.";
+  const reason = error instanceof Error ? error.message : fallback;
+  const lowered = reason.toLowerCase();
+
+  if (lowered.includes("unauthenticated")) {
+    return "로그인이 필요합니다.";
+  }
+
+  if (
+    lowered.includes("permission denied") ||
+    lowered.includes("permission-denied") ||
+    lowered.includes("permission_denied") ||
+    lowered.includes("storage/unauthorized")
+  ) {
+    return `${reason}\nFirebase Storage 보안 규칙 확인이 필요합니다.`;
+  }
+
+  return reason;
+};
+
 const uploadSingleReport = async (
   validFile: ValidatedPdfFile,
   uid: string,
   onFileProgress?: (progress: number) => void,
 ) => {
   const { file, parsed } = validFile;
-  const storageRef = ref(storage, `reports/${parsed.studentId}/${file.name}`);
+  const storageRef = ref(storage, `reports/${parsed.studentId}/${Date.now()}_${file.name}`);
   const task = uploadBytesResumable(storageRef, file);
 
   await new Promise<void>((resolve, reject) => {
@@ -177,10 +198,7 @@ export const uploadValidatedReportsBatch = async (
     } catch (error) {
       failures.push({
         file: currentFile.file,
-        reason:
-          error instanceof Error
-            ? error.message
-            : "업로드 또는 DB 동기화에 실패했습니다.",
+        reason: normalizeUploadError(error),
       });
     }
   }

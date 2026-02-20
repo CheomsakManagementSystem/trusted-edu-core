@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { Loader2 } from "lucide-react";
 import {
   fetchClasses,
   fetchReportsByClassId,
@@ -33,6 +34,13 @@ const scoreFields: Array<{ key: keyof ScoreBreakdown; label: string }> = [
   { key: "organization", label: "구성력" },
   { key: "expression", label: "표현력" },
   { key: "total", label: "총점" },
+];
+const requiredScoreKeys: Array<keyof ScoreBreakdown> = [
+  "reading",
+  "comprehension",
+  "problemUnderstanding",
+  "organization",
+  "expression",
 ];
 
 const statusLabel = {
@@ -111,6 +119,14 @@ const UploadDashboard = () => {
         const deduped = parsedRows.filter((row) => !ids.has(row.id));
         return [...prev, ...deduped];
       });
+      const parseFailedCount = parsedRows.filter((row) => Boolean(row.parseError)).length;
+      if (parseFailedCount > 0) {
+        toast({
+          variant: "destructive",
+          title: "파싱 실패",
+          description: `${parseFailedCount}건에서 파싱 오류가 발생했습니다. 항목을 수동 보정해주세요.`,
+        });
+      }
       setProgress(0);
     } catch (error) {
       const reason = error instanceof Error ? error.message : "PDF 파싱에 실패했습니다.";
@@ -178,6 +194,11 @@ const UploadDashboard = () => {
   };
 
   const readyToPublish = useMemo(() => rows.filter((row) => row.selectedStudentUid), [rows]);
+  const hasAnyInvalidScoreRow = useMemo(
+    () =>
+      rows.some((row) => requiredScoreKeys.some((key) => !Number.isFinite(row.parsed.scores[key]))),
+    [rows],
+  );
   const readByReportId = useMemo(
     () => new Map(classReports.map((report) => [report.id, report.isRead])),
     [classReports],
@@ -186,6 +207,11 @@ const UploadDashboard = () => {
   const handlePublish = async () => {
     if (!user) {
       setMessage("로그인이 필요합니다.");
+      toast({
+        variant: "destructive",
+        title: "배포 실패",
+        description: "로그인이 필요합니다.",
+      });
       return;
     }
 
@@ -204,7 +230,18 @@ const UploadDashboard = () => {
       return;
     }
 
+    if (hasAnyInvalidScoreRow) {
+      setMessage("파싱 실패: 점수 5개(독해력/내용 이해력/문제 이해력/구성력/표현력)를 모두 입력해주세요.");
+      toast({
+        variant: "destructive",
+        title: "파싱 실패",
+        description: "점수 5개가 누락된 항목이 있어 배포할 수 없습니다.",
+      });
+      return;
+    }
+
     setUploading(true);
+    setProgress(0);
     setMessage("");
 
     try {
@@ -239,7 +276,7 @@ const UploadDashboard = () => {
         });
       } else {
         toast({
-          title: "대시보드 전송 완료",
+          title: "배포 완료!",
           description: `${result.successCount}건이 저장되었습니다.`,
         });
       }
@@ -478,10 +515,25 @@ const UploadDashboard = () => {
                 데이터가 유효한 행만 `reports` 컬렉션으로 전송되며 기본 `isRead=false`로 저장됩니다.
               </p>
             </div>
-            <Button onClick={handlePublish} disabled={uploading || rows.length === 0}>
-              {uploading ? "전송 중..." : "대시보드 전송"}
+            <Button onClick={handlePublish} disabled={uploading || loading || rows.length === 0}>
+              {uploading ? (
+                <span className="inline-flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  전송 중...
+                </span>
+              ) : (
+                "대시보드 전송"
+              )}
             </Button>
           </div>
+          {uploading && (
+            <div className="mt-3">
+              <Progress value={progress} className="h-2" />
+              <p className="mt-2 text-xs text-muted-foreground">
+                배포 진행 중입니다. 완료 전까지 중복 클릭이 비활성화됩니다.
+              </p>
+            </div>
+          )}
         </div>
 
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">
