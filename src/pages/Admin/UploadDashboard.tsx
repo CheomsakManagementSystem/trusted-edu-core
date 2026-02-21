@@ -15,7 +15,9 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { Loader2 } from "lucide-react";
 import {
+  assignPendingReportToStudent,
   fetchClasses,
+  fetchPendingReports,
   fetchReportsByClassId,
   fetchStudents,
   prepareUploadCandidates,
@@ -57,6 +59,7 @@ const UploadDashboard = () => {
   const [classes, setClasses] = useState<ClassLite[]>([]);
   const [students, setStudents] = useState<StudentLite[]>([]);
   const [classReports, setClassReports] = useState<ReportRecord[]>([]);
+  const [pendingReports, setPendingReports] = useState<ReportRecord[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string>("none");
   const [rows, setRows] = useState<UploadCandidate[]>([]);
   const [loading, setLoading] = useState(false);
@@ -65,6 +68,9 @@ const UploadDashboard = () => {
   const [message, setMessage] = useState("");
   const [progress, setProgress] = useState(0);
   const [studentSearch, setStudentSearch] = useState<Record<string, string>>({});
+  const [pendingSearch, setPendingSearch] = useState<Record<string, string>>({});
+  const [pendingSelectedStudent, setPendingSelectedStudent] = useState<Record<string, string>>({});
+  const [resolvingPendingId, setResolvingPendingId] = useState<string | null>(null);
 
   const selectedClass = useMemo(
     () => classes.find((item) => item.id === selectedClassId) ?? null,
@@ -81,6 +87,15 @@ const UploadDashboard = () => {
       const [classDocs, studentDocs] = await Promise.all([fetchClasses(), fetchStudents()]);
       setClasses(classDocs);
       setStudents(studentDocs);
+    };
+
+    run();
+  }, []);
+
+  useEffect(() => {
+    const run = async () => {
+      const pending = await fetchPendingReports();
+      setPendingReports(pending);
     };
 
     run();
@@ -193,7 +208,6 @@ const UploadDashboard = () => {
     });
   };
 
-  const readyToPublish = useMemo(() => rows.filter((row) => row.selectedStudentUid), [rows]);
   const hasAnyInvalidScoreRow = useMemo(
     () =>
       rows.some((row) => requiredScoreKeys.some((key) => !Number.isFinite(row.parsed.scores[key]))),
@@ -222,11 +236,6 @@ const UploadDashboard = () => {
 
     if (rows.length === 0) {
       setMessage("배포할 파일이 없습니다.");
-      return;
-    }
-
-    if (readyToPublish.length !== rows.length) {
-      setMessage("학생 미매칭 항목을 먼저 보정해주세요.");
       return;
     }
 
@@ -266,7 +275,12 @@ const UploadDashboard = () => {
         });
       });
 
-      setMessage(`배포 완료: 성공 ${result.successCount}건, 실패 ${result.failureCount}건`);
+      setMessage(
+        `배포 완료: 자동 배정 ${result.successCount}건, 보류 ${result.pendingCount}건, 실패 ${result.failureCount}건`,
+      );
+      if (result.pendingCount > 0) {
+        setMessage((prev) => `${prev}\n보류 건은 아래 '미배정 리포트 관리'에서 수동 배정할 수 있습니다.`);
+      }
       if (result.failureCount > 0) {
         setMessage((prev) => `${prev}\n${result.failures.join("\n")}`);
         toast({
@@ -283,6 +297,8 @@ const UploadDashboard = () => {
 
       const reports = await fetchReportsByClassId(selectedClass.id);
       setClassReports(reports);
+      const pending = await fetchPendingReports();
+      setPendingReports(pending);
     } catch (error) {
       const reason = error instanceof Error ? error.message : "배포 중 오류가 발생했습니다.";
       setMessage(reason);
@@ -297,11 +313,77 @@ const UploadDashboard = () => {
   };
 
   const handleRefreshReadStatus = async () => {
-    if (!selectedClass) {
+    if (selectedClass) {
+      const reports = await fetchReportsByClassId(selectedClass.id);
+      setClassReports(reports);
+    }
+    const pending = await fetchPendingReports();
+    setPendingReports(pending);
+  };
+
+  const getPendingCandidates = (report: ReportRecord) => {
+    const keyword = (pendingSearch[report.id] ?? "").trim().toLowerCase();
+    const exactNameMatches = report.sourceName?.trim()
+      ? students.filter((student) => student.name.trim() === report.sourceName.trim())
+      : [];
+    const base = exactNameMatches.length > 0 ? exactNameMatches : students;
+
+    if (!keyword) {
+      return base;
+    }
+
+    return base.filter((student) => {
+      return (
+        student.name.toLowerCase().includes(keyword) ||
+        student.email.toLowerCase().includes(keyword)
+      );
+    });
+  };
+
+  const handleAssignPending = async (report: ReportRecord) => {
+    const studentUid = pendingSelectedStudent[report.id];
+    if (!studentUid) {
+      toast({
+        variant: "destructive",
+        title: "연결 실패",
+        description: "연결할 학생을 선택해주세요.",
+      });
       return;
     }
-    const reports = await fetchReportsByClassId(selectedClass.id);
-    setClassReports(reports);
+
+    const target = students.find((student) => student.uid === studentUid);
+    if (!target) {
+      toast({
+        variant: "destructive",
+        title: "연결 실패",
+        description: "선택한 학생을 찾을 수 없습니다.",
+      });
+      return;
+    }
+
+    setResolvingPendingId(report.id);
+    try {
+      await assignPendingReportToStudent(report.id, target);
+      const [pendingRows, classRows] = await Promise.all([
+        fetchPendingReports(),
+        selectedClass ? fetchReportsByClassId(selectedClass.id) : Promise.resolve(classReports),
+      ]);
+      setPendingReports(pendingRows);
+      setClassReports(classRows);
+      toast({
+        title: "연결 완료",
+        description: `${target.name} 학생으로 리포트가 배정되었습니다.`,
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "리포트 배정에 실패했습니다.";
+      toast({
+        variant: "destructive",
+        title: "연결 실패",
+        description: reason,
+      });
+    } finally {
+      setResolvingPendingId(null);
+    }
   };
 
   return (
@@ -389,6 +471,9 @@ const UploadDashboard = () => {
                 <div key={row.id} className="rounded-md border border-border bg-background p-4">
                   <div className="mb-2 flex flex-wrap items-center gap-2">
                     <p className="text-sm font-semibold text-card-foreground">{row.file.name}</p>
+                    <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                      원본 {row.sourcePageLabel}
+                    </span>
                     <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                       {statusLabel[row.status]}
                     </span>
@@ -573,6 +658,77 @@ const UploadDashboard = () => {
             ))}
             {classReports.length === 0 && (
               <p className="text-sm text-muted-foreground">아직 배포된 리포트가 없습니다.</p>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-card p-5 shadow-card">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-card-foreground">미배정 리포트 관리</h3>
+            <p className="text-xs text-muted-foreground">대기 {pendingReports.length}건</p>
+          </div>
+          <div className="space-y-3">
+            {pendingReports.map((report) => {
+              const options = getPendingCandidates(report);
+              const isDuplicate = report.assignmentStatus === "duplicate_pending";
+              return (
+                <div key={report.id} className="rounded-md border border-border bg-background p-4">
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-semibold text-card-foreground">
+                      {report.sourceName || "이름 미추출"} | {report.fileName}
+                    </p>
+                    <span
+                      className={`rounded px-2 py-0.5 text-xs ${
+                        isDuplicate ? "bg-amber-500/10 text-amber-700" : "bg-zinc-500/10 text-zinc-700"
+                      }`}
+                    >
+                      {isDuplicate ? "동명이인 대기" : "미가입자 대기"}
+                    </span>
+                  </div>
+                  <p className="mb-3 text-xs text-muted-foreground">
+                    총점 {report.totalScore} / 등급 {report.grade || "-"} / 작성일 {report.writtenAt || "-"}
+                  </p>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                    <Input
+                      value={pendingSearch[report.id] ?? ""}
+                      onChange={(event) =>
+                        setPendingSearch((prev) => ({ ...prev, [report.id]: event.target.value }))
+                      }
+                      placeholder="가입 유저 검색 (이름/이메일)"
+                    />
+                    <Select
+                      value={pendingSelectedStudent[report.id] ?? "none"}
+                      onValueChange={(value) =>
+                        setPendingSelectedStudent((prev) => ({
+                          ...prev,
+                          [report.id]: value === "none" ? "" : value,
+                        }))
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="연결할 학생 선택" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">학생 선택</SelectItem>
+                        {options.map((student) => (
+                          <SelectItem key={student.uid} value={student.uid}>
+                            {student.name} ({student.email || "이메일 없음"})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      onClick={() => handleAssignPending(report)}
+                      disabled={resolvingPendingId === report.id}
+                    >
+                      {resolvingPendingId === report.id ? "연결 중..." : "학생 연결"}
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+            {pendingReports.length === 0 && (
+              <p className="text-sm text-muted-foreground">현재 보류 중인 리포트가 없습니다.</p>
             )}
           </div>
         </div>

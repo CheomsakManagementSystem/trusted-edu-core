@@ -19,6 +19,7 @@ const PDFJS_VERSION = "4.10.38";
 
 export type MatchStatus = "auto_matched" | "needs_selection" | "unregistered";
 export type JoinRequestStatus = "pending" | "approved" | "rejected";
+export type ReportAssignmentStatus = "completed" | "duplicate_pending" | "unassigned_pending";
 
 export type StudentLite = {
   uid: string;
@@ -60,6 +61,8 @@ export type ParsedPdfData = {
 export type UploadCandidate = {
   id: string;
   file: File;
+  sourcePage: number;
+  sourcePageLabel: string;
   parsed: ParsedPdfData;
   status: MatchStatus;
   candidates: StudentLite[];
@@ -75,9 +78,12 @@ export type ReportRecord = {
   uid: string;
   classId: string | null;
   className: string | null;
-  studentUid: string;
+  studentUid: string | null;
   studentId: string | null;
   studentName: string;
+  assignmentStatus?: ReportAssignmentStatus;
+  assignedAt?: Timestamp | null;
+  sourcePage?: number;
   sourceName: string;
   writtenAt: string;
   reviewer: string;
@@ -109,6 +115,7 @@ export type ClassJoinRequestRecord = {
 };
 
 const METRIC_LABELS = ["독해력", "내용 이해력", "문제 이해력", "구성력", "표현력"] as const;
+const STUDENT_SECTION_MARKER = /김윤환\s*class\s*첨삭\s*채점표/i;
 const REQUIRED_SCORE_KEYS: Array<keyof ScoreBreakdown> = [
   "reading",
   "comprehension",
@@ -479,6 +486,78 @@ export const extractPdfData = async (file: File): Promise<ParsedPdfData> => {
   }
 };
 
+const groupPagesByStudent = (pageTexts: string[]) => {
+  const groups: Array<{ pageStart: number; text: string }> = [];
+  let current: { pageStart: number; chunks: string[] } | null = null;
+
+  for (let index = 0; index < pageTexts.length; index += 1) {
+    const pageText = pageTexts[index]?.trim() ?? "";
+    if (!pageText) {
+      continue;
+    }
+
+    if (!current || STUDENT_SECTION_MARKER.test(pageText)) {
+      if (current && current.chunks.length > 0) {
+        groups.push({
+          pageStart: current.pageStart,
+          text: current.chunks.join("\n"),
+        });
+      }
+      current = { pageStart: index + 1, chunks: [pageText] };
+      continue;
+    }
+
+    current.chunks.push(pageText);
+  }
+
+  if (current && current.chunks.length > 0) {
+    groups.push({
+      pageStart: current.pageStart,
+      text: current.chunks.join("\n"),
+    });
+  }
+
+  if (groups.length > 0) {
+    return groups;
+  }
+
+  const merged = pageTexts.join("\n").trim();
+  if (!merged) {
+    return [];
+  }
+
+  return [{ pageStart: 1, text: merged }];
+};
+
+const extractPdfDataByStudent = async (
+  file: File,
+): Promise<Array<{ parsed: ParsedPdfData; sourcePage: number }>> => {
+  if (!/\.pdf$/i.test(file.name)) {
+    throw new Error("PDF 파일이 아닙니다.");
+  }
+
+  const pdfjs = await loadPdfJs();
+  const bytes = await file.arrayBuffer();
+  const pdf = await pdfjs.getDocument({ data: bytes }).promise;
+  const pageTexts: string[] = [];
+
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+    const page = await pdf.getPage(pageNumber);
+    const content = await page.getTextContent();
+    const text = (content.items as Array<{ str?: string }>)
+      .map((item) => item.str ?? "")
+      .join(" ")
+      .trim();
+    pageTexts.push(text);
+  }
+
+  const studentGroups = groupPagesByStudent(pageTexts);
+  return studentGroups.map((group) => ({
+    parsed: parsePdfText(group.text),
+    sourcePage: group.pageStart,
+  }));
+};
+
 const byName = (students: StudentLite[], name: string) => {
   const normalized = name.trim();
   if (!normalized) {
@@ -492,20 +571,21 @@ export const resolveMatchStatus = (
   classStudents: StudentLite[],
   allStudents: StudentLite[],
 ): Pick<UploadCandidate, "status" | "candidates" | "selectedStudentUid"> => {
-  const classMatches = byName(classStudents, parsedName);
+  const globalMatches = byName(allStudents, parsedName);
+  void classStudents;
 
-  if (classMatches.length === 1) {
+  if (globalMatches.length === 1) {
     return {
       status: "auto_matched",
-      candidates: classMatches,
-      selectedStudentUid: classMatches[0].uid,
+      candidates: globalMatches,
+      selectedStudentUid: globalMatches[0].uid,
     };
   }
 
-  if (classMatches.length > 1) {
+  if (globalMatches.length > 1) {
     return {
       status: "needs_selection",
-      candidates: classMatches,
+      candidates: globalMatches,
       selectedStudentUid: null,
     };
   }
@@ -534,38 +614,45 @@ export const prepareUploadCandidates = async (
 
   for (const file of files) {
     const fileHint = parseFileNameHint(file.name);
-    const base: UploadCandidate = {
-      id: `${file.name}-${file.lastModified}`,
-      file,
-      parsed: { ...EMPTY_PARSED },
-      status: "unregistered",
-      candidates: allStudents,
-      selectedStudentUid: null,
-    };
-
     try {
-      const parsed = await extractPdfData(file);
-      const merged = {
-        ...parsed,
-        name: parsed.name || fileHint.name || "",
-        scores: {
-          ...parsed.scores,
-          total: parsed.scores.total ?? parsed.convertedScores.total ?? fileHint.total ?? null,
-        },
-      };
-      const match = resolveMatchStatus(merged.name, classStudents, allStudents);
-      candidates.push({ ...base, parsed: merged, ...match });
+      const chunks = await extractPdfDataByStudent(file);
+      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+        const chunk = chunks[chunkIndex];
+        const merged = {
+          ...chunk.parsed,
+          name: chunk.parsed.name || fileHint.name || "",
+          scores: {
+            ...chunk.parsed.scores,
+            total: chunk.parsed.scores.total ?? chunk.parsed.convertedScores.total ?? fileHint.total ?? null,
+          },
+        };
+        const match = resolveMatchStatus(merged.name, classStudents, allStudents);
+        candidates.push({
+          id: `${file.name}-${file.lastModified}-${chunk.sourcePage}-${chunkIndex}`,
+          file,
+          sourcePage: chunk.sourcePage,
+          sourcePageLabel: `${chunk.sourcePage}p`,
+          parsed: merged,
+          ...match,
+        });
+      }
     } catch (error) {
       candidates.push({
-        ...base,
+        id: `${file.name}-${file.lastModified}-error`,
+        file,
+        sourcePage: 1,
+        sourcePageLabel: "1p",
         parsed: {
-          ...base.parsed,
+          ...EMPTY_PARSED,
           name: fileHint.name || "",
           scores: {
-            ...base.parsed.scores,
+            ...EMPTY_PARSED.scores,
             total: fileHint.total ?? null,
           },
         },
+        status: "unregistered",
+        candidates: allStudents,
+        selectedStudentUid: null,
         parseError: error instanceof Error ? error.message : "파싱 오류가 발생했습니다.",
       });
     }
@@ -653,14 +740,16 @@ export const publishReportBatch = async (
 ): Promise<{
   successCount: number;
   failureCount: number;
+  pendingCount: number;
   failures: string[];
   results: Array<{ candidateId: string; success: boolean; reportId?: string; error?: string }>;
 }> => {
   if (!uploadRows.length) {
-    return { successCount: 0, failureCount: 0, failures: [], results: [] };
+    return { successCount: 0, failureCount: 0, pendingCount: 0, failures: [], results: [] };
   }
 
   let successCount = 0;
+  let pendingCount = 0;
   const failures: string[] = [];
   const results: Array<{ candidateId: string; success: boolean; reportId?: string; error?: string }> = [];
 
@@ -668,10 +757,6 @@ export const publishReportBatch = async (
     const row = uploadRows[i];
 
     try {
-      if (!row.selectedStudentUid) {
-        throw new Error("학생 매칭이 완료되지 않았습니다.");
-      }
-
       if (row.parseError) {
         throw new Error(`파싱 실패: ${row.parseError}`);
       }
@@ -682,12 +767,24 @@ export const publishReportBatch = async (
         );
       }
 
-      const student = allStudents.find((entry) => entry.uid === row.selectedStudentUid);
-      if (!student) {
-        throw new Error("매칭된 학생 정보를 찾을 수 없습니다.");
-      }
+      const matched = row.parsed.name.trim()
+        ? allStudents.filter((entry) => entry.name.trim() === row.parsed.name.trim())
+        : [];
 
-      const url = await uploadPdfToStorage(student.uid, row.file, (fileProgress) => {
+      const forcedStudent = row.selectedStudentUid
+        ? allStudents.find((entry) => entry.uid === row.selectedStudentUid) ?? null
+        : null;
+
+      const completedStudent = forcedStudent ?? (matched.length === 1 ? matched[0] : null);
+      const assignmentStatus: ReportAssignmentStatus = completedStudent
+        ? "completed"
+        : matched.length > 1
+          ? "duplicate_pending"
+          : "unassigned_pending";
+
+      const storageOwnerUid = completedStudent?.uid ?? uid;
+
+      const url = await uploadPdfToStorage(storageOwnerUid, row.file, (fileProgress) => {
         const baseProgress = (i / uploadRows.length) * 100;
         onOverallProgress?.(baseProgress + fileProgress / uploadRows.length);
       });
@@ -698,9 +795,11 @@ export const publishReportBatch = async (
         uid,
         classId: selectedClass.id,
         className: selectedClass.name,
-        studentUid: student.uid,
-        studentId: student.studentId ?? null,
-        studentName: student.name,
+        studentUid: completedStudent?.uid ?? null,
+        studentId: completedStudent?.studentId ?? null,
+        studentName: completedStudent?.name ?? (row.parsed.name || ""),
+        assignmentStatus,
+        assignedAt: completedStudent ? serverTimestamp() : null,
         sourceName: row.parsed.name || "",
         writtenAt: row.parsed.writtenAt || "",
         reviewer: row.parsed.reviewer || "",
@@ -724,10 +823,15 @@ export const publishReportBatch = async (
         isRead: false,
         fileUrl: url,
         fileName: row.file.name,
+        sourcePage: row.sourcePage,
         createdAt: serverTimestamp(),
       });
 
-      successCount += 1;
+      if (assignmentStatus === "completed") {
+        successCount += 1;
+      } else {
+        pendingCount += 1;
+      }
       results.push({ candidateId: row.id, success: true, reportId: created.id });
       onOverallProgress?.(((i + 1) / uploadRows.length) * 100);
     } catch (error) {
@@ -740,6 +844,7 @@ export const publishReportBatch = async (
   return {
     successCount,
     failureCount: failures.length,
+    pendingCount,
     failures,
     results,
   };
@@ -899,14 +1004,12 @@ export const fetchReportsByStudentUid = async (studentUid: string): Promise<Repo
   const reportsRef = collection(db, "reports");
 
   try {
-    const snapshot = await getDocs(
-      query(reportsRef, where("studentUid", "==", studentUid), orderBy("createdAt", "desc")),
-    );
+    const snapshot = await getDocs(query(reportsRef, where("studentUid", "==", studentUid), orderBy("createdAt", "desc")));
 
     return snapshot.docs.map((docSnap) => {
       const data = docSnap.data() as Omit<ReportRecord, "id">;
       return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
-    });
+    }).filter((row) => row.assignmentStatus !== "duplicate_pending" && row.assignmentStatus !== "unassigned_pending");
   } catch {
     const snapshot = await getDocs(query(reportsRef, where("studentUid", "==", studentUid)));
 
@@ -915,12 +1018,53 @@ export const fetchReportsByStudentUid = async (studentUid: string): Promise<Repo
         const data = docSnap.data() as Omit<ReportRecord, "id">;
         return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
       })
+      .filter((row) => row.assignmentStatus !== "duplicate_pending" && row.assignmentStatus !== "unassigned_pending")
       .sort((a, b) => {
         const aMs = a.createdAt?.toMillis() ?? 0;
         const bMs = b.createdAt?.toMillis() ?? 0;
         return bMs - aMs;
       });
   }
+};
+
+export const fetchPendingReports = async (): Promise<ReportRecord[]> => {
+  const reportsRef = collection(db, "reports");
+  const statuses: ReportAssignmentStatus[] = ["duplicate_pending", "unassigned_pending"];
+
+  const fetchByStatus = async (status: ReportAssignmentStatus) => {
+    try {
+      const snapshot = await getDocs(
+        query(reportsRef, where("assignmentStatus", "==", status), orderBy("createdAt", "desc")),
+      );
+      return snapshot.docs.map((docSnap) => {
+        const data = docSnap.data() as Omit<ReportRecord, "id">;
+        return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
+      });
+    } catch {
+      const snapshot = await getDocs(query(reportsRef, where("assignmentStatus", "==", status)));
+      return snapshot.docs.map((docSnap) => {
+        const data = docSnap.data() as Omit<ReportRecord, "id">;
+        return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
+      });
+    }
+  };
+
+  const rows = (await Promise.all(statuses.map((status) => fetchByStatus(status)))).flat();
+  return rows.sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0));
+};
+
+export const assignPendingReportToStudent = async (
+  reportId: string,
+  student: Pick<StudentLite, "uid" | "name" | "studentId">,
+): Promise<void> => {
+  await updateDoc(doc(db, "reports", reportId), {
+    studentUid: student.uid,
+    studentId: student.studentId ?? null,
+    studentName: student.name,
+    assignmentStatus: "completed",
+    assignedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
 };
 
 export const fetchReportsByClassId = async (classId: string): Promise<ReportRecord[]> => {
