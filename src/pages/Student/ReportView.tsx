@@ -35,6 +35,36 @@ import {
   YAxis,
 } from "recharts";
 
+const cleanFeedbackText = (value: string): string => {
+  return value
+    .replace(/김윤환\s*class/gi, " ")
+    .replace(/첨삭\s*채점표/gi, " ")
+    .replace(/내용\s*형식/gi, " ")
+    .replace(/작성일\s*[:：]?\s*[0-9./-]+/gi, " ")
+    .replace(/수강반\s*[:：]?\s*[^\s]+/gi, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\s+([,.!?])/g, "$1")
+    .trim();
+};
+
+const splitFeedbackSections = (feedback: string): { summary: string; nextTask: string } => {
+  if (!feedback) {
+    return { summary: "", nextTask: "" };
+  }
+
+  const taskMatch = feedback.match(
+    /(향후\s*과제|다음\s*과제|개선\s*과제|과제)\s*[:：]?\s*(.+)$/i,
+  );
+
+  if (!taskMatch || taskMatch.index === undefined) {
+    return { summary: feedback, nextTask: "" };
+  }
+
+  const summary = feedback.slice(0, taskMatch.index).trim();
+  const nextTask = taskMatch[2]?.trim() ?? "";
+  return { summary, nextTask };
+};
+
 const ReportView = () => {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -62,8 +92,9 @@ const ReportView = () => {
 
       try {
         const records = await fetchReportsByStudentUid(user.uid);
-        setReports(records);
-        setSelectedReportId(records[0]?.id ?? "");
+        const ownRecords = records.filter((record) => record.studentUid === user.uid);
+        setReports(ownRecords);
+        setSelectedReportId(ownRecords[0]?.id ?? "");
       } catch (loadError) {
         setError(
           loadError instanceof Error
@@ -101,9 +132,15 @@ const ReportView = () => {
     run();
   }, [user?.uid]);
 
+  const studentReports = useMemo(
+    () => reports.filter((report) => report.studentUid === user?.uid),
+    [reports, user?.uid],
+  );
+
   const selectedReport = useMemo(
-    () => reports.find((report) => report.id === selectedReportId) ?? reports[0] ?? null,
-    [reports, selectedReportId],
+    () =>
+      studentReports.find((report) => report.id === selectedReportId) ?? studentReports[0] ?? null,
+    [studentReports, selectedReportId],
   );
 
   const latestPendingClassId = useMemo(() => {
@@ -146,12 +183,37 @@ const ReportView = () => {
 
   const trendData = useMemo(
     () =>
-      [...reports].reverse().map((report, index) => ({
+      [...studentReports].reverse().map((report, index) => ({
         round: `회차 ${index + 1}`,
         score: report.totalScore,
       })),
-    [reports],
+    [studentReports],
   );
+
+  const feedbackMeta = useMemo(() => {
+    if (!selectedReport) {
+      return {
+        reviewer: "-",
+        writtenAt: "-",
+        summary: "",
+        nextTask: "",
+      };
+    }
+
+    const reviewerFromFeedback =
+      selectedReport.feedback.match(/([가-힣]{2,4}\s*T)\b/)?.[1]?.trim() ?? "";
+    const writtenAtFromFeedback =
+      selectedReport.feedback.match(/(20\d{2}[./-]\d{1,2}[./-]\d{1,2})/)?.[1]?.trim() ?? "";
+    const cleanedFeedback = cleanFeedbackText(selectedReport.feedback || "");
+    const { summary, nextTask } = splitFeedbackSections(cleanedFeedback);
+
+    return {
+      reviewer: selectedReport.reviewer?.trim() || reviewerFromFeedback || "-",
+      writtenAt: selectedReport.writtenAt?.trim() || writtenAtFromFeedback || "-",
+      summary,
+      nextTask,
+    };
+  }, [selectedReport]);
 
   const handleOpenReport = async (report: ReportRecord) => {
     setSelectedReportId(report.id);
@@ -219,17 +281,17 @@ const ReportView = () => {
     <DashboardLayout>
       <div className="space-y-6">
         <div>
-          <h2 className="text-xl font-bold text-foreground">학생 리포트 분석</h2>
-          <p className="text-sm text-muted-foreground">
+          <h2 className="text-xl font-bold text-slate-900">학생 리포트 분석</h2>
+          <p className="text-sm text-slate-500">
             PDF 첨삭 데이터가 디지털 대시보드에 이식되어 회차별 성장을 확인할 수 있습니다.
           </p>
         </div>
 
-        <div className="rounded-lg border border-border bg-card p-5 shadow-card">
+        <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <h3 className="text-sm font-semibold text-card-foreground">반 가입 신청</h3>
-              <p className="text-xs text-muted-foreground">
+              <h3 className="text-sm font-semibold text-slate-900">반 가입 신청</h3>
+              <p className="text-xs text-slate-500">
                 현재 배정 반: {user?.className ?? "미배정"}
                 {latestPendingClassId ? " | 승인 대기 중" : ""}
               </p>
@@ -261,15 +323,29 @@ const ReportView = () => {
         {loading && <p className="text-sm text-muted-foreground">리포트를 불러오는 중입니다...</p>}
         {!loading && error && <p className="text-sm text-destructive">{error}</p>}
 
-        {!loading && !error && reports.length === 0 && (
+        {!loading && !error && studentReports.length === 0 && (
           <p className="text-sm text-muted-foreground">아직 배포된 리포트가 없습니다.</p>
         )}
 
-        {!loading && !error && reports.length > 0 && selectedReport && (
+        {!loading && !error && studentReports.length > 0 && selectedReport && (
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
             <div className="space-y-4 xl:col-span-2">
-              <div className="rounded-lg border border-border bg-card p-5 shadow-card">
-                <h3 className="mb-2 text-sm font-semibold text-card-foreground">총점 추이</h3>
+              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <h3 className="text-sm font-semibold text-slate-900">총점 추이</h3>
+                  <Select value={selectedReportId} onValueChange={setSelectedReportId}>
+                    <SelectTrigger className="w-full border-slate-200 sm:w-64">
+                      <SelectValue placeholder="회차 선택" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {studentReports.map((report, index) => (
+                        <SelectItem key={report.id} value={report.id}>
+                          회차 {studentReports.length - index} | {report.essayTopic || "논제 미기재"}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <div className="h-64">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={trendData}>
@@ -277,15 +353,15 @@ const ReportView = () => {
                       <XAxis dataKey="round" />
                       <YAxis domain={[0, 100]} />
                       <Tooltip />
-                      <Line type="monotone" dataKey="score" stroke="hsl(var(--primary))" strokeWidth={2} />
+                      <Line type="monotone" dataKey="score" stroke="#2563eb" strokeWidth={2} />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
               </div>
 
-              <div className="rounded-lg border border-border bg-card p-5 shadow-card">
-                <h3 className="mb-2 text-sm font-semibold text-card-foreground">5개 지표 레이더 차트</h3>
-                <div className="h-72">
+              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h3 className="mb-2 text-sm font-semibold text-slate-900">5개 지표 레이더 차트</h3>
+                <div className="mx-auto h-72 max-w-xl">
                   <ResponsiveContainer width="100%" height="100%">
                     <RadarChart data={radarData}>
                       <PolarGrid />
@@ -313,10 +389,10 @@ const ReportView = () => {
                 </div>
               </div>
 
-              <div className="rounded-lg border border-border bg-card p-5 shadow-card">
-                <h3 className="mb-3 text-sm font-semibold text-card-foreground">리포트 목록</h3>
+              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h3 className="mb-3 text-sm font-semibold text-slate-900">리포트 목록</h3>
                 <div className="space-y-2">
-                  {reports.map((report, index) => (
+                  {studentReports.map((report, index) => (
                     <button
                       key={report.id}
                       type="button"
@@ -328,8 +404,8 @@ const ReportView = () => {
                       }`}
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <p className="text-sm font-semibold text-card-foreground">
-                          회차 {reports.length - index} / {report.essayTopic || "논제 미기재"}
+                        <p className="text-sm font-semibold text-slate-900">
+                          회차 {studentReports.length - index} / {report.essayTopic || "논제 미기재"}
                         </p>
                         <span
                           className={`rounded px-2 py-0.5 text-xs ${
@@ -341,7 +417,7 @@ const ReportView = () => {
                           {report.isRead ? "읽음" : "새 리포트"}
                         </span>
                       </div>
-                      <p className="mt-1 text-xs text-muted-foreground">
+                      <p className="mt-1 text-xs text-slate-500">
                         총점 {report.totalScore} | 등급 {report.grade || "-"} | 날짜{" "}
                         {report.createdAt
                           ? report.createdAt.toDate().toLocaleDateString("ko-KR")
@@ -354,17 +430,38 @@ const ReportView = () => {
             </div>
 
             <div className="space-y-4">
-              <div className="rounded-lg border border-border bg-card p-5 shadow-card">
-                <h3 className="mb-2 text-sm font-semibold text-card-foreground">피드백 카드</h3>
-                <div className="space-y-2 text-sm">
-                  <p className="text-card-foreground">등급: <span className="font-semibold">{selectedReport.grade || "-"}</span></p>
-                  <p className="text-card-foreground">총점: <span className="font-semibold">{selectedReport.totalScore}</span></p>
-                  <p className="text-card-foreground">작성일: {selectedReport.writtenAt || "-"}</p>
-                  <p className="text-card-foreground">첨삭자: {selectedReport.reviewer || "-"}</p>
+              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <h3 className="text-sm font-semibold text-slate-900">피드백 카드</h3>
+                  <div className="text-right text-xs text-slate-500">
+                    <p>작성일 {feedbackMeta.writtenAt}</p>
+                    <p>첨삭자 {feedbackMeta.reviewer}</p>
+                  </div>
                 </div>
-                <p className="mt-3 rounded-md border border-border bg-background p-3 text-sm text-card-foreground">
-                  {selectedReport.feedback || "첨삭 총평이 없습니다."}
-                </p>
+                <div className="mb-4 grid grid-cols-2 gap-2">
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-xs text-slate-500">총점</p>
+                    <p className="text-lg font-bold text-blue-700">{selectedReport.totalScore}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-xs text-slate-500">등급</p>
+                    <p className="text-lg font-bold text-emerald-700">{selectedReport.grade || "-"}</p>
+                  </div>
+                </div>
+                <div className="space-y-3 text-sm text-slate-800">
+                  <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                    <p className="mb-1 text-xs font-semibold text-slate-500">[선생님 총평]</p>
+                    <p className="leading-relaxed">
+                      {feedbackMeta.summary || "첨삭 총평이 없습니다."}
+                    </p>
+                  </div>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                    <p className="mb-1 text-xs font-semibold text-slate-500">[향후 과제]</p>
+                    <p className="leading-relaxed">
+                      {feedbackMeta.nextTask || "향후 과제가 명시되지 않았습니다."}
+                    </p>
+                  </div>
+                </div>
                 <Button
                   className="mt-3 w-full"
                   variant="outline"
@@ -374,12 +471,12 @@ const ReportView = () => {
                 </Button>
               </div>
 
-              <div className="rounded-lg border border-border bg-card p-5 shadow-card">
-                <h3 className="mb-2 text-sm font-semibold text-card-foreground">원본 PDF 미리보기</h3>
+              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h3 className="mb-2 text-sm font-semibold text-slate-900">원본 PDF 미리보기</h3>
                 <iframe
                   title="Report PDF Viewer"
                   src={selectedReport.fileUrl}
-                  className="h-[560px] w-full rounded border border-border"
+                  className="h-[560px] w-full rounded border border-slate-200"
                 />
               </div>
             </div>

@@ -119,6 +119,14 @@ const REQUIRED_SCORE_KEYS: Array<keyof ScoreBreakdown> = [
 
 type MetricLabel = (typeof METRIC_LABELS)[number];
 
+const METRIC_ALIASES: Record<MetricLabel, string[]> = {
+  독해력: ["독해력", "독해 력", "독 해력"],
+  "내용 이해력": ["내용 이해력", "내용이해력", "내옹 이해력", "내요 이해력"],
+  "문제 이해력": ["문제 이해력", "문제이해력", "문제 이해 력"],
+  구성력: ["구성력", "구성 력"],
+  표현력: ["표현력", "표현 력"],
+};
+
 const EMPTY_PARSED: ParsedPdfData = {
   name: "",
   className: "",
@@ -177,9 +185,17 @@ const normalizeText = (text: string) =>
   text
     .replaceAll("\u0000", "")
     .replace(/\r/g, "\n")
+    .replace(/김윤환\s*class/gi, " ")
+    .replace(/첨삭\s*채점표/gi, " ")
+    .replace(/내용\s*형식/gi, " ")
     .replace(/[ \t]+/g, " ")
     .replace(/\n{2,}/g, "\n")
     .replace(/\(\s*\d+(?:\.\d+)?\s*점\s*만점\s*\)/g, "")
+    .replace(/내옹\s*이해력/g, "내용 이해력")
+    .replace(/내요\s*이해력/g, "내용 이해력")
+    .replace(/내용이해력/g, "내용 이해력")
+    .replace(/문제이해력/g, "문제 이해력")
+    .replace(/독\s*해력/g, "독해력")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -218,23 +234,34 @@ const extractField = (text: string, labels: string[]): string => {
 };
 
 const getMetricSegment = (text: string, label: MetricLabel) => {
-  const start = text.search(new RegExp(escapeRegex(label), "i"));
+  const aliases = METRIC_ALIASES[label];
+  const matchedAlias = aliases.find((alias) => new RegExp(escapeRegex(alias), "i").test(text));
+  if (!matchedAlias) {
+    return "";
+  }
+  const start = text.search(new RegExp(escapeRegex(matchedAlias), "i"));
   if (start < 0) {
     return "";
   }
 
   const nextLabels = METRIC_LABELS.filter((current) => current !== label)
     .map((current) => {
-      const idx = text.slice(start + label.length).search(new RegExp(escapeRegex(current), "i"));
+      const currentAliases = METRIC_ALIASES[current];
+      const slice = text.slice(start + matchedAlias.length);
+      const aliasIndices = currentAliases
+        .map((alias) => slice.search(new RegExp(escapeRegex(alias), "i")))
+        .filter((idx) => idx >= 0);
+      const idx = aliasIndices.length > 0 ? Math.min(...aliasIndices) : -1;
       if (idx < 0) {
         return Number.POSITIVE_INFINITY;
       }
-      return start + label.length + idx;
+      return start + matchedAlias.length + idx;
     })
     .filter(Number.isFinite);
 
-  const nextTotalIdx = text.slice(start + label.length).search(/총점\s*[:：]?/i);
-  const totalIdx = nextTotalIdx < 0 ? Number.POSITIVE_INFINITY : start + label.length + nextTotalIdx;
+  const nextTotalIdx = text.slice(start + matchedAlias.length).search(/총점\s*[:：]?/i);
+  const totalIdx =
+    nextTotalIdx < 0 ? Number.POSITIVE_INFINITY : start + matchedAlias.length + nextTotalIdx;
   const end = Math.min(...nextLabels, totalIdx, start + 220);
 
   return text.slice(start, end);
@@ -254,14 +281,37 @@ const parseMetricTriple = (segment: string): [number | null, number | null, numb
   ];
 };
 
+const sanitizeFeedback = (input: string): string => {
+  return input
+    .replace(/김윤환\s*class/gi, " ")
+    .replace(/첨삭\s*채점표/gi, " ")
+    .replace(/내용\s*형식/gi, " ")
+    .replace(/작성일\s*[:：]?\s*[0-9./-]+/gi, " ")
+    .replace(/수강반\s*[:：]?\s*[^\s]+/gi, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\s+([,.!?])/g, "$1")
+    .trim();
+};
+
 const extractFeedback = (text: string): string => {
-  const start = text.search(/첨삭\s*총평\s*[:：]?/i);
+  const start = text.search(/(첨삭\s*총평|선생님\s*총평|총평)\s*[:：]?/i);
   if (start < 0) {
     return "";
   }
 
-  const sliced = text.slice(start).replace(/첨삭\s*총평\s*[:：]?/i, "").trim();
-  const stopLabels = [/\b작성일\b/i, /\b논제\b/i, /\b등급\b/i, /\b총점\b/i, /\d+\s*\/\s*\d+\s*페이지/i];
+  const sliced = text
+    .slice(start)
+    .replace(/(첨삭\s*총평|선생님\s*총평|총평)\s*[:：]?/i, "")
+    .trim();
+  const stopLabels = [
+    /\b작성일\b/i,
+    /\b논제\b/i,
+    /\b등급\b/i,
+    /\b총점\b/i,
+    /\b수강반\b/i,
+    /\b내용\s*형식\b/i,
+    /\d+\s*\/\s*\d+\s*페이지/i,
+  ];
 
   let endIndex = sliced.length;
   for (const stop of stopLabels) {
@@ -271,7 +321,7 @@ const extractFeedback = (text: string): string => {
     }
   }
 
-  return sliced.slice(0, endIndex).trim();
+  return sanitizeFeedback(sliced.slice(0, endIndex).trim());
 };
 
 const parsePdfText = (rawText: string): ParsedPdfData => {
