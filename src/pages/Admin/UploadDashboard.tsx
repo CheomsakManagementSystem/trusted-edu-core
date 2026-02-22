@@ -6,6 +6,14 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -71,6 +79,7 @@ const UploadDashboard = () => {
   const [pendingSearch, setPendingSearch] = useState<Record<string, string>>({});
   const [pendingSelectedStudent, setPendingSelectedStudent] = useState<Record<string, string>>({});
   const [resolvingPendingId, setResolvingPendingId] = useState<string | null>(null);
+  const [manualMatchTargetId, setManualMatchTargetId] = useState<string | null>(null);
 
   const selectedClass = useMemo(
     () => classes.find((item) => item.id === selectedClassId) ?? null,
@@ -134,6 +143,12 @@ const UploadDashboard = () => {
         const deduped = parsedRows.filter((row) => !ids.has(row.id));
         return [...prev, ...deduped];
       });
+      const firstDuplicate = parsedRows.find(
+        (row) => row.status === "needs_selection" && row.candidates.length > 1,
+      );
+      if (firstDuplicate) {
+        setManualMatchTargetId(firstDuplicate.id);
+      }
       const parseFailedCount = parsedRows.filter((row) => Boolean(row.parseError)).length;
       if (parseFailedCount > 0) {
         toast({
@@ -217,6 +232,10 @@ const UploadDashboard = () => {
     () => new Map(classReports.map((report) => [report.id, report.isRead])),
     [classReports],
   );
+  const manualMatchTarget = useMemo(
+    () => rows.find((row) => row.id === manualMatchTargetId) ?? null,
+    [manualMatchTargetId, rows],
+  );
 
   const handlePublish = async () => {
     if (!user) {
@@ -278,6 +297,9 @@ const UploadDashboard = () => {
       setMessage(
         `배포 완료: 자동 배정 ${result.successCount}건, 보류 ${result.pendingCount}건, 실패 ${result.failureCount}건`,
       );
+      if (result.autoAssignedNotices.length > 0) {
+        setMessage((prev) => `${prev}\n${result.autoAssignedNotices.join("\n")}`);
+      }
       if (result.pendingCount > 0) {
         setMessage((prev) => `${prev}\n보류 건은 아래 '미배정 리포트 관리'에서 수동 배정할 수 있습니다.`);
       }
@@ -384,6 +406,27 @@ const UploadDashboard = () => {
     } finally {
       setResolvingPendingId(null);
     }
+  };
+
+  const handleManualMatchApply = (studentUid: string) => {
+    if (!manualMatchTargetId) {
+      return;
+    }
+    const target = students.find((student) => student.uid === studentUid);
+    if (!target) {
+      return;
+    }
+
+    updateRow(manualMatchTargetId, (row) => ({
+      ...row,
+      selectedStudentUid: target.uid,
+      status: "needs_selection",
+    }));
+    setManualMatchTargetId(null);
+    toast({
+      title: "수동 매칭 완료",
+      description: `${target.name} (${target.email}) 유저로 배정했습니다.`,
+    });
   };
 
   return (
@@ -523,6 +566,15 @@ const UploadDashboard = () => {
                         ))}
                       </SelectContent>
                     </Select>
+                    {row.status === "needs_selection" && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setManualMatchTargetId(row.id)}
+                      >
+                        동명이인 수동 매칭
+                      </Button>
+                    )}
                   </div>
 
                   <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -738,6 +790,40 @@ const UploadDashboard = () => {
             {message}
           </pre>
         )}
+
+        <Dialog open={Boolean(manualMatchTarget)} onOpenChange={(open) => !open && setManualMatchTargetId(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>동명이인 수동 매칭</DialogTitle>
+              <DialogDescription>
+                이메일을 확인해 정확한 계정을 선택하세요. 선택 전까지 이 리포트는 보류됩니다.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-card-foreground">
+                대상 이름: {manualMatchTarget?.parsed.name || "이름 미추출"}
+              </p>
+              <div className="max-h-72 space-y-2 overflow-y-auto rounded-md border border-border p-2">
+                {(manualMatchTarget?.candidates ?? []).map((candidate) => (
+                  <button
+                    key={candidate.uid}
+                    type="button"
+                    onClick={() => handleManualMatchApply(candidate.uid)}
+                    className="w-full rounded-md border border-border px-3 py-2 text-left text-sm hover:border-primary/50 hover:bg-primary/5"
+                  >
+                    <p className="font-medium text-card-foreground">{candidate.name}</p>
+                    <p className="text-xs text-muted-foreground">{candidate.email || "이메일 없음"}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setManualMatchTargetId(null)}>
+                닫기
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </DashboardLayout>
   );

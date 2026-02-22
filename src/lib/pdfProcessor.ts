@@ -2,14 +2,22 @@ import {
   Timestamp,
   addDoc,
   collection,
+  deleteDoc,
+  documentId,
   doc,
   getDoc,
   getDocs,
+  limit,
+  orderBy,
+  QueryConstraint,
+  QueryDocumentSnapshot,
+  DocumentData,
+  writeBatch,
   query,
   serverTimestamp,
+  startAfter,
   updateDoc,
   where,
-  orderBy,
 } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 import { db, storage } from "@/lib/firebase";
@@ -82,8 +90,10 @@ export type ReportRecord = {
   studentId: string | null;
   studentName: string;
   assignmentStatus?: ReportAssignmentStatus;
+  status?: "completed" | "pending";
   assignedAt?: Timestamp | null;
   sourcePage?: number;
+  pageNumber?: number;
   sourceName: string;
   writtenAt: string;
   reviewer: string;
@@ -295,6 +305,12 @@ const sanitizeFeedback = (input: string): string => {
     .replace(/내용\s*형식/gi, " ")
     .replace(/작성일\s*[:：]?\s*[0-9./-]+/gi, " ")
     .replace(/수강반\s*[:：]?\s*[^\s]+/gi, " ")
+    .replace(/(?:이름|성명|학생명)\s*[:：]?\s*[가-힣A-Za-z]{2,10}/gi, " ")
+    .replace(/(?:독해력|내용\s*이해력|문제\s*이해력|구성력|표현력|총점)\s*[:：]?\s*-?\d+(?:\.\d+)?/gi, " ")
+    .replace(/(?:독해력|내용\s*이해력|문제\s*이해력|구성력|표현력|총점|등급)\s*[:：]?/gi, " ")
+    .replace(/\b(?:19|20)\d{2}[./-]\d{1,2}[./-]\d{1,2}\b/g, " ")
+    .replace(/\b\d{1,3}(?:\.\d+)?\s*점\b/g, " ")
+    .replace(/\b\d{1,3}\s*\/\s*\d{1,3}\b/g, " ")
     .replace(/\s+/g, " ")
     .replace(/\s+([,.!?])/g, "$1")
     .trim();
@@ -316,6 +332,14 @@ const extractFeedback = (text: string): string => {
     /\b등급\b/i,
     /\b총점\b/i,
     /\b수강반\b/i,
+    /\b이름\b/i,
+    /\b성명\b/i,
+    /\b학생명\b/i,
+    /\b독해력\b/i,
+    /\b내용\s*이해력\b/i,
+    /\b문제\s*이해력\b/i,
+    /\b구성력\b/i,
+    /\b표현력\b/i,
     /\b내용\s*형식\b/i,
     /\d+\s*\/\s*\d+\s*페이지/i,
   ];
@@ -389,10 +413,14 @@ const parsePdfText = (rawText: string): ParsedPdfData => {
 
 type PdfJsModule = {
   GlobalWorkerOptions: { workerSrc: string };
-  getDocument: (params: { data: ArrayBuffer }) => {
+  getDocument: (params: { data?: ArrayBuffer; url?: string }) => {
     promise: Promise<{
       numPages: number;
       getPage: (pageNumber: number) => Promise<{
+        getViewport?: (params: { scale: number }) => { width: number; height: number };
+        render?: (params: { canvasContext: CanvasRenderingContext2D; viewport: { width: number; height: number } }) => {
+          promise: Promise<void>;
+        };
         getTextContent: () => Promise<{
           items: Array<{ str?: string }>;
         }>;
@@ -741,15 +769,24 @@ export const publishReportBatch = async (
   successCount: number;
   failureCount: number;
   pendingCount: number;
+  autoAssignedNotices: string[];
   failures: string[];
   results: Array<{ candidateId: string; success: boolean; reportId?: string; error?: string }>;
 }> => {
   if (!uploadRows.length) {
-    return { successCount: 0, failureCount: 0, pendingCount: 0, failures: [], results: [] };
+    return {
+      successCount: 0,
+      failureCount: 0,
+      pendingCount: 0,
+      autoAssignedNotices: [],
+      failures: [],
+      results: [],
+    };
   }
 
   let successCount = 0;
   let pendingCount = 0;
+  const autoAssignedNotices: string[] = [];
   const failures: string[] = [];
   const results: Array<{ candidateId: string; success: boolean; reportId?: string; error?: string }> = [];
 
@@ -799,6 +836,7 @@ export const publishReportBatch = async (
         studentId: completedStudent?.studentId ?? null,
         studentName: completedStudent?.name ?? (row.parsed.name || ""),
         assignmentStatus,
+        status: completedStudent ? "completed" : "pending",
         assignedAt: completedStudent ? serverTimestamp() : null,
         sourceName: row.parsed.name || "",
         writtenAt: row.parsed.writtenAt || "",
@@ -824,11 +862,15 @@ export const publishReportBatch = async (
         fileUrl: url,
         fileName: row.file.name,
         sourcePage: row.sourcePage,
+        pageNumber: row.sourcePage,
         createdAt: serverTimestamp(),
       });
 
       if (assignmentStatus === "completed") {
         successCount += 1;
+        if (!forcedStudent && matched.length === 1) {
+          autoAssignedNotices.push(`${completedStudent?.name} 학생에게 전송합니다.`);
+        }
       } else {
         pendingCount += 1;
       }
@@ -845,6 +887,7 @@ export const publishReportBatch = async (
     successCount,
     failureCount: failures.length,
     pendingCount,
+    autoAssignedNotices,
     failures,
     results,
   };
@@ -1062,6 +1105,7 @@ export const assignPendingReportToStudent = async (
     studentId: student.studentId ?? null,
     studentName: student.name,
     assignmentStatus: "completed",
+    status: "completed",
     assignedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
@@ -1098,4 +1142,127 @@ export const markReportAsRead = async (reportId: string): Promise<void> => {
   } catch {
     // 읽음 처리 실패가 사용자 동작을 막지 않도록 무시
   }
+};
+
+const chunkBy = <T>(rows: T[], size: number): T[][] => {
+  const chunks: T[][] = [];
+  for (let index = 0; index < rows.length; index += size) {
+    chunks.push(rows.slice(index, index + size));
+  }
+  return chunks;
+};
+
+export const isolateStudentReports = async (studentUid: string): Promise<void> => {
+  const reportsRef = collection(db, "reports");
+  const snapshot = await getDocs(query(reportsRef, where("studentUid", "==", studentUid)));
+  const docs = snapshot.docs;
+
+  for (const batchDocs of chunkBy(docs, 400)) {
+    const batch = writeBatch(db);
+    for (const reportDoc of batchDocs) {
+      batch.update(reportDoc.ref, {
+        studentUid: null,
+        studentId: null,
+        studentName: reportDoc.data().sourceName ?? "",
+        assignmentStatus: "unassigned_pending",
+        status: "pending",
+        assignedAt: null,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    await batch.commit();
+  }
+};
+
+export const deleteStudentAccountData = async (studentUid: string): Promise<void> => {
+  await isolateStudentReports(studentUid);
+  await deleteDoc(doc(db, "users", studentUid));
+};
+
+export const resetSystemData = async (): Promise<{
+  deletedUsers: number;
+  deletedReports: number;
+}> => {
+  const collectAllDocs = async (
+    collectionName: string,
+    extraConstraints: QueryConstraint[] = [],
+  ): Promise<QueryDocumentSnapshot<DocumentData>[]> => {
+    const docs: QueryDocumentSnapshot<DocumentData>[] = [];
+    let cursor: QueryDocumentSnapshot<DocumentData> | null = null;
+
+    while (true) {
+      const constraints: QueryConstraint[] = [
+        ...extraConstraints,
+        orderBy(documentId()),
+        limit(400),
+      ];
+      if (cursor) {
+        constraints.push(startAfter(cursor));
+      }
+
+      const snapshot = await getDocs(query(collection(db, collectionName), ...constraints));
+      if (snapshot.empty) {
+        break;
+      }
+      docs.push(...snapshot.docs);
+      cursor = snapshot.docs[snapshot.docs.length - 1];
+    }
+
+    return docs;
+  };
+
+  const userDocs = await collectAllDocs("users", [where("role", "==", "student")]);
+  const reportDocs = await collectAllDocs("reports");
+
+  for (const batchDocs of chunkBy(userDocs, 400)) {
+    const batch = writeBatch(db);
+    for (const studentDoc of batchDocs) {
+      batch.delete(studentDoc.ref);
+    }
+    await batch.commit();
+  }
+
+  for (const batchDocs of chunkBy(reportDocs, 400)) {
+    const batch = writeBatch(db);
+    for (const reportDoc of batchDocs) {
+      batch.delete(reportDoc.ref);
+    }
+    await batch.commit();
+  }
+
+  return {
+    deletedUsers: userDocs.length,
+    deletedReports: reportDocs.length,
+  };
+};
+
+export const renderSinglePdfPage = async (
+  fileUrl: string,
+  pageNumber: number,
+  canvas: HTMLCanvasElement,
+): Promise<void> => {
+  const pdfjs = await loadPdfJs();
+  const pdf = await pdfjs.getDocument({ url: fileUrl }).promise;
+  const safePage = Math.max(1, Math.min(pageNumber, pdf.numPages));
+  const page = await pdf.getPage(safePage);
+
+  if (!page.getViewport || !page.render) {
+    throw new Error("PDF 렌더링 엔진이 페이지 뷰포트를 지원하지 않습니다.");
+  }
+
+  const viewport = page.getViewport({ scale: 1.25 });
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("캔버스 컨텍스트를 가져올 수 없습니다.");
+  }
+
+  const pixelRatio = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(viewport.width * pixelRatio);
+  canvas.height = Math.floor(viewport.height * pixelRatio);
+  canvas.style.width = `${Math.floor(viewport.width)}px`;
+  canvas.style.height = `${Math.floor(viewport.height)}px`;
+
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  context.clearRect(0, 0, viewport.width, viewport.height);
+  await page.render({ canvasContext: context, viewport }).promise;
 };

@@ -23,10 +23,12 @@ import {
 } from "@/components/ui/select";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/contexts/AuthContext";
+import { useToast } from "@/hooks/use-toast";
 import {
   approveClassJoinRequest,
   fetchClasses,
   fetchPendingClassJoinRequests,
+  resetSystemData,
   fetchStudents,
   type ClassJoinRequestRecord,
   type ClassLite,
@@ -40,6 +42,7 @@ type ClassFormState = {
 
 const ClassManager = () => {
   const { user } = useAuth();
+  const { toast } = useToast();
   const [classes, setClasses] = useState<ClassLite[]>([]);
   const [students, setStudents] = useState<StudentLite[]>([]);
   const [pendingRequests, setPendingRequests] = useState<ClassJoinRequestRecord[]>([]);
@@ -232,6 +235,40 @@ const ClassManager = () => {
     }
   };
 
+  const handleSystemReset = async () => {
+    const confirmed = window.prompt("시스템 초기화를 진행하려면 RESET 을 입력하세요.");
+    if (confirmed !== "RESET") {
+      setMessage("시스템 초기화가 취소되었습니다.");
+      return;
+    }
+
+    setLoading(true);
+    setMessage("");
+    try {
+      const result = await resetSystemData();
+      await loadData();
+      setCheckedStudentUids([]);
+      setSelectedClassId("none");
+      setMessage(
+        `시스템 초기화 완료: 학생 사용자 ${result.deletedUsers}건, 리포트 ${result.deletedReports}건 삭제`,
+      );
+      toast({
+        title: "시스템 초기화 완료",
+        description: `학생 ${result.deletedUsers}건 / 리포트 ${result.deletedReports}건 삭제`,
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "시스템 초기화에 실패했습니다.";
+      setMessage(reason);
+      toast({
+        variant: "destructive",
+        title: "시스템 초기화 실패",
+        description: reason,
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -299,6 +336,16 @@ const ClassManager = () => {
               <p className="text-sm text-muted-foreground">등록된 반이 없습니다.</p>
             )}
           </div>
+        </div>
+
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-5 shadow-card">
+          <h3 className="mb-2 text-sm font-semibold text-destructive">시스템 초기화</h3>
+          <p className="mb-3 text-xs text-destructive/90">
+            관리자 계정을 제외한 users(학생)와 reports 컬렉션을 일괄 삭제합니다.
+          </p>
+          <Button variant="destructive" onClick={handleSystemReset} disabled={loading}>
+            시스템 초기화 실행
+          </Button>
         </div>
 
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">

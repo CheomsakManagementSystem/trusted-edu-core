@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -11,15 +11,19 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import {
+  deleteStudentAccountData,
   fetchClasses,
   fetchMyClassJoinRequests,
   fetchReportsByStudentUid,
   markReportAsRead,
+  renderSinglePdfPage,
   submitClassJoinRequest,
   type ClassJoinRequestRecord,
   type ClassLite,
   type ReportRecord,
 } from "@/lib/pdfProcessor";
+import { auth } from "@/lib/firebase";
+import { deleteUser } from "firebase/auth";
 import {
   CartesianGrid,
   Line,
@@ -78,6 +82,10 @@ const ReportView = () => {
   const [joinRequests, setJoinRequests] = useState<ClassJoinRequestRecord[]>([]);
   const [selectedClassId, setSelectedClassId] = useState("none");
   const [joinLoading, setJoinLoading] = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [pdfError, setPdfError] = useState("");
+  const [withdrawing, setWithdrawing] = useState(false);
+  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
     const run = async () => {
@@ -277,6 +285,71 @@ const ReportView = () => {
     }
   };
 
+  useEffect(() => {
+    const run = async () => {
+      if (!selectedReport || !previewCanvasRef.current) {
+        return;
+      }
+
+      setPdfLoading(true);
+      setPdfError("");
+      try {
+        const pageNumber = selectedReport.pageNumber ?? selectedReport.sourcePage ?? 1;
+        await renderSinglePdfPage(selectedReport.fileUrl, pageNumber, previewCanvasRef.current);
+      } catch (renderError) {
+        setPdfError(
+          renderError instanceof Error
+            ? renderError.message
+            : "PDF 미리보기를 렌더링하지 못했습니다.",
+        );
+      } finally {
+        setPdfLoading(false);
+      }
+    };
+
+    run();
+  }, [selectedReport]);
+
+  const handleWithdrawAccount = async () => {
+    if (!user?.uid || !auth.currentUser) {
+      toast({
+        variant: "destructive",
+        title: "회원 탈퇴 실패",
+        description: "인증 상태를 확인할 수 없습니다.",
+      });
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "탈퇴 시 Auth/Firestore 계정이 삭제되고 기존 리포트는 미배정 처리됩니다. 계속하시겠습니까?",
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setWithdrawing(true);
+    try {
+      await deleteStudentAccountData(user.uid);
+      await deleteUser(auth.currentUser);
+      toast({
+        title: "회원 탈퇴 완료",
+        description: "계정이 삭제되었습니다.",
+      });
+      window.location.href = "/login";
+    } catch (withdrawError) {
+      toast({
+        variant: "destructive",
+        title: "회원 탈퇴 실패",
+        description:
+          withdrawError instanceof Error
+            ? withdrawError.message
+            : "탈퇴 처리 중 오류가 발생했습니다. 다시 로그인 후 재시도하세요.",
+      });
+    } finally {
+      setWithdrawing(false);
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -462,22 +535,34 @@ const ReportView = () => {
                     </p>
                   </div>
                 </div>
-                <Button
-                  className="mt-3 w-full"
-                  variant="outline"
-                  onClick={() => window.open(selectedReport.fileUrl, "_blank", "noopener,noreferrer")}
-                >
-                  원본 PDF 열기
-                </Button>
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h3 className="mb-2 text-sm font-semibold text-slate-900">원본 PDF 미리보기</h3>
-                <iframe
-                  title="Report PDF Viewer"
-                  src={selectedReport.fileUrl}
-                  className="h-[560px] w-full rounded border border-slate-200"
-                />
+                {pdfLoading && <p className="text-sm text-muted-foreground">페이지 렌더링 중입니다...</p>}
+                {pdfError && <p className="text-sm text-destructive">{pdfError}</p>}
+                <div className="overflow-auto rounded border border-slate-200 bg-slate-50 p-2">
+                  <canvas ref={previewCanvasRef} className="mx-auto h-auto max-w-full" />
+                </div>
+                <p className="mt-2 text-xs text-slate-500">
+                  저장된 페이지 번호({selectedReport.pageNumber ?? selectedReport.sourcePage ?? 1}p) 한 장만
+                  렌더링합니다.
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-red-200 bg-red-50 p-5 shadow-sm">
+                <h3 className="text-sm font-semibold text-red-900">계정 관리</h3>
+                <p className="mt-1 text-xs text-red-700">
+                  탈퇴 시 사용자(Auth/Firestore) 계정이 삭제되고 기존 리포트는 studentId=null로 고립됩니다.
+                </p>
+                <Button
+                  className="mt-3 w-full"
+                  variant="destructive"
+                  onClick={handleWithdrawAccount}
+                  disabled={withdrawing}
+                >
+                  {withdrawing ? "탈퇴 처리 중..." : "회원 탈퇴"}
+                </Button>
               </div>
             </div>
           </div>
