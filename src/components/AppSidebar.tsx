@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useLocation, Link } from "react-router-dom";
 import { ChevronLeft, ChevronRight, LayoutDashboard, Upload, Users } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import BrandLogo from "@/components/BrandLogo";
 
 const AppSidebar = () => {
   const [collapsed, setCollapsed] = useState(false);
@@ -23,13 +24,11 @@ const AppSidebar = () => {
         collapsed ? "w-16" : "w-56"
       }`}
     >
-      <div className="flex h-16 items-center justify-center border-b border-sidebar-border px-4">
+      <div className="flex h-20 items-center justify-center border-b border-sidebar-border px-3">
         {!collapsed ? (
-          <span className="text-lg font-bold tracking-tight text-sidebar-primary-foreground">
-            김윤환 논술학원 관리 시스템
-          </span>
+          <BrandLogo compact className="max-w-full text-sidebar-primary-foreground" />
         ) : (
-          <span className="text-sm font-bold">김논</span>
+          <BrandLogo iconOnly className="text-sidebar-primary-foreground" />
         )}
       </div>
 
