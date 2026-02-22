@@ -25,7 +25,7 @@ import { db, storage } from "@/lib/firebase";
 const STORAGE_UPLOAD_TIMEOUT_MS = 60_000;
 const PDFJS_VERSION = "4.10.38";
 
-export type MatchStatus = "auto_matched" | "needs_selection" | "unregistered";
+export type MatchStatus = "ready" | "needs_selection" | "unregistered";
 export type JoinRequestStatus = "pending" | "approved" | "rejected";
 export type ReportAssignmentStatus = "completed" | "duplicate_pending" | "unassigned_pending";
 
@@ -218,6 +218,12 @@ const normalizeText = (text: string) =>
 
 const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+const normalizeName = (name: string) =>
+  name
+    .replace(/\s+/g, " ")
+    .replace(/(?:학생|귀하|님)\s*$/g, "")
+    .trim();
+
 const extractField = (text: string, labels: string[]): string => {
   const stopTokens = [
     "작성일",
@@ -298,7 +304,10 @@ const parseMetricTriple = (segment: string): [number | null, number | null, numb
   ];
 };
 
-const sanitizeFeedback = (input: string): string => {
+const sanitizeFeedback = (input: string, studentName = "", className = ""): string => {
+  const classNamePattern = className ? new RegExp(escapeRegex(className), "gi") : null;
+  const studentNamePattern = studentName ? new RegExp(`${escapeRegex(studentName)}\\s*$`, "i") : null;
+
   return input
     .replace(/김윤환\s*class/gi, " ")
     .replace(/첨삭\s*채점표/gi, " ")
@@ -312,13 +321,17 @@ const sanitizeFeedback = (input: string): string => {
     .replace(/(?:나의\s*점수|전체\s*평균|환산\s*점수)\s*[:：]?/gi, " ")
     .replace(/\b(?:50|60|70|80|90)\b(?:\s+\b(?:50|60|70|80|90)\b)+/g, " ")
     .replace(/\b-?\d+(?:\.\d+)?\b(?:\s+\b-?\d+(?:\.\d+)?\b){2,}/g, " ")
+    .replace(/\d{4}\.\s?\d{1,2}\.\s?\d{1,2}/g, " ")
     .replace(/\b(?:19|20)\d{2}[./-]\d{1,2}[./-]\d{1,2}\b/g, " ")
     .replace(/\b\d{1,3}(?:\.\d+)?\s*점\b/g, " ")
     .replace(/\(\s*\d+\s*점\s*만점\s*\)/g, " ")
     .replace(/\b\d{1,3}\s*\/\s*\d{1,3}\b/g, " ")
+    .replace(classNamePattern ?? /$^/, " ")
     .replace(/[|]+/g, " ")
     .replace(/\s+/g, " ")
     .replace(/\s+([,.!?])/g, "$1")
+    .trim()
+    .replace(studentNamePattern ?? /$^/, "")
     .trim();
 };
 
@@ -428,10 +441,282 @@ type PdfJsModule = {
           promise: Promise<void>;
         };
         getTextContent: () => Promise<{
-          items: Array<{ str?: string }>;
+          items: Array<{ str?: string; transform?: number[]; width?: number; height?: number }>;
         }>;
       }>;
     }>;
+  };
+};
+
+type PageToken = {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type PageScope = {
+  pageIndex: number;
+  rawText: string;
+  normalizedText: string;
+  tokens: PageToken[];
+};
+
+const toLineText = (tokens: PageToken[]) =>
+  tokens
+    .slice()
+    .sort((a, b) => a.x - b.x)
+    .map((token) => token.text)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const groupTokensByLine = (tokens: PageToken[], threshold = 7) => {
+  const sorted = tokens
+    .filter((token) => token.text.trim().length > 0)
+    .slice()
+    .sort((a, b) => (Math.abs(a.y - b.y) < 0.5 ? a.x - b.x : a.y - b.y));
+
+  const lines: PageToken[][] = [];
+  for (const token of sorted) {
+    const last = lines[lines.length - 1];
+    if (!last) {
+      lines.push([token]);
+      continue;
+    }
+
+    const baseline = last[0]?.y ?? token.y;
+    if (Math.abs(baseline - token.y) <= threshold) {
+      last.push(token);
+    } else {
+      lines.push([token]);
+    }
+  }
+
+  return lines;
+};
+
+const parseTokenNumber = (tokenText: string): number | null => {
+  const match = tokenText.match(/-?\d+(?:\.\d+)?/);
+  return match ? parseNumber(match[0]) : null;
+};
+
+const findLabelToken = (tokens: PageToken[], labels: string[]) => {
+  return tokens.find((token) =>
+    labels.some((label) => new RegExp(`^${escapeRegex(label)}\\s*[:：]?$`, "i").test(token.text.trim())),
+  );
+};
+
+const extractNameFromTokens = (scope: PageScope): string => {
+  const labelToken = findLabelToken(scope.tokens, ["이름", "성명", "학생명"]);
+  if (!labelToken) {
+    return normalizeName(extractField(scope.normalizedText, ["이름", "성명", "학생명"]));
+  }
+
+  const sameLine = scope.tokens
+    .filter((token) => Math.abs(token.y - labelToken.y) <= 7 && token.x > labelToken.x + labelToken.width)
+    .sort((a, b) => a.x - b.x);
+
+  if (sameLine.length === 0) {
+    return normalizeName(extractField(scope.normalizedText, ["이름", "성명", "학생명"]));
+  }
+
+  const chunks: string[] = [];
+  for (let i = 0; i < sameLine.length; i += 1) {
+    const current = sameLine[i];
+    const prev = sameLine[i - 1];
+    if (prev) {
+      const gap = current.x - (prev.x + prev.width);
+      if (gap > 28) {
+        break;
+      }
+    }
+    chunks.push(current.text);
+  }
+
+  return normalizeName(chunks.join(" "));
+};
+
+const findScoreColumnX = (tokens: PageToken[]): number | null => {
+  const rowToken = tokens.find((token) => /나의\s*점수/i.test(token.text));
+  if (!rowToken) {
+    return null;
+  }
+  return rowToken.x + rowToken.width / 2;
+};
+
+const getMetricMineScore = (
+  scope: PageScope,
+  label: MetricLabel,
+  scoreColumnX: number | null,
+): number | null => {
+  const labelToken = scope.tokens.find((token) =>
+    METRIC_ALIASES[label].some((alias) => new RegExp(`^${escapeRegex(alias)}\\s*$`, "i").test(token.text)),
+  );
+
+  if (!labelToken) {
+    return null;
+  }
+
+  const rowCandidates = scope.tokens
+    .filter(
+      (token) =>
+        Math.abs(token.y - labelToken.y) <= 8 &&
+        token.x > labelToken.x &&
+        /-?\d+(?:\.\d+)?/.test(token.text),
+    )
+    .map((token) => ({
+      token,
+      value: parseTokenNumber(token.text),
+      distance:
+        scoreColumnX === null
+          ? token.x - labelToken.x
+          : Math.abs(token.x + token.width / 2 - scoreColumnX),
+    }))
+    .filter((candidate) => Number.isFinite(candidate.value));
+
+  if (rowCandidates.length === 0) {
+    return null;
+  }
+
+  rowCandidates.sort((a, b) => a.distance - b.distance);
+  return rowCandidates[0].value;
+};
+
+const extractBoxValueNearKeyword = (
+  scope: PageScope,
+  keyword: RegExp,
+  valuePattern: RegExp,
+): string => {
+  const keywordToken = scope.tokens.find((token) => keyword.test(token.text));
+  if (!keywordToken) {
+    return "";
+  }
+
+  const candidates = scope.tokens
+    .filter((token) => token !== keywordToken && valuePattern.test(token.text))
+    .map((token) => {
+      const dx = token.x - (keywordToken.x + keywordToken.width);
+      const dy = Math.abs(token.y - keywordToken.y);
+      const score = dy * 10 + Math.abs(dx);
+      return { token, score, sameLine: dy <= 10 && dx >= -8 };
+    })
+    .filter((entry) => entry.sameLine || entry.token.y >= keywordToken.y - 6)
+    .sort((a, b) => a.score - b.score);
+
+  if (candidates.length === 0) {
+    return "";
+  }
+
+  const matched = candidates[0].token.text.match(valuePattern);
+  return matched?.[0]?.trim() ?? "";
+};
+
+const extractFeedbackFromScope = (scope: PageScope, studentName: string, className: string): string => {
+  const startToken = scope.tokens.find((token) => /(첨삭\s*총평|선생님\s*총평|총평)/i.test(token.text));
+  if (!startToken) {
+    return sanitizeFeedback(extractFeedback(scope.normalizedText), studentName, className);
+  }
+
+  const stopPattern =
+    /(작성일|수강반|독해력|내용\s*이해력|문제\s*이해력|구성력|표현력|총점|등급|\d+\s*\/\s*\d+\s*페이지|\d{4}\.\s?\d{1,2}\.\s?\d{1,2})/i;
+
+  const lowerTokens = scope.tokens
+    .filter((token) => token.y >= startToken.y - 2)
+    .slice()
+    .sort((a, b) => (Math.abs(a.y - b.y) < 0.5 ? a.x - b.x : a.y - b.y));
+
+  const stopToken = lowerTokens.find(
+    (token) => token !== startToken && token.y >= startToken.y + 16 && stopPattern.test(token.text),
+  );
+
+  const bottomY = stopToken ? stopToken.y : Number.POSITIVE_INFINITY;
+  const feedbackTokens = lowerTokens.filter(
+    (token) =>
+      token !== startToken &&
+      token.y >= startToken.y &&
+      token.y < bottomY &&
+      !/(첨삭\s*총평|선생님\s*총평|총평)/i.test(token.text),
+  );
+
+  const lines = groupTokensByLine(feedbackTokens);
+  const rawFeedback = lines.map(toLineText).join("\n").trim();
+  return sanitizeFeedback(rawFeedback, studentName, className);
+};
+
+const parsePdfPage = (scope: PageScope): ParsedPdfData => {
+  const text = scope.normalizedText;
+  const name = extractNameFromTokens(scope);
+  const className = extractField(text, ["수강반", "반"]);
+  const writtenAt = extractField(text, ["작성일", "작성 일자"]);
+  const essayTopic = extractField(text, ["논제", "주제"]);
+  const reviewer = extractField(text, ["첨삭자", "채점자"]);
+  const scoreColumnX = findScoreColumnX(scope.tokens);
+
+  const readingSegment = getMetricSegment(text, "독해력");
+  const comprehensionSegment = getMetricSegment(text, "내용 이해력");
+  const problemSegment = getMetricSegment(text, "문제 이해력");
+  const organizationSegment = getMetricSegment(text, "구성력");
+  const expressionSegment = getMetricSegment(text, "표현력");
+
+  const [readingMineByText, readingAvg, readingConverted] = parseMetricTriple(readingSegment);
+  const [compMineByText, compAvg, compConverted] = parseMetricTriple(comprehensionSegment);
+  const [problemMineByText, problemAvg, problemConverted] = parseMetricTriple(problemSegment);
+  const [orgMineByText, orgAvg, orgConverted] = parseMetricTriple(organizationSegment);
+  const [expMineByText, expAvg, expConverted] = parseMetricTriple(expressionSegment);
+
+  const readingMine = getMetricMineScore(scope, "독해력", scoreColumnX) ?? readingMineByText;
+  const compMine = getMetricMineScore(scope, "내용 이해력", scoreColumnX) ?? compMineByText;
+  const problemMine = getMetricMineScore(scope, "문제 이해력", scoreColumnX) ?? problemMineByText;
+  const orgMine = getMetricMineScore(scope, "구성력", scoreColumnX) ?? orgMineByText;
+  const expMine = getMetricMineScore(scope, "표현력", scoreColumnX) ?? expMineByText;
+
+  const totalByBox = parseNumber(
+    extractBoxValueNearKeyword(scope, /총점/, /-?\d+(?:\.\d+)?/i) ||
+      text.match(/총점\s*[:：]?\s*(-?\d+(?:\.\d+)?)/i)?.[1],
+  );
+  const gradeByBox =
+    extractBoxValueNearKeyword(scope, /등급/, /[A-Za-z가-힣][A-Za-z0-9+\-가-힣]*/i) ||
+    extractField(text, ["등급"]);
+
+  const totalByConverted = [readingConverted, compConverted, problemConverted, orgConverted, expConverted]
+    .filter((value): value is number => Number.isFinite(value))
+    .reduce((acc, value) => acc + value, 0);
+
+  return {
+    name,
+    className,
+    writtenAt,
+    essayTopic,
+    grade: gradeByBox,
+    reviewer,
+    feedback: extractFeedbackFromScope(scope, name, className),
+    scores: {
+      reading: readingMine,
+      comprehension: compMine,
+      problemUnderstanding: problemMine,
+      organization: orgMine,
+      expression: expMine,
+      total: totalByBox,
+    },
+    averageScores: {
+      reading: readingAvg,
+      comprehension: compAvg,
+      problemUnderstanding: problemAvg,
+      organization: orgAvg,
+      expression: expAvg,
+      total: null,
+    },
+    convertedScores: {
+      reading: readingConverted,
+      comprehension: compConverted,
+      problemUnderstanding: problemConverted,
+      organization: orgConverted,
+      expression: expConverted,
+      total: totalByConverted > 0 ? totalByConverted : null,
+    },
+    rawText: text,
   };
 };
 
@@ -490,23 +775,11 @@ export const extractPdfData = async (file: File): Promise<ParsedPdfData> => {
       throw new Error("PDF 파일이 아닙니다.");
     }
 
-    const pdfjs = await loadPdfJs();
-
-    const bytes = await file.arrayBuffer();
-    const pdf = await pdfjs.getDocument({ data: bytes }).promise;
-    const pageTexts: string[] = [];
-
-    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-      const page = await pdf.getPage(pageNumber);
-      const content = await page.getTextContent();
-      const text = (content.items as Array<{ str?: string }>)
-        .map((item) => item.str ?? "")
-        .join(" ")
-        .trim();
-      pageTexts.push(text);
+    const chunks = await extractPdfDataByStudent(file);
+    const parsed = chunks[0]?.parsed;
+    if (!parsed) {
+      throw new Error("PDF에서 파싱 가능한 페이지를 찾지 못했습니다.");
     }
-
-    const parsed = parsePdfText(pageTexts.join("\n"));
 
     if (!parsed.name && !parsed.essayTopic && !parsed.feedback) {
       throw new Error("양식에서 필요한 텍스트를 추출하지 못했습니다.");
@@ -520,47 +793,41 @@ export const extractPdfData = async (file: File): Promise<ParsedPdfData> => {
   }
 };
 
-const groupPagesByStudent = (pageTexts: string[]) => {
-  const groups: Array<{ pageStart: number; text: string }> = [];
-  let current: { pageStart: number; chunks: string[] } | null = null;
+const extractPageScope = async (
+  pdf: Awaited<ReturnType<PdfJsModule["getDocument"]>["promise"]>,
+  pageIndex: number,
+): Promise<PageScope> => {
+  const page = await pdf.getPage(pageIndex);
+  const viewport = page.getViewport?.({ scale: 1 });
+  const pageHeight = viewport?.height ?? 0;
+  const content = await page.getTextContent();
 
-  for (let index = 0; index < pageTexts.length; index += 1) {
-    const pageText = pageTexts[index]?.trim() ?? "";
-    if (!pageText) {
-      continue;
-    }
+  const tokens = (content.items as Array<{ str?: string; transform?: number[]; width?: number; height?: number }>)
+    .map((item) => {
+      const text = (item.str ?? "").replace(/\s+/g, " ").trim();
+      const transform = item.transform ?? [];
+      const rawX = transform[4] ?? 0;
+      const rawY = transform[5] ?? 0;
+      const y = pageHeight > 0 ? pageHeight - rawY : rawY;
+      return {
+        text,
+        x: rawX,
+        y,
+        width: item.width ?? 0,
+        height: item.height ?? Math.abs(transform[3] ?? 0),
+      };
+    })
+    .filter((token) => token.text.length > 0);
 
-    if (!current || STUDENT_SECTION_MARKER.test(pageText)) {
-      if (current && current.chunks.length > 0) {
-        groups.push({
-          pageStart: current.pageStart,
-          text: current.chunks.join("\n"),
-        });
-      }
-      current = { pageStart: index + 1, chunks: [pageText] };
-      continue;
-    }
+  const lines = groupTokensByLine(tokens);
+  const rawText = lines.map(toLineText).join("\n").trim();
 
-    current.chunks.push(pageText);
-  }
-
-  if (current && current.chunks.length > 0) {
-    groups.push({
-      pageStart: current.pageStart,
-      text: current.chunks.join("\n"),
-    });
-  }
-
-  if (groups.length > 0) {
-    return groups;
-  }
-
-  const merged = pageTexts.join("\n").trim();
-  if (!merged) {
-    return [];
-  }
-
-  return [{ pageStart: 1, text: merged }];
+  return {
+    pageIndex,
+    rawText,
+    normalizedText: normalizeText(rawText),
+    tokens,
+  };
 };
 
 const extractPdfDataByStudent = async (
@@ -573,22 +840,16 @@ const extractPdfDataByStudent = async (
   const pdfjs = await loadPdfJs();
   const bytes = await file.arrayBuffer();
   const pdf = await pdfjs.getDocument({ data: bytes }).promise;
-  const pageTexts: string[] = [];
+  const pageScopes = await Promise.all(
+    Array.from({ length: pdf.numPages }, (_, index) => extractPageScope(pdf, index + 1)),
+  );
 
-  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-    const page = await pdf.getPage(pageNumber);
-    const content = await page.getTextContent();
-    const text = (content.items as Array<{ str?: string }>)
-      .map((item) => item.str ?? "")
-      .join(" ")
-      .trim();
-    pageTexts.push(text);
-  }
+  const markerPages = pageScopes.filter((scope) => STUDENT_SECTION_MARKER.test(scope.rawText));
+  const targetPages = markerPages.length > 0 ? markerPages : pageScopes.filter((scope) => scope.normalizedText);
 
-  const studentGroups = groupPagesByStudent(pageTexts);
-  return studentGroups.map((group) => ({
-    parsed: parsePdfText(group.text),
-    sourcePage: group.pageStart,
+  return targetPages.map((scope) => ({
+    parsed: parsePdfPage(scope),
+    sourcePage: scope.pageIndex,
   }));
 };
 
@@ -610,7 +871,7 @@ export const resolveMatchStatus = (
 
   if (globalMatches.length === 1) {
     return {
-      status: "auto_matched",
+      status: "ready",
       candidates: globalMatches,
       selectedStudentUid: globalMatches[0].uid,
     };
@@ -800,14 +1061,14 @@ export const publishReportBatch = async (
     const row = uploadRows[i];
 
     try {
-      if (row.parseError) {
-        throw new Error(`파싱 실패: ${row.parseError}`);
-      }
-
       if (!hasScoreIntegrity(row.parsed.scores)) {
         throw new Error(
           "파싱 실패: 점수 5개(독해력/내용 이해력/문제 이해력/구성력/표현력)를 모두 입력해주세요.",
         );
+      }
+
+      if (!row.parsed.feedback.trim()) {
+        throw new Error("파싱 실패: 첨삭 총평이 비어 있습니다.");
       }
 
       const matched = row.parsed.name.trim()

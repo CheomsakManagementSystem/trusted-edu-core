@@ -54,7 +54,7 @@ const requiredScoreKeys: Array<keyof ScoreBreakdown> = [
 ];
 
 const statusLabel = {
-  auto_matched: "자동 매칭",
+  ready: "ready",
   needs_selection: "선택 필요",
   unregistered: "미등록",
 } as const;
@@ -178,7 +178,18 @@ const UploadDashboard = () => {
   };
 
   const updateRow = (id: string, updater: (row: UploadCandidate) => UploadCandidate) => {
-    setRows((prev) => prev.map((row) => (row.id === id ? updater(row) : row)));
+    setRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== id) {
+          return row;
+        }
+        const next = updater(row);
+        const recovered =
+          requiredScoreKeys.every((key) => Number.isFinite(next.parsed.scores[key])) &&
+          next.parsed.feedback.trim().length > 0;
+        return recovered ? { ...next, parseError: undefined } : next;
+      }),
+    );
   };
 
   const handleNameEdit = (id: string, name: string) => {
@@ -223,9 +234,13 @@ const UploadDashboard = () => {
     });
   };
 
-  const hasAnyInvalidScoreRow = useMemo(
+  const hasAnyInvalidRow = useMemo(
     () =>
-      rows.some((row) => requiredScoreKeys.some((key) => !Number.isFinite(row.parsed.scores[key]))),
+      rows.some(
+        (row) =>
+          requiredScoreKeys.some((key) => !Number.isFinite(row.parsed.scores[key])) ||
+          !row.parsed.feedback.trim(),
+      ),
     [rows],
   );
   const readByReportId = useMemo(
@@ -258,12 +273,14 @@ const UploadDashboard = () => {
       return;
     }
 
-    if (hasAnyInvalidScoreRow) {
-      setMessage("파싱 실패: 점수 5개(독해력/내용 이해력/문제 이해력/구성력/표현력)를 모두 입력해주세요.");
+    if (hasAnyInvalidRow) {
+      setMessage(
+        "파싱 실패: 점수 5개(독해력/내용 이해력/문제 이해력/구성력/표현력)와 첨삭 총평을 모두 입력해주세요.",
+      );
       toast({
         variant: "destructive",
         title: "파싱 실패",
-        description: "점수 5개가 누락된 항목이 있어 배포할 수 없습니다.",
+        description: "점수 또는 첨삭 총평이 누락된 항목이 있어 배포할 수 없습니다.",
       });
       return;
     }
@@ -514,8 +531,16 @@ const UploadDashboard = () => {
           <div className="space-y-4">
             {rows.map((row) => {
               const options = getSearchableCandidates(row);
+              const invalidRow =
+                requiredScoreKeys.some((key) => !Number.isFinite(row.parsed.scores[key])) ||
+                !row.parsed.feedback.trim();
               return (
-                <div key={row.id} className="rounded-md border border-border bg-background p-4">
+                <div
+                  key={row.id}
+                  className={`rounded-md border bg-background p-4 ${
+                    invalidRow ? "border-red-500 ring-1 ring-red-500/40" : "border-border"
+                  }`}
+                >
                   <div className="mb-2 flex flex-wrap items-center gap-2">
                     <p className="text-sm font-semibold text-card-foreground">{row.file.name}</p>
                     <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
@@ -656,7 +681,7 @@ const UploadDashboard = () => {
                 데이터가 유효한 행만 `reports` 컬렉션으로 전송되며 기본 `isRead=false`로 저장됩니다.
               </p>
             </div>
-            <Button onClick={handlePublish} disabled={uploading || loading || rows.length === 0}>
+            <Button onClick={handlePublish} disabled={uploading || loading || rows.length === 0 || hasAnyInvalidRow}>
               {uploading ? (
                 <span className="inline-flex items-center gap-2">
                   <Loader2 className="h-4 w-4 animate-spin" />
