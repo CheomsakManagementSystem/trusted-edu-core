@@ -51,6 +51,7 @@ const cleanFeedbackText = (value: string): string => {
     .replace(/(?:독해력|내용\s*이해력|문제\s*이해력|구성력|표현력|총점|등급)\s*[:：]?\s*-?\d+(?:\.\d+)?/gi, " ")
     .replace(/(?:독해력|내용\s*이해력|문제\s*이해력|구성력|표현력|총점|등급)\s*[:：]?/gi, " ")
     .replace(/(?:나의\s*점수|전체\s*평균|환산\s*점수)\s*[:：]?/gi, " ")
+    .replace(/\d{4}\.\s?\d{1,2}\.\s?\d{1,2}/g, " ")
     .replace(/\b(?:19|20)\d{2}[./-]\d{1,2}[./-]\d{1,2}\b/g, " ")
     .replace(/\b\d{1,3}(?:\.\d+)?\s*점\b/g, " ")
     .replace(/\(\s*\d+\s*점\s*만점\s*\)/g, " ")
@@ -223,16 +224,12 @@ const ReportView = () => {
       };
     }
 
-    const reviewerFromFeedback =
-      selectedReport.feedback.match(/([가-힣]{2,4}\s*T)\b/)?.[1]?.trim() ?? "";
-    const writtenAtFromFeedback =
-      selectedReport.feedback.match(/(20\d{2}[./-]\d{1,2}[./-]\d{1,2})/)?.[1]?.trim() ?? "";
     const cleanedFeedback = cleanFeedbackText(selectedReport.feedback || "");
     const { summary, nextTask } = splitFeedbackSections(cleanedFeedback);
 
     return {
-      reviewer: selectedReport.reviewer?.trim() || reviewerFromFeedback || "-",
-      writtenAt: selectedReport.writtenAt?.trim() || writtenAtFromFeedback || "-",
+      reviewer: selectedReport.reviewer?.trim() || "-",
+      writtenAt: selectedReport.writtenAt?.trim() || "-",
       className: selectedReport.className?.trim() || user?.className || "-",
       essayTopic: selectedReport.essayTopic?.trim() || "-",
       studentName: selectedReport.studentName?.trim() || user?.name || "-",

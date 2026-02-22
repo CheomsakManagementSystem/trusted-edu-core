@@ -236,9 +236,9 @@ const ClassManager = () => {
   };
 
   const handleSystemReset = async () => {
-    const confirmed = window.prompt("시스템 초기화를 진행하려면 RESET 을 입력하세요.");
+    const confirmed = window.prompt("미배정 리포트 초기화를 진행하려면 RESET 을 입력하세요.");
     if (confirmed !== "RESET") {
-      setMessage("시스템 초기화가 취소되었습니다.");
+      setMessage("미배정 리포트 초기화가 취소되었습니다.");
       return;
     }
 
@@ -250,18 +250,18 @@ const ClassManager = () => {
       setCheckedStudentUids([]);
       setSelectedClassId("none");
       setMessage(
-        `시스템 초기화 완료: 학생 사용자 ${result.deletedUsers}건, 리포트 ${result.deletedReports}건 삭제`,
+        `미배정 리포트 초기화 완료: 리포트 ${result.deletedReports}건 삭제`,
       );
       toast({
-        title: "시스템 초기화 완료",
-        description: `학생 ${result.deletedUsers}건 / 리포트 ${result.deletedReports}건 삭제`,
+        title: "미배정 리포트 초기화 완료",
+        description: `리포트 ${result.deletedReports}건 삭제`,
       });
     } catch (error) {
-      const reason = error instanceof Error ? error.message : "시스템 초기화에 실패했습니다.";
+      const reason = error instanceof Error ? error.message : "미배정 리포트 초기화에 실패했습니다.";
       setMessage(reason);
       toast({
         variant: "destructive",
-        title: "시스템 초기화 실패",
+        title: "미배정 리포트 초기화 실패",
         description: reason,
       });
     } finally {
@@ -339,12 +339,12 @@ const ClassManager = () => {
         </div>
 
         <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-5 shadow-card">
-          <h3 className="mb-2 text-sm font-semibold text-destructive">시스템 초기화</h3>
+          <h3 className="mb-2 text-sm font-semibold text-destructive">미배정 리포트 초기화</h3>
           <p className="mb-3 text-xs text-destructive/90">
-            관리자 계정을 제외한 users(학생)와 reports 컬렉션을 일괄 삭제합니다.
+            reports 컬렉션만 초기화합니다. users(학생/강사) 컬렉션은 삭제하지 않습니다.
           </p>
           <Button variant="destructive" onClick={handleSystemReset} disabled={loading}>
-            시스템 초기화 실행
+            미배정 리포트 초기화
           </Button>
         </div>
 

@@ -224,6 +224,34 @@ const normalizeName = (name: string) =>
     .replace(/(?:학생|귀하|님)\s*$/g, "")
     .trim();
 
+const sanitizeReviewerName = (value: string): string => {
+  const compact = value
+    .replace(/\s+/g, " ")
+    .replace(/^[:：\-\s]+/, "")
+    .replace(/[|]/g, " ")
+    .trim();
+
+  if (!compact) {
+    return "";
+  }
+
+  // 총평 문장/메타가 섞인 경우 첨삭자 필드로 인정하지 않는다.
+  if (/[.!?]/.test(compact) || compact.length > 32) {
+    return "";
+  }
+
+  const chunks = compact.split(" ").filter(Boolean);
+  if (chunks.length > 3) {
+    return "";
+  }
+
+  if (/(작성일|수강반|논제|첨삭\s*총평|총평|독해력|내용\s*이해력|문제\s*이해력|구성력|표현력|총점|등급)/i.test(compact)) {
+    return "";
+  }
+
+  return compact;
+};
+
 const extractField = (text: string, labels: string[]): string => {
   const stopTokens = [
     "작성일",
@@ -538,6 +566,41 @@ const extractNameFromTokens = (scope: PageScope): string => {
   return normalizeName(chunks.join(" "));
 };
 
+const extractReviewerFromScope = (scope: PageScope): string => {
+  const labelToken = findLabelToken(scope.tokens, ["첨삭자", "채점자"]);
+  if (!labelToken) {
+    return sanitizeReviewerName(extractField(scope.normalizedText, ["첨삭자", "채점자"]));
+  }
+
+  const sameLine = scope.tokens
+    .filter((token) => Math.abs(token.y - labelToken.y) <= 7 && token.x > labelToken.x + labelToken.width)
+    .sort((a, b) => a.x - b.x);
+
+  if (sameLine.length === 0) {
+    return sanitizeReviewerName(extractField(scope.normalizedText, ["첨삭자", "채점자"]));
+  }
+
+  const chunks: string[] = [];
+  for (let i = 0; i < sameLine.length; i += 1) {
+    const current = sameLine[i];
+    const prev = sameLine[i - 1];
+    if (prev) {
+      const gap = current.x - (prev.x + prev.width);
+      if (gap > 36) {
+        break;
+      }
+    }
+
+    if (/(작성일|수강반|논제|첨삭\s*총평|총평|독해력|내용\s*이해력|문제\s*이해력|구성력|표현력|총점|등급)/i.test(current.text)) {
+      break;
+    }
+
+    chunks.push(current.text);
+  }
+
+  return sanitizeReviewerName(chunks.join(" "));
+};
+
 const findScoreColumnX = (tokens: PageToken[]): number | null => {
   const rowToken = tokens.find((token) => /나의\s*점수/i.test(token.text));
   if (!rowToken) {
@@ -651,7 +714,7 @@ const parsePdfPage = (scope: PageScope): ParsedPdfData => {
   const className = extractField(text, ["수강반", "반"]);
   const writtenAt = extractField(text, ["작성일", "작성 일자"]);
   const essayTopic = extractField(text, ["논제", "주제"]);
-  const reviewer = extractField(text, ["첨삭자", "채점자"]);
+  const reviewer = extractReviewerFromScope(scope);
   const scoreColumnX = findScoreColumnX(scope.tokens);
 
   const readingSegment = getMetricSegment(text, "독해력");
@@ -1447,7 +1510,6 @@ export const deleteStudentAccountData = async (studentUid: string): Promise<void
 };
 
 export const resetSystemData = async (): Promise<{
-  deletedUsers: number;
   deletedReports: number;
 }> => {
   const collectAllDocs = async (
@@ -1478,16 +1540,7 @@ export const resetSystemData = async (): Promise<{
     return docs;
   };
 
-  const userDocs = await collectAllDocs("users", [where("role", "==", "student")]);
   const reportDocs = await collectAllDocs("reports");
-
-  for (const batchDocs of chunkBy(userDocs, 400)) {
-    const batch = writeBatch(db);
-    for (const studentDoc of batchDocs) {
-      batch.delete(studentDoc.ref);
-    }
-    await batch.commit();
-  }
 
   for (const batchDocs of chunkBy(reportDocs, 400)) {
     const batch = writeBatch(db);
@@ -1498,7 +1551,6 @@ export const resetSystemData = async (): Promise<{
   }
 
   return {
-    deletedUsers: userDocs.length,
     deletedReports: reportDocs.length,
   };
 };
