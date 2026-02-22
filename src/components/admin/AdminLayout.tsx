@@ -41,7 +41,7 @@ const AdminLayout = ({ section, onSectionChange, children }: AdminLayoutProps) =
           </div>
           <div className="flex flex-col">
             <span className="text-sm font-semibold tracking-tight">
-              LOGOS Control
+              김윤환 논술학원 관리 시스템
             </span>
             <span className="text-[11px] text-slate-400">
               관리자 통제 센터
@@ -72,7 +72,7 @@ const AdminLayout = ({ section, onSectionChange, children }: AdminLayoutProps) =
         </nav>
 
         <div className="border-t border-slate-800 px-4 py-3 text-[11px] text-slate-500">
-          © {new Date().getFullYear()} LOGOS Essay.
+          © {new Date().getFullYear()} 김윤환 논술학원 관리 시스템
         </div>
       </aside>
 
@@ -88,7 +88,7 @@ const AdminLayout = ({ section, onSectionChange, children }: AdminLayoutProps) =
               {mobileOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
             </button>
             <span className="text-sm font-semibold text-slate-100">
-              LOGOS Control
+              김윤환 논술학원 관리 시스템
             </span>
           </div>
           <AppHeader />
@@ -104,7 +104,7 @@ const AdminLayout = ({ section, onSectionChange, children }: AdminLayoutProps) =
                 </div>
                 <div className="flex flex-col">
                   <span className="text-sm font-semibold tracking-tight">
-                    LOGOS Control
+                    김윤환 논술학원 관리 시스템
                   </span>
                   <span className="text-[11px] text-slate-400">
                     관리자 통제 센터
@@ -152,4 +152,3 @@ const AdminLayout = ({ section, onSectionChange, children }: AdminLayoutProps) =
 };
 
 export default AdminLayout;
-

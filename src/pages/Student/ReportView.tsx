@@ -45,7 +45,19 @@ const cleanFeedbackText = (value: string): string => {
     .replace(/첨삭\s*채점표/gi, " ")
     .replace(/내용\s*형식/gi, " ")
     .replace(/작성일\s*[:：]?\s*[0-9./-]+/gi, " ")
-    .replace(/수강반\s*[:：]?\s*[^\s]+/gi, " ")
+    .replace(/수강반\s*[:：]?\s*[^\n]+/gi, " ")
+    .replace(/논제\s*[:：]?\s*[^\n]+/gi, " ")
+    .replace(/(?:이름|성명|학생명)\s*[:：]?\s*[가-힣A-Za-z]{2,10}/gi, " ")
+    .replace(/(?:독해력|내용\s*이해력|문제\s*이해력|구성력|표현력|총점|등급)\s*[:：]?\s*-?\d+(?:\.\d+)?/gi, " ")
+    .replace(/(?:독해력|내용\s*이해력|문제\s*이해력|구성력|표현력|총점|등급)\s*[:：]?/gi, " ")
+    .replace(/(?:나의\s*점수|전체\s*평균|환산\s*점수)\s*[:：]?/gi, " ")
+    .replace(/\b(?:19|20)\d{2}[./-]\d{1,2}[./-]\d{1,2}\b/g, " ")
+    .replace(/\b\d{1,3}(?:\.\d+)?\s*점\b/g, " ")
+    .replace(/\(\s*\d+\s*점\s*만점\s*\)/g, " ")
+    .replace(/\b(?:50|60|70|80|90)\b(?:\s+\b(?:50|60|70|80|90)\b)+/g, " ")
+    .replace(/\b-?\d+(?:\.\d+)?\b(?:\s+\b-?\d+(?:\.\d+)?\b){2,}/g, " ")
+    .replace(/\b\d{1,3}\s*\/\s*\d{1,3}\b/g, " ")
+    .replace(/[|]+/g, " ")
     .replace(/\s+/g, " ")
     .replace(/\s+([,.!?])/g, "$1")
     .trim();
@@ -203,6 +215,9 @@ const ReportView = () => {
       return {
         reviewer: "-",
         writtenAt: "-",
+        className: "-",
+        essayTopic: "-",
+        studentName: "-",
         summary: "",
         nextTask: "",
       };
@@ -218,10 +233,13 @@ const ReportView = () => {
     return {
       reviewer: selectedReport.reviewer?.trim() || reviewerFromFeedback || "-",
       writtenAt: selectedReport.writtenAt?.trim() || writtenAtFromFeedback || "-",
+      className: selectedReport.className?.trim() || user?.className || "-",
+      essayTopic: selectedReport.essayTopic?.trim() || "-",
+      studentName: selectedReport.studentName?.trim() || user?.name || "-",
       summary,
       nextTask,
     };
-  }, [selectedReport]);
+  }, [selectedReport, user?.className, user?.name]);
 
   const handleOpenReport = async (report: ReportRecord) => {
     setSelectedReportId(report.id);
@@ -401,168 +419,215 @@ const ReportView = () => {
         )}
 
         {!loading && !error && studentReports.length > 0 && selectedReport && (
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-            <div className="space-y-4 xl:col-span-2">
-              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <h3 className="text-sm font-semibold text-slate-900">총점 추이</h3>
-                  <Select value={selectedReportId} onValueChange={setSelectedReportId}>
-                    <SelectTrigger className="w-full border-slate-200 sm:w-64">
-                      <SelectValue placeholder="회차 선택" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {studentReports.map((report, index) => (
-                        <SelectItem key={report.id} value={report.id}>
-                          회차 {studentReports.length - index} | {report.essayTopic || "논제 미기재"}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="h-64">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={trendData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                      <XAxis dataKey="round" />
-                      <YAxis domain={[0, 100]} />
-                      <Tooltip />
-                      <Line type="monotone" dataKey="score" stroke="#2563eb" strokeWidth={2} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
+          <div className="space-y-4">
+            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <h3 className="text-sm font-semibold text-slate-900">리포트 회차 선택</h3>
+                <Select value={selectedReportId} onValueChange={setSelectedReportId}>
+                  <SelectTrigger className="w-full border-slate-200 sm:w-72">
+                    <SelectValue placeholder="회차 선택" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {studentReports.map((report, index) => (
+                      <SelectItem key={report.id} value={report.id}>
+                        회차 {studentReports.length - index} | {report.essayTopic || "논제 미기재"}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
+            </div>
 
-              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h3 className="mb-2 text-sm font-semibold text-slate-900">5개 지표 레이더 차트</h3>
-                <div className="mx-auto h-72 max-w-xl">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <RadarChart data={radarData}>
-                      <PolarGrid />
-                      <PolarAngleAxis dataKey="subject" />
-                      <PolarRadiusAxis domain={[50, 100]} />
-                      <Radar
-                        name="나의점수"
-                        dataKey="myScore"
-                        stroke="#f5b700"
-                        fill="#f5b700"
-                        fillOpacity={0.18}
-                        strokeWidth={3}
-                      />
-                      <Radar
-                        name="전체평균"
-                        dataKey="avgScore"
-                        stroke="#a8a8a8"
-                        fillOpacity={0}
-                        strokeDasharray="8 6"
-                        strokeWidth={2}
-                      />
-                      <Tooltip />
-                    </RadarChart>
-                  </ResponsiveContainer>
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-base font-semibold text-slate-900">5개 지표 레이더 차트</h3>
+                  <div className="flex items-center gap-3 text-xs text-slate-500">
+                    <span className="inline-flex items-center gap-1">
+                      <span className="h-2.5 w-8 rounded bg-amber-400" />
+                      나의점수
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <span className="h-2.5 w-8 rounded bg-slate-300" />
+                      전체평균
+                    </span>
+                  </div>
                 </div>
-              </div>
-
-              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h3 className="mb-3 text-sm font-semibold text-slate-900">리포트 목록</h3>
-                <div className="space-y-2">
-                  {studentReports.map((report, index) => (
-                    <button
-                      key={report.id}
-                      type="button"
-                      onClick={() => handleOpenReport(report)}
-                      className={`w-full rounded-md border px-3 py-3 text-left transition-colors ${
-                        selectedReport.id === report.id
-                          ? "border-primary bg-primary/5"
-                          : "border-border bg-background hover:border-primary/40"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-sm font-semibold text-slate-900">
-                          회차 {studentReports.length - index} / {report.essayTopic || "논제 미기재"}
-                        </p>
-                        <span
-                          className={`rounded px-2 py-0.5 text-xs ${
-                            report.isRead
-                              ? "bg-emerald-500/10 text-emerald-700"
-                              : "bg-amber-500/10 text-amber-700"
-                          }`}
-                        >
-                          {report.isRead ? "읽음" : "새 리포트"}
-                        </span>
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_240px]">
+                  <div className="mx-auto h-80 w-full max-w-2xl">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <RadarChart data={radarData}>
+                        <PolarGrid />
+                        <PolarAngleAxis dataKey="subject" />
+                        <PolarRadiusAxis domain={[50, 100]} />
+                        <Radar
+                          name="나의점수"
+                          dataKey="myScore"
+                          stroke="#eab308"
+                          fill="#eab308"
+                          fillOpacity={0.14}
+                          strokeWidth={3}
+                        />
+                        <Radar
+                          name="전체평균"
+                          dataKey="avgScore"
+                          stroke="#a8a8a8"
+                          fillOpacity={0}
+                          strokeDasharray="8 6"
+                          strokeWidth={2}
+                        />
+                        <Tooltip />
+                      </RadarChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="flex items-center justify-center">
+                    <div className="w-full max-w-[220px] overflow-hidden rounded-md border-4 border-black bg-white">
+                      <div className="grid grid-cols-2">
+                        <div className="border-b-4 border-r-4 border-black p-3 text-center text-4xl font-black leading-none">
+                          총점
+                        </div>
+                        <div className="border-b-4 border-black bg-amber-400 p-3 text-center text-5xl font-black leading-none">
+                          {selectedReport.totalScore}
+                        </div>
+                        <div className="border-r-4 border-black p-3 text-center text-4xl font-black leading-none">
+                          등급
+                        </div>
+                        <div className="p-3 text-center text-5xl font-black leading-none">
+                          {selectedReport.grade || "-"}
+                        </div>
                       </div>
-                      <p className="mt-1 text-xs text-slate-500">
-                        총점 {report.totalScore} | 등급 {report.grade || "-"} | 날짜{" "}
-                        {report.createdAt
-                          ? report.createdAt.toDate().toLocaleDateString("ko-KR")
-                          : "-"}
-                      </p>
-                    </button>
-                  ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h3 className="mb-3 text-base font-semibold text-slate-900">피드백 카드</h3>
+                <div className="mb-3 grid grid-cols-2 gap-2 text-xs">
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                    <p className="text-slate-500">첨삭자</p>
+                    <p className="font-semibold text-slate-800">{feedbackMeta.reviewer}</p>
+                  </div>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                    <p className="text-slate-500">작성일</p>
+                    <p className="font-semibold text-slate-800">{feedbackMeta.writtenAt}</p>
+                  </div>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                    <p className="text-slate-500">수강반</p>
+                    <p className="font-semibold text-slate-800">{feedbackMeta.className}</p>
+                  </div>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                    <p className="text-slate-500">학생명</p>
+                    <p className="font-semibold text-slate-800">{feedbackMeta.studentName}</p>
+                  </div>
+                  <div className="col-span-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                    <p className="text-slate-500">논제</p>
+                    <p className="font-semibold text-slate-800">{feedbackMeta.essayTopic}</p>
+                  </div>
+                </div>
+                <div className="rounded-md border-4 border-black bg-white">
+                  <div className="grid grid-cols-[160px_1fr] border-b-4 border-black">
+                    <div className="border-r-4 border-black px-3 py-2 text-center text-3xl font-black">첨삭 총평</div>
+                    <div className="px-3 py-2 text-lg font-bold">첨삭자: {feedbackMeta.reviewer}</div>
+                  </div>
+                  <div className="min-h-44 px-4 py-4 text-2xl font-bold leading-relaxed text-slate-900">
+                    {feedbackMeta.summary || "첨삭 총평이 없습니다."}
+                  </div>
+                </div>
+                <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800">
+                  <p className="mb-1 text-xs font-semibold text-slate-500">[향후 과제]</p>
+                  <p className="leading-relaxed">
+                    {feedbackMeta.nextTask || "향후 과제가 명시되지 않았습니다."}
+                  </p>
                 </div>
               </div>
             </div>
 
-            <div className="space-y-4">
-              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="mb-4 flex items-start justify-between gap-3">
-                  <h3 className="text-sm font-semibold text-slate-900">피드백 카드</h3>
-                  <div className="text-right text-xs text-slate-500">
-                    <p>작성일 {feedbackMeta.writtenAt}</p>
-                    <p>첨삭자 {feedbackMeta.reviewer}</p>
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+              <div className="space-y-4 xl:col-span-2">
+                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <h3 className="mb-3 text-sm font-semibold text-slate-900">총점 추이</h3>
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={trendData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                        <XAxis dataKey="round" />
+                        <YAxis domain={[0, 100]} />
+                        <Tooltip />
+                        <Line type="monotone" dataKey="score" stroke="#2563eb" strokeWidth={2} />
+                      </LineChart>
+                    </ResponsiveContainer>
                   </div>
                 </div>
-                <div className="mb-4 grid grid-cols-2 gap-2">
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                    <p className="text-xs text-slate-500">총점</p>
-                    <p className="text-lg font-bold text-blue-700">{selectedReport.totalScore}</p>
-                  </div>
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                    <p className="text-xs text-slate-500">등급</p>
-                    <p className="text-lg font-bold text-emerald-700">{selectedReport.grade || "-"}</p>
-                  </div>
-                </div>
-                <div className="space-y-3 text-sm text-slate-800">
-                  <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
-                    <p className="mb-1 text-xs font-semibold text-slate-500">[선생님 총평]</p>
-                    <p className="leading-relaxed">
-                      {feedbackMeta.summary || "첨삭 총평이 없습니다."}
-                    </p>
-                  </div>
-                  <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
-                    <p className="mb-1 text-xs font-semibold text-slate-500">[향후 과제]</p>
-                    <p className="leading-relaxed">
-                      {feedbackMeta.nextTask || "향후 과제가 명시되지 않았습니다."}
-                    </p>
+
+                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <h3 className="mb-3 text-sm font-semibold text-slate-900">리포트 목록</h3>
+                  <div className="space-y-2">
+                    {studentReports.map((report, index) => (
+                      <button
+                        key={report.id}
+                        type="button"
+                        onClick={() => handleOpenReport(report)}
+                        className={`w-full rounded-md border px-3 py-3 text-left transition-colors ${
+                          selectedReport.id === report.id
+                            ? "border-primary bg-primary/5"
+                            : "border-border bg-background hover:border-primary/40"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-sm font-semibold text-slate-900">
+                            회차 {studentReports.length - index} / {report.essayTopic || "논제 미기재"}
+                          </p>
+                          <span
+                            className={`rounded px-2 py-0.5 text-xs ${
+                              report.isRead
+                                ? "bg-emerald-500/10 text-emerald-700"
+                                : "bg-amber-500/10 text-amber-700"
+                            }`}
+                          >
+                            {report.isRead ? "읽음" : "새 리포트"}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-slate-500">
+                          총점 {report.totalScore} | 등급 {report.grade || "-"} | 날짜{" "}
+                          {report.createdAt
+                            ? report.createdAt.toDate().toLocaleDateString("ko-KR")
+                            : "-"}
+                        </p>
+                      </button>
+                    ))}
                   </div>
                 </div>
               </div>
 
-              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h3 className="mb-2 text-sm font-semibold text-slate-900">원본 PDF 미리보기</h3>
-                {pdfLoading && <p className="text-sm text-muted-foreground">페이지 렌더링 중입니다...</p>}
-                {pdfError && <p className="text-sm text-destructive">{pdfError}</p>}
-                <div className="overflow-auto rounded border border-slate-200 bg-slate-50 p-2">
-                  <canvas ref={previewCanvasRef} className="mx-auto h-auto max-w-full" />
+              <div className="space-y-4">
+                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <h3 className="mb-2 text-sm font-semibold text-slate-900">원본 PDF 미리보기</h3>
+                  {pdfLoading && <p className="text-sm text-muted-foreground">페이지 렌더링 중입니다...</p>}
+                  {pdfError && <p className="text-sm text-destructive">{pdfError}</p>}
+                  <div className="overflow-auto rounded border border-slate-200 bg-slate-50 p-2">
+                    <canvas ref={previewCanvasRef} className="mx-auto h-auto max-w-full" />
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500">
+                    저장된 페이지 번호({selectedReport.pageNumber ?? selectedReport.sourcePage ?? 1}p) 한 장만
+                    렌더링합니다.
+                  </p>
                 </div>
-                <p className="mt-2 text-xs text-slate-500">
-                  저장된 페이지 번호({selectedReport.pageNumber ?? selectedReport.sourcePage ?? 1}p) 한 장만
-                  렌더링합니다.
-                </p>
-              </div>
 
-              <div className="rounded-xl border border-red-200 bg-red-50 p-5 shadow-sm">
-                <h3 className="text-sm font-semibold text-red-900">계정 관리</h3>
-                <p className="mt-1 text-xs text-red-700">
-                  탈퇴 시 사용자(Auth/Firestore) 계정이 삭제되고 기존 리포트는 studentId=null로 고립됩니다.
-                </p>
-                <Button
-                  className="mt-3 w-full"
-                  variant="destructive"
-                  onClick={handleWithdrawAccount}
-                  disabled={withdrawing}
-                >
-                  {withdrawing ? "탈퇴 처리 중..." : "회원 탈퇴"}
-                </Button>
+                <div className="rounded-xl border border-red-200 bg-red-50 p-5 shadow-sm">
+                  <h3 className="text-sm font-semibold text-red-900">계정 관리</h3>
+                  <p className="mt-1 text-xs text-red-700">
+                    탈퇴 시 사용자(Auth/Firestore) 계정이 삭제되고 기존 리포트는 studentId=null로 고립됩니다.
+                  </p>
+                  <Button
+                    className="mt-3 w-full"
+                    variant="destructive"
+                    onClick={handleWithdrawAccount}
+                    disabled={withdrawing}
+                  >
+                    {withdrawing ? "탈퇴 처리 중..." : "회원 탈퇴"}
+                  </Button>
+                </div>
               </div>
             </div>
           </div>

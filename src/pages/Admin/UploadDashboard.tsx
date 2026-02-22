@@ -299,6 +299,10 @@ const UploadDashboard = () => {
       );
       if (result.autoAssignedNotices.length > 0) {
         setMessage((prev) => `${prev}\n${result.autoAssignedNotices.join("\n")}`);
+        toast({
+          title: "자동 배포 완료",
+          description: result.autoAssignedNotices[0],
+        });
       }
       if (result.pendingCount > 0) {
         setMessage((prev) => `${prev}\n보류 건은 아래 '미배정 리포트 관리'에서 수동 배정할 수 있습니다.`);

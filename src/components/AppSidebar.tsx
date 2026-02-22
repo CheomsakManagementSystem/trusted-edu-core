@@ -26,10 +26,10 @@ const AppSidebar = () => {
       <div className="flex h-16 items-center justify-center border-b border-sidebar-border px-4">
         {!collapsed ? (
           <span className="text-lg font-bold tracking-tight text-sidebar-primary-foreground">
-            LOGOS EDU
+            김윤환 논술학원 관리 시스템
           </span>
         ) : (
-          <span className="text-sm font-bold">LE</span>
+          <span className="text-sm font-bold">김논</span>
         )}
       </div>
 

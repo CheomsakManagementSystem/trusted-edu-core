@@ -14,8 +14,8 @@ const AppHeader = () => {
   return (
     <header className="flex h-16 items-center justify-between border-b border-border bg-card px-6">
       <div>
-        <h1 className="text-xl font-bold text-foreground">김윤환 논술학원</h1>
-        <p className="text-xs text-muted-foreground">관리 시스템</p>
+        <h1 className="text-xl font-bold text-foreground">김윤환 논술학원 관리 시스템</h1>
+        <p className="text-xs text-muted-foreground">학생 리포트 배포 및 분석 대시보드</p>
       </div>
 
       <div className="flex items-center gap-4">

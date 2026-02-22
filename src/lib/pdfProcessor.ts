@@ -305,12 +305,18 @@ const sanitizeFeedback = (input: string): string => {
     .replace(/내용\s*형식/gi, " ")
     .replace(/작성일\s*[:：]?\s*[0-9./-]+/gi, " ")
     .replace(/수강반\s*[:：]?\s*[^\s]+/gi, " ")
+    .replace(/논제\s*[:：]?\s*[^\n]+/gi, " ")
     .replace(/(?:이름|성명|학생명)\s*[:：]?\s*[가-힣A-Za-z]{2,10}/gi, " ")
     .replace(/(?:독해력|내용\s*이해력|문제\s*이해력|구성력|표현력|총점)\s*[:：]?\s*-?\d+(?:\.\d+)?/gi, " ")
     .replace(/(?:독해력|내용\s*이해력|문제\s*이해력|구성력|표현력|총점|등급)\s*[:：]?/gi, " ")
+    .replace(/(?:나의\s*점수|전체\s*평균|환산\s*점수)\s*[:：]?/gi, " ")
+    .replace(/\b(?:50|60|70|80|90)\b(?:\s+\b(?:50|60|70|80|90)\b)+/g, " ")
+    .replace(/\b-?\d+(?:\.\d+)?\b(?:\s+\b-?\d+(?:\.\d+)?\b){2,}/g, " ")
     .replace(/\b(?:19|20)\d{2}[./-]\d{1,2}[./-]\d{1,2}\b/g, " ")
     .replace(/\b\d{1,3}(?:\.\d+)?\s*점\b/g, " ")
+    .replace(/\(\s*\d+\s*점\s*만점\s*\)/g, " ")
     .replace(/\b\d{1,3}\s*\/\s*\d{1,3}\b/g, " ")
+    .replace(/[|]+/g, " ")
     .replace(/\s+/g, " ")
     .replace(/\s+([,.!?])/g, "$1")
     .trim();
@@ -869,7 +875,7 @@ export const publishReportBatch = async (
       if (assignmentStatus === "completed") {
         successCount += 1;
         if (!forcedStudent && matched.length === 1) {
-          autoAssignedNotices.push(`${completedStudent?.name} 학생에게 전송합니다.`);
+          autoAssignedNotices.push(`[${completedStudent?.name}] 학생에게 리포트를 전달했습니다`);
         }
       } else {
         pendingCount += 1;

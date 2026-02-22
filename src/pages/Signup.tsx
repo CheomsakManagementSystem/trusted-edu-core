@@ -7,7 +7,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
-const INSTRUCTOR_SECRET_CODE = "LOGOS_ADMIN";
+const INSTRUCTOR_SECRET_CODE = "A8z#mQ92!vXp7@K3nR5$tW6*bYc9uL1&qJ4^sE7%hG2(V0)Nf8_mZ1+pQ5#kR9";
 
 const Signup = () => {
   const navigate = useNavigate();
@@ -121,12 +121,13 @@ const Signup = () => {
                 강사 비밀코드 (선택)
               </label>
               <Input
+                type="password"
                 value={instructorCode}
                 onChange={(e) => setInstructorCode(e.target.value)}
                 placeholder="강사일 경우에만 입력"
               />
               <p className="text-xs text-muted-foreground">
-                코드가 정확히 &quot;LOGOS_ADMIN&quot;과 일치하면 강사 계정으로 등록됩니다.
+                관리자 전용 보안 키를 입력하세요
               </p>
             </div>
 
