@@ -58,10 +58,21 @@ const requiredScoreKeys: Array<keyof ScoreBreakdown> = [
 ];
 
 const statusLabel = {
-  ready: "ready",
-  needs_selection: "선택 필요",
-  unregistered: "미등록",
+  ready: "확인 완료",
+  needs_selection: "확인 필요",
+  unregistered: "미배정",
 } as const;
+
+const toFriendlyMessage = (input: string): string =>
+  input
+    .replace(/studentId/gi, "학생 정보")
+    .replace(/\bnull\b/gi, "확인 중")
+    .replace(/\bundefined\b/gi, "확인 중")
+    .replace(/Firestore/gi, "학습 기록")
+    .replace(/\bAuth\b/gi, "계정")
+    .replace(/Collection/gi, "목록")
+    .replace(/Parsing/gi, "내용 확인")
+    .replace(/파싱/g, "내용 확인");
 
 const UploadDashboard = () => {
   const { user } = useAuth();
@@ -189,17 +200,19 @@ const UploadDashboard = () => {
       if (parseFailedCount > 0) {
         toast({
           variant: "destructive",
-          title: "파싱 실패",
-          description: `${parseFailedCount}건에서 파싱 오류가 발생했습니다. 항목을 수동 보정해주세요.`,
+          title: "내용 확인 필요",
+          description: `${parseFailedCount}건에서 자동 인식이 불완전합니다. 항목을 확인해주세요.`,
         });
       }
       setProgress(0);
     } catch (error) {
-      const reason = error instanceof Error ? error.message : "PDF 파싱에 실패했습니다.";
+      const reason = toFriendlyMessage(
+        error instanceof Error ? error.message : "파일 내용을 확인하지 못했습니다.",
+      );
       setMessage(reason);
       toast({
         variant: "destructive",
-        title: "파싱 실패",
+        title: "파일 확인 실패",
         description: reason,
       });
     } finally {
@@ -371,11 +384,11 @@ const UploadDashboard = () => {
 
     if (hasAnyInvalidRow) {
       setMessage(
-        "파싱 실패: 점수 5개(독해력/내용 이해력/문제 이해력/구성력/표현력)와 첨삭 총평을 모두 입력해주세요.",
+        "입력 확인이 필요합니다. 점수 5개(독해력/내용 이해력/문제 이해력/구성력/표현력)와 첨삭 총평을 모두 입력해주세요.",
       );
       toast({
         variant: "destructive",
-        title: "파싱 실패",
+        title: "내용 확인 필요",
         description: "점수 또는 첨삭 총평이 누락된 항목이 있어 배포할 수 없습니다.",
       });
       return;
@@ -418,19 +431,20 @@ const UploadDashboard = () => {
         });
       }
       if (result.pendingCount > 0) {
-        setMessage((prev) => `${prev}\n보류 건은 아래 '미배정 리포트 관리'에서 수동 배정할 수 있습니다.`);
+        setMessage((prev) => `${prev}\n보류 건은 아래 '미연결 학습 자료 정리'에서 학생을 연결할 수 있습니다.`);
       }
       if (result.failureCount > 0) {
         setMessage((prev) => `${prev}\n${result.failures.join("\n")}`);
         toast({
           variant: "destructive",
-          title: "일부 전송 실패",
+          title: "일부 발송 실패",
           description: result.failures[0],
         });
       } else {
+        setMessage("리포트가 학생들에게 성공적으로 전달되었습니다.");
         toast({
-          title: "배포 완료!",
-          description: `${result.successCount}건이 저장되었습니다.`,
+          title: "발송 완료",
+          description: "리포트가 학생들에게 성공적으로 전달되었습니다.",
         });
       }
 
@@ -439,11 +453,13 @@ const UploadDashboard = () => {
       const pending = await fetchPendingReports();
       setPendingReports(pending);
     } catch (error) {
-      const reason = error instanceof Error ? error.message : "배포 중 오류가 발생했습니다.";
+      const reason = toFriendlyMessage(
+        error instanceof Error ? error.message : "배포 중 오류가 발생했습니다.",
+      );
       setMessage(reason);
       toast({
         variant: "destructive",
-        title: "대시보드 전송 실패",
+        title: "리포트 발송 실패",
         description: reason,
       });
     } finally {
@@ -596,7 +612,7 @@ const UploadDashboard = () => {
       setEditingReport(null);
       toast({
         title: "첨삭 내용 수정",
-        description: "데이터가 성공적으로 업데이트되었습니다.",
+        description: "수정된 내용이 안전하게 저장되었습니다.",
       });
     } catch (error) {
       toast({
@@ -696,16 +712,16 @@ const UploadDashboard = () => {
     <DashboardLayout>
       <div className="space-y-6">
         <div>
-          <h2 className="text-xl font-bold text-foreground">PDF 업로드 & 무결성 보정</h2>
+          <h2 className="text-xl font-bold text-foreground">새로운 첨삭 리포트 등록</h2>
           <p className="text-sm text-muted-foreground">
-            반별 다중 업로드 후 자동 매칭하고, 필요한 항목만 수동 보정하여 배포합니다.
+            반별 파일을 등록한 뒤 필요한 항목을 확인하고 학생에게 전달합니다.
           </p>
         </div>
 
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             <div className="space-y-2">
-              <p className="text-xs text-muted-foreground">Step 1. 반 선택</p>
+              <p className="text-xs text-muted-foreground">1단계: 반 선택</p>
               <Select value={selectedClassId} onValueChange={setSelectedClassId}>
                 <SelectTrigger>
                   <SelectValue placeholder="반 선택" />
@@ -722,7 +738,7 @@ const UploadDashboard = () => {
             </div>
 
             <div className="space-y-2 md:col-span-2">
-              <p className="text-xs text-muted-foreground">Step 2. 드래그 앤 드롭 다중 업로드</p>
+              <p className="text-xs text-muted-foreground">2단계: 파일 등록</p>
               <div
                 onDragOver={(event) => {
                   event.preventDefault();
@@ -766,7 +782,7 @@ const UploadDashboard = () => {
 
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">
           <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-card-foreground">Step 3. 파싱 결과 확인 & 수동 보정</h3>
+            <h3 className="text-sm font-semibold text-card-foreground">3단계: 내용 확인</h3>
             <p className="text-xs text-muted-foreground">총 {rows.length}건</p>
           </div>
 
@@ -803,7 +819,7 @@ const UploadDashboard = () => {
                     )}
                     {row.parseError && (
                       <span className="rounded bg-destructive/10 px-2 py-0.5 text-xs text-destructive">
-                        파싱 오류(수동 입력 가능)
+                        내용 확인 필요
                       </span>
                     )}
                     <Button
@@ -818,7 +834,9 @@ const UploadDashboard = () => {
                     </Button>
                   </div>
 
-                  {row.parseError && <p className="mb-3 text-xs text-destructive">{row.parseError}</p>}
+                  {row.parseError && (
+                    <p className="mb-3 text-xs text-destructive">{toFriendlyMessage(row.parseError)}</p>
+                  )}
 
                   <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                     <Input
@@ -919,7 +937,7 @@ const UploadDashboard = () => {
 
             {rows.length === 0 && (
               <p className="text-sm text-muted-foreground">
-                반을 선택하고 PDF를 업로드하면 파싱 결과가 표시됩니다.
+                반을 선택하고 파일을 등록하면 확인할 항목이 표시됩니다.
               </p>
             )}
           </div>
@@ -928,19 +946,19 @@ const UploadDashboard = () => {
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h3 className="text-sm font-semibold text-card-foreground">Step 4. 일괄 배포</h3>
+              <h3 className="text-sm font-semibold text-card-foreground">4단계: 학생에게 발송</h3>
               <p className="text-xs text-muted-foreground">
-                데이터가 유효한 항목만 학생 대시보드에 배포되며 읽음 상태는 자동으로 추적됩니다.
+                입력이 완료된 리포트만 학생 대시보드로 안전하게 전달됩니다.
               </p>
             </div>
             <Button onClick={handlePublish} disabled={uploading || loading || rows.length === 0 || hasAnyInvalidRow}>
               {uploading ? (
                 <span className="inline-flex items-center gap-2">
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  전송 중...
+                  발송 중...
                 </span>
               ) : (
-                "대시보드 전송"
+                "학생에게 발송"
               )}
             </Button>
           </div>
@@ -948,7 +966,7 @@ const UploadDashboard = () => {
             <div className="mt-3">
               <Progress value={progress} className="h-2" />
               <p className="mt-2 text-xs text-muted-foreground">
-                배포 진행 중입니다. 완료 전까지 중복 클릭이 비활성화됩니다.
+                발송 진행 중입니다. 완료 전까지 중복 클릭이 비활성화됩니다.
               </p>
             </div>
           )}
@@ -956,7 +974,7 @@ const UploadDashboard = () => {
 
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">
           <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-card-foreground">Step 5. 전송/수신 확인</h3>
+            <h3 className="text-sm font-semibold text-card-foreground">발송 현황 확인</h3>
             <div className="flex items-center gap-2">
               <p className="text-xs text-muted-foreground">선택 반 최근 배포 {classReports.length}건</p>
               <Button size="sm" variant="outline" onClick={handleRefreshReadStatus} disabled={!selectedClass}>
@@ -985,7 +1003,7 @@ const UploadDashboard = () => {
                       : "bg-amber-500/10 text-amber-700"
                   }`}
                 >
-                  {report.isRead ? "읽음" : "미확인"}
+                  {report.isRead ? "읽음" : "읽지 않음"}
                 </span>
               </div>
             ))}
@@ -1040,7 +1058,7 @@ const UploadDashboard = () => {
               <SelectContent>
                 <SelectItem value="all">전체 상태</SelectItem>
                 <SelectItem value="read">읽음</SelectItem>
-                <SelectItem value="unread">미읽음</SelectItem>
+                <SelectItem value="unread">읽지 않음</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -1069,7 +1087,7 @@ const UploadDashboard = () => {
                     ) : (
                       <Circle className="h-4 w-4 text-amber-600" />
                     )}
-                    <span>{report.isRead ? "읽음" : "미읽음"}</span>
+                    <span>{report.isRead ? "읽음" : "읽지 않음"}</span>
                   </div>
                   <p className="text-xs text-muted-foreground">
                     배포일{" "}
@@ -1104,7 +1122,7 @@ const UploadDashboard = () => {
 
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">
           <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-card-foreground">미배정 리포트 관리</h3>
+            <h3 className="text-sm font-semibold text-card-foreground">미연결 학습 자료 정리</h3>
             <p className="text-xs text-muted-foreground">대기 {cleanupPendingReports.length}건</p>
           </div>
           <p className="mb-3 text-xs text-muted-foreground">
@@ -1147,7 +1165,7 @@ const UploadDashboard = () => {
                       onChange={(event) =>
                         setPendingSearch((prev) => ({ ...prev, [report.id]: event.target.value }))
                       }
-                      placeholder="가입 유저 검색 (이름/이메일)"
+                      placeholder="학생 검색 (이름/이메일)"
                     />
                     <Select
                       value={pendingSelectedStudent[report.id] ?? "none"}

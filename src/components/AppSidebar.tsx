@@ -10,11 +10,11 @@ const AppSidebar = () => {
   const { user } = useAuth();
 
   const staffMenu = [
-    { icon: Upload, label: "PDF 업로드", path: "/admin" },
+    { icon: Upload, label: "리포트 등록", path: "/admin" },
     { icon: Users, label: "반 관리", path: "/admin/class-manager" },
   ];
 
-  const studentMenu = [{ icon: LayoutDashboard, label: "리포트 분석", path: "/dashboard" }];
+  const studentMenu = [{ icon: LayoutDashboard, label: "나의 성장 리포트", path: "/dashboard" }];
 
   const menuItems = user?.role === "staff" ? staffMenu : studentMenu;
 

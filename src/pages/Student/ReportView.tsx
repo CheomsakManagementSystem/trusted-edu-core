@@ -375,7 +375,7 @@ const ReportView = () => {
     }
 
     const confirmed = window.confirm(
-      "모든 학습 기록과 계정 정보가 삭제되며 복구할 수 없습니다. 계속하시겠습니까?",
+      "회원 탈퇴 시 그동안의 모든 학습 기록과 성적 데이터가 소멸되며 복구가 불가능합니다. 계속하시겠습니까?",
     );
     if (!confirmed) {
       return;
@@ -408,7 +408,7 @@ const ReportView = () => {
     <DashboardLayout>
       <div className="space-y-6">
         <div>
-          <h2 className="text-xl font-bold text-slate-900">학생 리포트 분석</h2>
+          <h2 className="text-xl font-bold text-slate-900">나의 논술 성장 리포트</h2>
           <p className="text-sm text-slate-500">
             나의 논술 성장 기록을 한눈에 확인하고 취약점을 보완하세요.
           </p>
@@ -420,7 +420,7 @@ const ReportView = () => {
               <h3 className="text-sm font-semibold text-slate-900">반 가입 신청</h3>
               <p className="text-xs text-slate-500">
                 현재 배정 반: {user?.className ?? "기록 없음"}
-                {latestPendingClassId ? " | 승인 대기 중" : ""}
+                {latestPendingClassId ? " | 선생님의 승인을 기다리고 있습니다. 잠시만 기다려 주세요." : ""}
               </p>
             </div>
             <div className="flex w-full gap-2 sm:w-auto">
@@ -477,7 +477,7 @@ const ReportView = () => {
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
               <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
                 <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-base font-semibold text-slate-900">영역별 논술 역량 분석</h3>
+                  <h3 className="text-base font-semibold text-slate-900">영역별 역량 분석표</h3>
                   <div className="flex items-center gap-3 text-xs text-slate-500">
                     <span className="inline-flex items-center gap-1">
                       <span className="h-2.5 w-8 rounded bg-amber-400" />
@@ -538,7 +538,7 @@ const ReportView = () => {
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h3 className="mb-3 text-base font-semibold text-slate-900">피드백 카드</h3>
+                <h3 className="mb-3 text-base font-semibold text-slate-900">선생님의 핵심 조언</h3>
                 <div className="mb-3 grid grid-cols-2 gap-2 text-xs">
                   <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
                     <p className="text-slate-500">첨삭자</p>
@@ -582,7 +582,7 @@ const ReportView = () => {
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
               <div className="space-y-4 xl:col-span-2">
                 <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <h3 className="mb-3 text-sm font-semibold text-slate-900">총점 추이</h3>
+                  <h3 className="mb-3 text-sm font-semibold text-slate-900">회차별 점수 변화 그래프</h3>
                   <div className="h-64">
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart data={trendData}>
@@ -638,7 +638,7 @@ const ReportView = () => {
 
               <div className="space-y-4">
                 <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <h3 className="mb-2 text-sm font-semibold text-slate-900">나의 실제 답안지와 첨삭 내용 확인하기</h3>
+                  <h3 className="mb-2 text-sm font-semibold text-slate-900">나의 답안 및 첨삭 원본 보기</h3>
                   {pdfLoading && <p className="text-sm text-muted-foreground">페이지 렌더링 중입니다...</p>}
                   {pdfError && <p className="text-sm text-destructive">{pdfError}</p>}
                   <div className="overflow-auto rounded border border-slate-200 bg-slate-50 p-2">
@@ -653,7 +653,7 @@ const ReportView = () => {
                 <div className="rounded-xl border border-red-200 bg-red-50 p-5 shadow-sm">
                   <h3 className="text-sm font-semibold text-red-900">계정 관리</h3>
                   <p className="mt-1 text-xs text-red-700">
-                    모든 학습 기록과 계정 정보가 삭제되며 복구할 수 없습니다.
+                    회원 탈퇴 시 그동안의 모든 학습 기록과 성적 데이터가 소멸되며 복구가 불가능합니다.
                   </p>
                   <Button
                     className="mt-3 w-full"
