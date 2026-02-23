@@ -17,7 +17,6 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { useTheme } from "@/hooks/use-theme";
 import {
   deleteStudentAccountData,
   fetchClasses,
@@ -94,7 +93,6 @@ const ReportView = () => {
   const { user } = useAuth();
   const { toast } = useToast();
   const isMobile = useIsMobile();
-  const { isDark } = useTheme();
 
   const [reports, setReports] = useState<ReportRecord[]>([]);
   const [selectedReportId, setSelectedReportId] = useState<string>("");
@@ -309,9 +307,9 @@ const ReportView = () => {
     return `${text.slice(0, 190)}...`;
   }, [feedbackExpanded, feedbackMeta.summary]);
 
-  const chartAxisColor = isDark ? "#e5e7eb" : "#111827";
-  const chartGridColor = isDark ? "#334155" : "#d1d5db";
-  const chartLineColor = isDark ? "#93c5fd" : "#2563eb";
+  const chartAxisColor = "#111827";
+  const chartGridColor = "#d1d5db";
+  const chartLineColor = "#2563eb";
 
   const handleOpenReport = async (report: ReportRecord) => {
     setSelectedReportId(report.id);
@@ -444,19 +442,19 @@ const ReportView = () => {
     <DashboardLayout>
       <div className="space-y-5 md:space-y-6">
         <div>
-          <h2 className="text-2xl font-extrabold tracking-tight text-slate-900 md:text-xl dark:text-slate-100">
+          <h2 className="text-2xl font-extrabold tracking-tight text-slate-900 md:text-xl">
             나의 논술 성장 리포트
           </h2>
-          <p className="mt-1 text-base text-slate-600 md:text-sm dark:text-slate-300">
+          <p className="mt-1 text-base text-slate-600 md:text-sm">
             나의 논술 성장 기록을 한눈에 확인하고 취약점을 보완하세요.
           </p>
         </div>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5 dark:border-slate-700 dark:bg-slate-900">
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <h3 className="text-base font-semibold text-slate-900 md:text-sm dark:text-slate-100">반 가입 신청</h3>
-              <p className="text-sm text-slate-600 md:text-xs dark:text-slate-300">
+              <h3 className="text-base font-semibold text-slate-900 md:text-sm">반 가입 신청</h3>
+              <p className="text-sm text-slate-600 md:text-xs">
                 현재 배정 반: {user?.className ?? "기록 없음"}
                 {latestPendingClassId ? " | 선생님의 승인을 기다리고 있습니다. 잠시만 기다려 주세요." : ""}
               </p>
@@ -494,11 +492,11 @@ const ReportView = () => {
 
         {!loading && !error && studentReports.length > 0 && selectedReport && (
             <div className="space-y-4">
-            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5 dark:border-slate-700 dark:bg-slate-900">
+            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <h3 className="text-base font-semibold text-slate-900 md:text-sm dark:text-slate-100">리포트 회차 선택</h3>
+                <h3 className="text-base font-semibold text-slate-900 md:text-sm">리포트 회차 선택</h3>
                 <Select value={selectedReportId} onValueChange={setSelectedReportId}>
-                  <SelectTrigger className="w-full border-slate-200 sm:w-72 dark:border-slate-700">
+                  <SelectTrigger className="w-full border-slate-200 sm:w-72">
                     <SelectValue placeholder="회차 선택" />
                   </SelectTrigger>
                   <SelectContent className="rounded-t-2xl rounded-b-xl md:rounded-md">
@@ -513,10 +511,10 @@ const ReportView = () => {
             </div>
 
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5 xl:col-span-2 dark:border-slate-700 dark:bg-slate-900">
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5 xl:col-span-2">
                 <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-lg font-semibold text-slate-900 md:text-base dark:text-slate-100">영역별 역량 분석표</h3>
-                  <div className="hidden items-center gap-3 text-xs text-slate-500 md:flex dark:text-slate-300">
+                  <h3 className="text-lg font-semibold text-slate-900 md:text-base">영역별 역량 분석표</h3>
+                  <div className="hidden items-center gap-3 text-xs text-slate-500 md:flex">
                     <span className="inline-flex items-center gap-1">
                       <span className="h-2.5 w-8 rounded bg-amber-400" />
                       나의점수
@@ -553,7 +551,7 @@ const ReportView = () => {
                         <Radar
                           name="전체평균"
                           dataKey="avgScore"
-                          stroke={isDark ? "#d1d5db" : "#6b7280"}
+                          stroke="#6b7280"
                           fillOpacity={0}
                           strokeDasharray="8 6"
                           strokeWidth={2}
@@ -574,10 +572,10 @@ const ReportView = () => {
                     ].map((item) => (
                       <div
                         key={item.label}
-                        className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/60"
+                        className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
                       >
-                        <p className="text-xs font-semibold text-slate-500 dark:text-slate-300">{item.label}</p>
-                        <p className="mt-1 text-2xl font-black leading-none text-slate-900 dark:text-slate-50">
+                        <p className="text-xs font-semibold text-slate-500">{item.label}</p>
+                        <p className="mt-1 text-2xl font-black leading-none text-slate-900">
                           {item.value}
                         </p>
                       </div>
@@ -586,35 +584,35 @@ const ReportView = () => {
                 </div>
               </div>
 
-              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5 dark:border-slate-700 dark:bg-slate-900">
-                <h3 className="mb-3 text-lg font-semibold text-slate-900 md:text-base dark:text-slate-100">선생님의 핵심 조언</h3>
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+                <h3 className="mb-3 text-lg font-semibold text-slate-900 md:text-base">선생님의 핵심 조언</h3>
                 <div className="mb-3 grid grid-cols-1 gap-2 text-sm md:grid-cols-2 md:text-xs">
-                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/60">
-                    <p className="text-slate-500 dark:text-slate-300">첨삭자</p>
-                    <p className="font-semibold text-slate-800 dark:text-slate-100">{feedbackMeta.reviewer}</p>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                    <p className="text-slate-500">첨삭자</p>
+                    <p className="font-semibold text-slate-800">{feedbackMeta.reviewer}</p>
                   </div>
-                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/60">
-                    <p className="text-slate-500 dark:text-slate-300">작성일</p>
-                    <p className="font-semibold text-slate-800 dark:text-slate-100">{feedbackMeta.writtenAt}</p>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                    <p className="text-slate-500">작성일</p>
+                    <p className="font-semibold text-slate-800">{feedbackMeta.writtenAt}</p>
                   </div>
-                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/60">
-                    <p className="text-slate-500 dark:text-slate-300">수강반</p>
-                    <p className="font-semibold text-slate-800 dark:text-slate-100">{feedbackMeta.className}</p>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                    <p className="text-slate-500">수강반</p>
+                    <p className="font-semibold text-slate-800">{feedbackMeta.className}</p>
                   </div>
-                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/60">
-                    <p className="text-slate-500 dark:text-slate-300">학생명</p>
-                    <p className="font-semibold text-slate-800 dark:text-slate-100">{feedbackMeta.studentName}</p>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                    <p className="text-slate-500">학생명</p>
+                    <p className="font-semibold text-slate-800">{feedbackMeta.studentName}</p>
                   </div>
-                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 md:col-span-2 dark:border-slate-700 dark:bg-slate-800/60">
-                    <p className="text-slate-500 dark:text-slate-300">논제</p>
-                    <p className="font-semibold text-slate-800 dark:text-slate-100">{feedbackMeta.essayTopic}</p>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 md:col-span-2">
+                    <p className="text-slate-500">논제</p>
+                    <p className="font-semibold text-slate-800">{feedbackMeta.essayTopic}</p>
                   </div>
                 </div>
-                <div className="rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-950/40">
-                  <div className="border-b border-slate-200 px-3 py-2 text-sm font-bold text-slate-700 dark:border-slate-700 dark:text-slate-100">
+                <div className="rounded-lg border border-slate-200 bg-white">
+                  <div className="border-b border-slate-200 px-3 py-2 text-sm font-bold text-slate-700">
                     첨삭 총평
                   </div>
-                  <div className="min-h-28 px-3 py-3 text-base font-semibold leading-relaxed text-slate-900 md:text-lg dark:text-slate-100">
+                  <div className="min-h-28 px-3 py-3 text-base font-semibold leading-relaxed text-slate-900 md:text-lg">
                     {summaryPreview}
                   </div>
                 </div>
@@ -628,8 +626,8 @@ const ReportView = () => {
                     {feedbackExpanded ? "접기" : "더 보기"}
                   </Button>
                 )}
-                <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-100">
-                  <p className="mb-1 text-xs font-semibold text-slate-500 dark:text-slate-300">[향후 과제]</p>
+                <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800">
+                  <p className="mb-1 text-xs font-semibold text-slate-500">[향후 과제]</p>
                   <p className="text-base leading-relaxed md:text-sm">
                     {feedbackMeta.nextTask || "향후 과제가 명시되지 않았습니다."}
                   </p>
@@ -639,8 +637,8 @@ const ReportView = () => {
 
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
               <div className="space-y-4 xl:col-span-2">
-                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5 dark:border-slate-700 dark:bg-slate-900">
-                  <h3 className="mb-3 text-base font-semibold text-slate-900 md:text-sm dark:text-slate-100">회차별 점수 변화 그래프</h3>
+                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+                  <h3 className="mb-3 text-base font-semibold text-slate-900 md:text-sm">회차별 점수 변화 그래프</h3>
                   <div className="h-64">
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart data={trendData}>
@@ -658,7 +656,7 @@ const ReportView = () => {
                         <Tooltip
                           contentStyle={{
                             borderColor: chartGridColor,
-                            backgroundColor: isDark ? "#0f172a" : "#ffffff",
+                            backgroundColor: "#ffffff",
                             color: chartAxisColor,
                           }}
                         />
@@ -668,8 +666,8 @@ const ReportView = () => {
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5 dark:border-slate-700 dark:bg-slate-900">
-                  <h3 className="mb-3 text-base font-semibold text-slate-900 md:text-sm dark:text-slate-100">리포트 목록</h3>
+                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+                  <h3 className="mb-3 text-base font-semibold text-slate-900 md:text-sm">리포트 목록</h3>
                   <div className="space-y-2">
                     {studentReports.map((report, index) => (
                       <button
@@ -678,12 +676,12 @@ const ReportView = () => {
                         onClick={() => handleOpenReport(report)}
                         className={`w-full rounded-md border px-3 py-3 text-left transition-colors ${
                           selectedReport.id === report.id
-                            ? "border-primary bg-primary/5 dark:bg-primary/15"
-                            : "border-border bg-background hover:border-primary/40 dark:bg-slate-950/40"
+                            ? "border-primary bg-primary/5"
+                            : "border-border bg-background hover:border-primary/40"
                         }`}
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <p className="text-base font-semibold text-slate-900 md:text-sm dark:text-slate-100">
+                          <p className="text-base font-semibold text-slate-900 md:text-sm">
                             회차 {studentReports.length - index} / {report.essayTopic || "기록 없음"}
                           </p>
                           <span
@@ -696,7 +694,7 @@ const ReportView = () => {
                             {report.isRead ? "읽음" : "새 리포트"}
                           </span>
                         </div>
-                        <p className="mt-1 text-sm text-slate-600 md:text-xs dark:text-slate-300">
+                        <p className="mt-1 text-sm text-slate-600 md:text-xs">
                           총점 {report.totalScore} | 등급 {report.grade || "기록 없음"} | 날짜{" "}
                           {report.createdAt
                             ? report.createdAt.toDate().toLocaleDateString("ko-KR")
@@ -709,14 +707,14 @@ const ReportView = () => {
               </div>
 
               <div className="space-y-4">
-                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5 dark:border-slate-700 dark:bg-slate-900">
-                  <h3 className="mb-2 text-base font-semibold text-slate-900 md:text-sm dark:text-slate-100">나의 답안 및 첨삭 원본 보기</h3>
+                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+                  <h3 className="mb-2 text-base font-semibold text-slate-900 md:text-sm">나의 답안 및 첨삭 원본 보기</h3>
                   {pdfLoading && <p className="text-sm text-muted-foreground">페이지 렌더링 중입니다...</p>}
                   {pdfError && <p className="text-sm text-destructive">{pdfError}</p>}
-                  <div className="overflow-auto rounded border border-slate-200 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-800/40">
+                  <div className="overflow-auto rounded border border-slate-200 bg-slate-50 p-2">
                     <canvas ref={previewCanvasRef} className="mx-auto h-auto max-w-full" />
                   </div>
-                  <p className="mt-2 text-sm text-slate-600 md:text-xs dark:text-slate-300">
+                  <p className="mt-2 text-sm text-slate-600 md:text-xs">
                     저장된 페이지 번호({selectedReport.pageNumber ?? selectedReport.sourcePage ?? 1}p)를 기준으로
                     미리보기를 제공합니다.
                   </p>
@@ -739,7 +737,7 @@ const ReportView = () => {
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-red-200 bg-red-50 p-4 shadow-sm md:p-5 dark:border-red-900/60 dark:bg-red-950/30">
+                <div className="rounded-xl border border-red-200 bg-red-50 p-4 shadow-sm md:p-5">
                   <h3 className="text-sm font-semibold text-red-900">계정 관리</h3>
                   <p className="mt-1 text-xs text-red-700">
                     회원 탈퇴 시 그동안의 모든 학습 기록과 성적 데이터가 소멸되며 복구가 불가능합니다.

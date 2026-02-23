@@ -4,7 +4,7 @@
 
 @layer base {
   :root {
-    color-scheme: light dark;
+    color-scheme: light;
     --background: 220 14% 96%;
     --foreground: 221 39% 11%;
 
@@ -55,55 +55,6 @@
     --sidebar-muted: 210 30% 70%;
   }
 
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --background: 216 34% 9%;
-      --foreground: 210 28% 92%;
-
-      --card: 217 30% 13%;
-      --card-foreground: 210 28% 92%;
-
-      --popover: 217 30% 13%;
-      --popover-foreground: 210 28% 92%;
-
-      --primary: 210 84% 62%;
-      --primary-foreground: 214 55% 10%;
-      --primary-light: 210 76% 68%;
-      --primary-accent: 210 90% 56%;
-
-      --secondary: 214 16% 26%;
-      --secondary-foreground: 210 28% 92%;
-
-      --muted: 217 24% 18%;
-      --muted-foreground: 214 14% 72%;
-
-      --accent: 210 70% 58%;
-      --accent-foreground: 214 55% 10%;
-
-      --destructive: 0 70% 58%;
-      --destructive-foreground: 0 0% 100%;
-
-      --success: 126 36% 44%;
-      --success-foreground: 0 0% 100%;
-
-      --warning: 31 92% 58%;
-      --warning-foreground: 0 0% 8%;
-
-      --border: 215 20% 24%;
-      --input: 215 20% 24%;
-      --ring: 210 90% 56%;
-
-      --sidebar-background: 216 35% 10%;
-      --sidebar-foreground: 210 28% 92%;
-      --sidebar-primary: 210 90% 56%;
-      --sidebar-primary-foreground: 214 55% 10%;
-      --sidebar-accent: 214 28% 18%;
-      --sidebar-accent-foreground: 210 28% 92%;
-      --sidebar-border: 214 26% 22%;
-      --sidebar-ring: 210 90% 56%;
-      --sidebar-muted: 214 12% 74%;
-    }
-  }
 }
 
 @layer base {

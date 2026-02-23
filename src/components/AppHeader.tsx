@@ -1,15 +1,13 @@
-import { Bell, LogOut, Moon, Search, Sun, User } from "lucide-react";
+import { Bell, LogOut, Search, User } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import BrandLogo from "@/components/BrandLogo";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { useTheme } from "@/hooks/use-theme";
 
 const AppHeader = () => {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
   const isMobile = useIsMobile();
-  const { isDark, toggleTheme } = useTheme();
 
   const handleLogout = async () => {
     await signOut();
@@ -25,16 +23,6 @@ const AppHeader = () => {
       )}
 
       <div className="flex items-center gap-2 md:gap-4">
-        <button
-          type="button"
-          onClick={toggleTheme}
-          className="inline-flex min-h-12 min-w-12 items-center justify-center rounded-md border border-border bg-background text-foreground transition-colors hover:bg-muted md:min-h-10 md:min-w-10"
-          aria-label={isDark ? "밝게 모드로 전환" : "어둡게 모드로 전환"}
-          title={isDark ? "밝게" : "어둡게"}
-        >
-          {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-        </button>
-
         {/* Search */}
         <div className="relative hidden md:block">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
