@@ -20,7 +20,7 @@ const AppSidebar = () => {
 
   return (
     <aside
-      className={`flex flex-col bg-sidebar text-sidebar-foreground transition-all duration-300 ${
+      className={`hidden flex-col bg-sidebar text-sidebar-foreground transition-all duration-300 md:flex ${
         collapsed ? "w-16" : "w-56"
       }`}
     >

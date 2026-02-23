@@ -3,6 +3,12 @@ import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -10,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
   deleteStudentAccountData,
   fetchClasses,
@@ -85,6 +92,7 @@ const splitFeedbackSections = (feedback: string): { summary: string; nextTask: s
 const ReportView = () => {
   const { user } = useAuth();
   const { toast } = useToast();
+  const isMobile = useIsMobile();
 
   const [reports, setReports] = useState<ReportRecord[]>([]);
   const [selectedReportId, setSelectedReportId] = useState<string>("");
@@ -98,6 +106,8 @@ const ReportView = () => {
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfError, setPdfError] = useState("");
   const [withdrawing, setWithdrawing] = useState(false);
+  const [feedbackExpanded, setFeedbackExpanded] = useState(false);
+  const [pdfPreviewOpen, setPdfPreviewOpen] = useState(false);
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -214,32 +224,32 @@ const ReportView = () => {
 
     return [
       {
-        subject: "독해력",
+        subject: isMobile ? "독해" : "독해력",
         myScore: selectedReport.scores.reading ?? 0,
         avgScore: selectedReport.averageScores?.reading ?? 0,
       },
       {
-        subject: "내용 이해력",
+        subject: isMobile ? "내용이해" : "내용 이해력",
         myScore: selectedReport.scores.comprehension ?? 0,
         avgScore: selectedReport.averageScores?.comprehension ?? 0,
       },
       {
-        subject: "문제 이해력",
+        subject: isMobile ? "문제이해" : "문제 이해력",
         myScore: selectedReport.scores.problemUnderstanding ?? 0,
         avgScore: selectedReport.averageScores?.problemUnderstanding ?? 0,
       },
       {
-        subject: "구성력",
+        subject: isMobile ? "구성" : "구성력",
         myScore: selectedReport.scores.organization ?? 0,
         avgScore: selectedReport.averageScores?.organization ?? 0,
       },
       {
-        subject: "표현력",
+        subject: isMobile ? "표현" : "표현력",
         myScore: selectedReport.scores.expression ?? 0,
         avgScore: selectedReport.averageScores?.expression ?? 0,
       },
     ];
-  }, [selectedReport]);
+  }, [isMobile, selectedReport]);
 
   const trendData = useMemo(
     () =>
@@ -276,6 +286,26 @@ const ReportView = () => {
       nextTask,
     };
   }, [selectedReport, user?.className, user?.name]);
+
+  useEffect(() => {
+    setFeedbackExpanded(false);
+  }, [selectedReportId]);
+
+  const fullPreviewUrl = useMemo(() => {
+    if (!selectedReport?.fileUrl) {
+      return "";
+    }
+    const pageNumber = selectedReport.pageNumber ?? selectedReport.sourcePage ?? 1;
+    return `${selectedReport.fileUrl}#page=${pageNumber}`;
+  }, [selectedReport?.fileUrl, selectedReport?.pageNumber, selectedReport?.sourcePage]);
+
+  const summaryPreview = useMemo(() => {
+    const text = feedbackMeta.summary || "첨삭 총평이 없습니다.";
+    if (feedbackExpanded || text.length <= 190) {
+      return text;
+    }
+    return `${text.slice(0, 190)}...`;
+  }, [feedbackExpanded, feedbackMeta.summary]);
 
   const handleOpenReport = async (report: ReportRecord) => {
     setSelectedReportId(report.id);
@@ -406,29 +436,31 @@ const ReportView = () => {
 
   return (
     <DashboardLayout>
-      <div className="space-y-6">
+      <div className="space-y-5 md:space-y-6">
         <div>
-          <h2 className="text-xl font-bold text-slate-900">나의 논술 성장 리포트</h2>
-          <p className="text-sm text-slate-500">
+          <h2 className="text-2xl font-extrabold tracking-tight text-slate-900 md:text-xl dark:text-slate-100">
+            나의 논술 성장 리포트
+          </h2>
+          <p className="mt-1 text-base text-slate-600 md:text-sm dark:text-slate-300">
             나의 논술 성장 기록을 한눈에 확인하고 취약점을 보완하세요.
           </p>
         </div>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5 dark:border-slate-700 dark:bg-slate-900">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <h3 className="text-sm font-semibold text-slate-900">반 가입 신청</h3>
-              <p className="text-xs text-slate-500">
+              <h3 className="text-base font-semibold text-slate-900 md:text-sm dark:text-slate-100">반 가입 신청</h3>
+              <p className="text-sm text-slate-600 md:text-xs dark:text-slate-300">
                 현재 배정 반: {user?.className ?? "기록 없음"}
                 {latestPendingClassId ? " | 선생님의 승인을 기다리고 있습니다. 잠시만 기다려 주세요." : ""}
               </p>
             </div>
-            <div className="flex w-full gap-2 sm:w-auto">
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
               <Select value={selectedClassId} onValueChange={setSelectedClassId}>
                 <SelectTrigger className="w-full sm:w-64">
                   <SelectValue placeholder="가입할 반 선택" />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="rounded-t-2xl rounded-b-xl md:rounded-md">
                   <SelectItem value="none">반 선택</SelectItem>
                   {classes.map((item) => (
                     <SelectItem key={item.id} value={item.id}>
@@ -455,15 +487,15 @@ const ReportView = () => {
         )}
 
         {!loading && !error && studentReports.length > 0 && selectedReport && (
-          <div className="space-y-4">
-            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="space-y-4">
+            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5 dark:border-slate-700 dark:bg-slate-900">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <h3 className="text-sm font-semibold text-slate-900">리포트 회차 선택</h3>
+                <h3 className="text-base font-semibold text-slate-900 md:text-sm dark:text-slate-100">리포트 회차 선택</h3>
                 <Select value={selectedReportId} onValueChange={setSelectedReportId}>
-                  <SelectTrigger className="w-full border-slate-200 sm:w-72">
+                  <SelectTrigger className="w-full border-slate-200 sm:w-72 dark:border-slate-700">
                     <SelectValue placeholder="회차 선택" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="rounded-t-2xl rounded-b-xl md:rounded-md">
                     {studentReports.map((report, index) => (
                       <SelectItem key={report.id} value={report.id}>
                         회차 {studentReports.length - index} | {report.essayTopic || "기록 없음"}
@@ -475,10 +507,10 @@ const ReportView = () => {
             </div>
 
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5 xl:col-span-2 dark:border-slate-700 dark:bg-slate-900">
                 <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-base font-semibold text-slate-900">영역별 역량 분석표</h3>
-                  <div className="flex items-center gap-3 text-xs text-slate-500">
+                  <h3 className="text-lg font-semibold text-slate-900 md:text-base dark:text-slate-100">영역별 역량 분석표</h3>
+                  <div className="hidden items-center gap-3 text-xs text-slate-500 md:flex dark:text-slate-300">
                     <span className="inline-flex items-center gap-1">
                       <span className="h-2.5 w-8 rounded bg-amber-400" />
                       나의점수
@@ -489,13 +521,13 @@ const ReportView = () => {
                     </span>
                   </div>
                 </div>
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_240px]">
-                  <div className="mx-auto h-80 w-full max-w-2xl">
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_260px]">
+                  <div className="mx-auto h-[320px] w-[90vw] max-w-[430px] sm:h-[360px] sm:w-full sm:max-w-2xl">
                     <ResponsiveContainer width="100%" height="100%">
                       <RadarChart data={radarData}>
                         <PolarGrid />
-                        <PolarAngleAxis dataKey="subject" />
-                        <PolarRadiusAxis domain={[50, 100]} />
+                        <PolarAngleAxis dataKey="subject" tick={{ fontSize: isMobile ? 11 : 12 }} />
+                        <PolarRadiusAxis domain={[50, 100]} tick={{ fontSize: isMobile ? 10 : 11 }} />
                         <Radar
                           name="나의점수"
                           dataKey="myScore"
@@ -516,63 +548,75 @@ const ReportView = () => {
                       </RadarChart>
                     </ResponsiveContainer>
                   </div>
-                  <div className="flex items-center justify-center">
-                    <div className="w-full max-w-[220px] overflow-hidden rounded-md border-4 border-black bg-white">
-                      <div className="grid grid-cols-2">
-                        <div className="border-b-4 border-r-4 border-black p-3 text-center text-4xl font-black leading-none">
-                          총점
-                        </div>
-                        <div className="border-b-4 border-black bg-amber-400 p-3 text-center text-5xl font-black leading-none">
-                          {selectedReport.totalScore}
-                        </div>
-                        <div className="border-r-4 border-black p-3 text-center text-4xl font-black leading-none">
-                          등급
-                        </div>
-                        <div className="p-3 text-center text-5xl font-black leading-none">
-                          {selectedReport.grade || "기록 없음"}
-                        </div>
+                  <div className="grid grid-cols-2 gap-2 md:grid-cols-2">
+                    {[
+                      { label: "독해력", value: selectedReport.scores.reading ?? "-" },
+                      { label: "내용 이해력", value: selectedReport.scores.comprehension ?? "-" },
+                      { label: "문제 이해력", value: selectedReport.scores.problemUnderstanding ?? "-" },
+                      { label: "구성력", value: selectedReport.scores.organization ?? "-" },
+                      { label: "표현력", value: selectedReport.scores.expression ?? "-" },
+                      { label: "총점", value: selectedReport.totalScore ?? "-" },
+                      { label: "등급", value: selectedReport.grade || "기록 없음" },
+                    ].map((item) => (
+                      <div
+                        key={item.label}
+                        className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/60"
+                      >
+                        <p className="text-xs font-semibold text-slate-500 dark:text-slate-300">{item.label}</p>
+                        <p className="mt-1 text-2xl font-black leading-none text-slate-900 dark:text-slate-50">
+                          {item.value}
+                        </p>
                       </div>
-                    </div>
+                    ))}
                   </div>
                 </div>
               </div>
 
-              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h3 className="mb-3 text-base font-semibold text-slate-900">선생님의 핵심 조언</h3>
-                <div className="mb-3 grid grid-cols-2 gap-2 text-xs">
-                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-                    <p className="text-slate-500">첨삭자</p>
-                    <p className="font-semibold text-slate-800">{feedbackMeta.reviewer}</p>
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5 dark:border-slate-700 dark:bg-slate-900">
+                <h3 className="mb-3 text-lg font-semibold text-slate-900 md:text-base dark:text-slate-100">선생님의 핵심 조언</h3>
+                <div className="mb-3 grid grid-cols-1 gap-2 text-sm md:grid-cols-2 md:text-xs">
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/60">
+                    <p className="text-slate-500 dark:text-slate-300">첨삭자</p>
+                    <p className="font-semibold text-slate-800 dark:text-slate-100">{feedbackMeta.reviewer}</p>
                   </div>
-                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-                    <p className="text-slate-500">작성일</p>
-                    <p className="font-semibold text-slate-800">{feedbackMeta.writtenAt}</p>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/60">
+                    <p className="text-slate-500 dark:text-slate-300">작성일</p>
+                    <p className="font-semibold text-slate-800 dark:text-slate-100">{feedbackMeta.writtenAt}</p>
                   </div>
-                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-                    <p className="text-slate-500">수강반</p>
-                    <p className="font-semibold text-slate-800">{feedbackMeta.className}</p>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/60">
+                    <p className="text-slate-500 dark:text-slate-300">수강반</p>
+                    <p className="font-semibold text-slate-800 dark:text-slate-100">{feedbackMeta.className}</p>
                   </div>
-                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-                    <p className="text-slate-500">학생명</p>
-                    <p className="font-semibold text-slate-800">{feedbackMeta.studentName}</p>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/60">
+                    <p className="text-slate-500 dark:text-slate-300">학생명</p>
+                    <p className="font-semibold text-slate-800 dark:text-slate-100">{feedbackMeta.studentName}</p>
                   </div>
-                  <div className="col-span-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-                    <p className="text-slate-500">논제</p>
-                    <p className="font-semibold text-slate-800">{feedbackMeta.essayTopic}</p>
-                  </div>
-                </div>
-                <div className="rounded-md border-4 border-black bg-white">
-                  <div className="grid grid-cols-[160px_1fr] border-b-4 border-black">
-                    <div className="border-r-4 border-black px-3 py-2 text-center text-3xl font-black">첨삭 총평</div>
-                    <div className="px-3 py-2 text-lg font-bold">첨삭자: {feedbackMeta.reviewer}</div>
-                  </div>
-                  <div className="min-h-44 px-4 py-4 text-2xl font-bold leading-relaxed text-slate-900">
-                    {feedbackMeta.summary || "첨삭 총평이 없습니다."}
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 md:col-span-2 dark:border-slate-700 dark:bg-slate-800/60">
+                    <p className="text-slate-500 dark:text-slate-300">논제</p>
+                    <p className="font-semibold text-slate-800 dark:text-slate-100">{feedbackMeta.essayTopic}</p>
                   </div>
                 </div>
-                <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800">
-                  <p className="mb-1 text-xs font-semibold text-slate-500">[향후 과제]</p>
-                  <p className="leading-relaxed">
+                <div className="rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-950/40">
+                  <div className="border-b border-slate-200 px-3 py-2 text-sm font-bold text-slate-700 dark:border-slate-700 dark:text-slate-100">
+                    첨삭 총평
+                  </div>
+                  <div className="min-h-28 px-3 py-3 text-base font-semibold leading-relaxed text-slate-900 md:text-lg dark:text-slate-100">
+                    {summaryPreview}
+                  </div>
+                </div>
+                {feedbackMeta.summary.length > 190 && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="mt-1 px-1 text-sm font-semibold text-primary"
+                    onClick={() => setFeedbackExpanded((prev) => !prev)}
+                  >
+                    {feedbackExpanded ? "접기" : "더 보기"}
+                  </Button>
+                )}
+                <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-100">
+                  <p className="mb-1 text-xs font-semibold text-slate-500 dark:text-slate-300">[향후 과제]</p>
+                  <p className="text-base leading-relaxed md:text-sm">
                     {feedbackMeta.nextTask || "향후 과제가 명시되지 않았습니다."}
                   </p>
                 </div>
@@ -581,14 +625,14 @@ const ReportView = () => {
 
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
               <div className="space-y-4 xl:col-span-2">
-                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <h3 className="mb-3 text-sm font-semibold text-slate-900">회차별 점수 변화 그래프</h3>
+                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5 dark:border-slate-700 dark:bg-slate-900">
+                  <h3 className="mb-3 text-base font-semibold text-slate-900 md:text-sm dark:text-slate-100">회차별 점수 변화 그래프</h3>
                   <div className="h-64">
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart data={trendData}>
                         <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                        <XAxis dataKey="round" />
-                        <YAxis domain={[0, 100]} />
+                        <XAxis dataKey="round" tick={{ fontSize: isMobile ? 11 : 12 }} />
+                        <YAxis domain={[0, 100]} tick={{ fontSize: isMobile ? 11 : 12 }} />
                         <Tooltip />
                         <Line type="monotone" dataKey="score" stroke="#2563eb" strokeWidth={2} />
                       </LineChart>
@@ -596,8 +640,8 @@ const ReportView = () => {
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <h3 className="mb-3 text-sm font-semibold text-slate-900">리포트 목록</h3>
+                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5 dark:border-slate-700 dark:bg-slate-900">
+                  <h3 className="mb-3 text-base font-semibold text-slate-900 md:text-sm dark:text-slate-100">리포트 목록</h3>
                   <div className="space-y-2">
                     {studentReports.map((report, index) => (
                       <button
@@ -606,12 +650,12 @@ const ReportView = () => {
                         onClick={() => handleOpenReport(report)}
                         className={`w-full rounded-md border px-3 py-3 text-left transition-colors ${
                           selectedReport.id === report.id
-                            ? "border-primary bg-primary/5"
-                            : "border-border bg-background hover:border-primary/40"
+                            ? "border-primary bg-primary/5 dark:bg-primary/15"
+                            : "border-border bg-background hover:border-primary/40 dark:bg-slate-950/40"
                         }`}
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <p className="text-sm font-semibold text-slate-900">
+                          <p className="text-base font-semibold text-slate-900 md:text-sm dark:text-slate-100">
                             회차 {studentReports.length - index} / {report.essayTopic || "기록 없음"}
                           </p>
                           <span
@@ -624,7 +668,7 @@ const ReportView = () => {
                             {report.isRead ? "읽음" : "새 리포트"}
                           </span>
                         </div>
-                        <p className="mt-1 text-xs text-slate-500">
+                        <p className="mt-1 text-sm text-slate-600 md:text-xs dark:text-slate-300">
                           총점 {report.totalScore} | 등급 {report.grade || "기록 없음"} | 날짜{" "}
                           {report.createdAt
                             ? report.createdAt.toDate().toLocaleDateString("ko-KR")
@@ -637,20 +681,37 @@ const ReportView = () => {
               </div>
 
               <div className="space-y-4">
-                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <h3 className="mb-2 text-sm font-semibold text-slate-900">나의 답안 및 첨삭 원본 보기</h3>
+                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5 dark:border-slate-700 dark:bg-slate-900">
+                  <h3 className="mb-2 text-base font-semibold text-slate-900 md:text-sm dark:text-slate-100">나의 답안 및 첨삭 원본 보기</h3>
                   {pdfLoading && <p className="text-sm text-muted-foreground">페이지 렌더링 중입니다...</p>}
                   {pdfError && <p className="text-sm text-destructive">{pdfError}</p>}
-                  <div className="overflow-auto rounded border border-slate-200 bg-slate-50 p-2">
+                  <div className="overflow-auto rounded border border-slate-200 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-800/40">
                     <canvas ref={previewCanvasRef} className="mx-auto h-auto max-w-full" />
                   </div>
-                  <p className="mt-2 text-xs text-slate-500">
+                  <p className="mt-2 text-sm text-slate-600 md:text-xs dark:text-slate-300">
                     저장된 페이지 번호({selectedReport.pageNumber ?? selectedReport.sourcePage ?? 1}p)를 기준으로
                     미리보기를 제공합니다.
                   </p>
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full"
+                      onClick={() => setPdfPreviewOpen(true)}
+                    >
+                      전체 화면 보기
+                    </Button>
+                    <Button
+                      type="button"
+                      className="w-full"
+                      onClick={() => window.open(fullPreviewUrl || selectedReport.fileUrl, "_blank", "noopener,noreferrer")}
+                    >
+                      새 탭에서 열기
+                    </Button>
+                  </div>
                 </div>
 
-                <div className="rounded-xl border border-red-200 bg-red-50 p-5 shadow-sm">
+                <div className="rounded-xl border border-red-200 bg-red-50 p-4 shadow-sm md:p-5 dark:border-red-900/60 dark:bg-red-950/30">
                   <h3 className="text-sm font-semibold text-red-900">계정 관리</h3>
                   <p className="mt-1 text-xs text-red-700">
                     회원 탈퇴 시 그동안의 모든 학습 기록과 성적 데이터가 소멸되며 복구가 불가능합니다.
@@ -669,6 +730,18 @@ const ReportView = () => {
           </div>
         )}
       </div>
+      <Dialog open={pdfPreviewOpen} onOpenChange={setPdfPreviewOpen}>
+        <DialogContent className="h-[92dvh] max-w-[96vw] rounded-xl p-3 sm:max-w-4xl sm:p-4">
+          <DialogHeader>
+            <DialogTitle>리포트 전체 화면 미리보기</DialogTitle>
+          </DialogHeader>
+          <iframe
+            title="리포트 PDF 미리보기"
+            src={fullPreviewUrl || selectedReport?.fileUrl}
+            className="h-full min-h-[75dvh] w-full rounded-md border border-border bg-white"
+          />
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   );
 };
