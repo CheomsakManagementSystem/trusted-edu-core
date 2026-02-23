@@ -23,12 +23,10 @@ import {
 } from "@/components/ui/select";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/contexts/AuthContext";
-import { useToast } from "@/hooks/use-toast";
 import {
   approveClassJoinRequest,
   fetchClasses,
   fetchPendingClassJoinRequests,
-  resetSystemData,
   fetchStudents,
   type ClassJoinRequestRecord,
   type ClassLite,
@@ -42,7 +40,6 @@ type ClassFormState = {
 
 const ClassManager = () => {
   const { user } = useAuth();
-  const { toast } = useToast();
   const [classes, setClasses] = useState<ClassLite[]>([]);
   const [students, setStudents] = useState<StudentLite[]>([]);
   const [pendingRequests, setPendingRequests] = useState<ClassJoinRequestRecord[]>([]);
@@ -235,40 +232,6 @@ const ClassManager = () => {
     }
   };
 
-  const handleSystemReset = async () => {
-    const confirmed = window.prompt("[학습 데이터 정리]를 진행하려면 RESET 을 입력하세요.");
-    if (confirmed !== "RESET") {
-      setMessage("[학습 데이터 정리]가 취소되었습니다.");
-      return;
-    }
-
-    setLoading(true);
-    setMessage("");
-    try {
-      const result = await resetSystemData();
-      await loadData();
-      setCheckedStudentUids([]);
-      setSelectedClassId("none");
-      setMessage(
-        `[학습 데이터 정리] 완료: 연결되지 않은 리포트 ${result.deletedReports}건 정리`,
-      );
-      toast({
-        title: "[학습 데이터 정리] 완료",
-        description: `연결되지 않은 리포트 ${result.deletedReports}건 정리`,
-      });
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : "[학습 데이터 정리]에 실패했습니다.";
-      setMessage(reason);
-      toast({
-        variant: "destructive",
-        title: "[학습 데이터 정리] 실패",
-        description: reason,
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -336,19 +299,6 @@ const ClassManager = () => {
               <p className="text-sm text-muted-foreground">등록된 반이 없습니다.</p>
             )}
           </div>
-        </div>
-
-        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-5 shadow-card">
-          <h3 className="mb-2 text-sm font-semibold text-destructive">학습 데이터 정리</h3>
-          <p className="mb-3 text-xs text-destructive/90">
-            배정되지 않은 임시 리포트 데이터만 삭제합니다.
-          </p>
-          <p className="mb-3 text-xs text-destructive/90">
-            연결되지 않은 리포트 기록만 정리하며, 학생 계정은 안전하게 유지됩니다.
-          </p>
-          <Button variant="destructive" onClick={handleSystemReset} disabled={loading}>
-            학습 데이터 정리
-          </Button>
         </div>
 
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">

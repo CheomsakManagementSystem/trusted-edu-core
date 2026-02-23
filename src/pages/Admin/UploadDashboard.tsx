@@ -25,6 +25,7 @@ import { CheckCircle2, Circle, Loader2, Pencil, Trash2 } from "lucide-react";
 import {
   assignPendingReportToStudent,
   deletePublishedReport,
+  deleteReportRecord,
   fetchClasses,
   fetchPendingReports,
   fetchPublishedReports,
@@ -281,6 +282,17 @@ const UploadDashboard = () => {
   const readByReportId = useMemo(
     () => new Map(classReports.map((report) => [report.id, report.isRead])),
     [classReports],
+  );
+  const reportById = useMemo(() => {
+    const map = new Map<string, ReportRecord>();
+    [...publishedReports, ...classReports, ...pendingReports].forEach((report) => {
+      map.set(report.id, report);
+    });
+    return map;
+  }, [classReports, pendingReports, publishedReports]);
+  const cleanupPendingReports = useMemo(
+    () => pendingReports.filter((report) => !report.studentId && !report.studentUid),
+    [pendingReports],
   );
   const manualMatchTarget = useMemo(
     () => rows.find((row) => row.id === manualMatchTargetId) ?? null,
@@ -623,6 +635,63 @@ const UploadDashboard = () => {
     }
   };
 
+  const handleDeleteRow = async (row: UploadCandidate) => {
+    if (!row.sentReportId) {
+      setRows((prev) => prev.filter((item) => item.id !== row.id));
+      return;
+    }
+
+    const connectedReport = reportById.get(row.sentReportId);
+    const isConnected = Boolean(connectedReport?.studentId || connectedReport?.studentUid);
+    const confirmed = window.confirm(
+      isConnected
+        ? "이미 학생에게 연결된 리포트입니다. 정말 삭제하시겠습니까?"
+        : "이 항목을 삭제하시겠습니까?",
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      await deleteReportRecord(row.sentReportId);
+      setRows((prev) => prev.filter((item) => item.id !== row.id));
+      setPublishedReports((prev) => prev.filter((report) => report.id !== row.sentReportId));
+      setClassReports((prev) => prev.filter((report) => report.id !== row.sentReportId));
+      setPendingReports((prev) => prev.filter((report) => report.id !== row.sentReportId));
+      toast({
+        title: "삭제 완료",
+        description: "선택한 항목만 삭제되었습니다.",
+      });
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "삭제 실패",
+        description: error instanceof Error ? error.message : "삭제에 실패했습니다.",
+      });
+    }
+  };
+
+  const handleDeletePendingReport = async (report: ReportRecord) => {
+    const confirmed = window.confirm("이 미배정 리포트만 삭제하시겠습니까?");
+    if (!confirmed) {
+      return;
+    }
+    try {
+      await deleteReportRecord(report.id);
+      setPendingReports((prev) => prev.filter((item) => item.id !== report.id));
+      toast({
+        title: "삭제 완료",
+        description: "이 미배정 리포트만 삭제했습니다.",
+      });
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "삭제 실패",
+        description: error instanceof Error ? error.message : "리포트 삭제에 실패했습니다.",
+      });
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -737,6 +806,16 @@ const UploadDashboard = () => {
                         파싱 오류(수동 입력 가능)
                       </span>
                     )}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="ml-auto"
+                      title="이 미배정 리포트만 삭제"
+                      onClick={() => handleDeleteRow(row)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
                   </div>
 
                   {row.parseError && <p className="mb-3 text-xs text-destructive">{row.parseError}</p>}
@@ -1026,10 +1105,13 @@ const UploadDashboard = () => {
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-card-foreground">미배정 리포트 관리</h3>
-            <p className="text-xs text-muted-foreground">대기 {pendingReports.length}건</p>
+            <p className="text-xs text-muted-foreground">대기 {cleanupPendingReports.length}건</p>
           </div>
+          <p className="mb-3 text-xs text-muted-foreground">
+            이제 전체 초기화 대신, 필요한 데이터만 선택적으로 삭제하여 안전하게 관리할 수 있습니다.
+          </p>
           <div className="space-y-3">
-            {pendingReports.map((report) => {
+            {cleanupPendingReports.map((report) => {
               const options = getPendingCandidates(report);
               const isDuplicate = report.assignmentStatus === "duplicate_pending";
               return (
@@ -1045,6 +1127,16 @@ const UploadDashboard = () => {
                     >
                       {isDuplicate ? "동명이인 대기" : "미가입자 대기"}
                     </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="ml-auto"
+                      title="이 미배정 리포트만 삭제"
+                      onClick={() => handleDeletePendingReport(report)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
                   </div>
                   <p className="mb-3 text-xs text-muted-foreground">
                     총점 {report.totalScore} / 등급 {report.grade || "기록 없음"} / 작성일 {report.writtenAt || "기록 없음"}
@@ -1088,7 +1180,7 @@ const UploadDashboard = () => {
                 </div>
               );
             })}
-            {pendingReports.length === 0 && (
+            {cleanupPendingReports.length === 0 && (
               <p className="text-sm text-muted-foreground">현재 보류 중인 리포트가 없습니다.</p>
             )}
           </div>

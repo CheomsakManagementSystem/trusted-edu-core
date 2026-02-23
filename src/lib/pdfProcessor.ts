@@ -3,19 +3,13 @@ import {
   addDoc,
   collection,
   deleteDoc,
-  documentId,
   doc,
   getDoc,
   getDocs,
-  limit,
   orderBy,
-  QueryConstraint,
-  QueryDocumentSnapshot,
-  DocumentData,
   writeBatch,
   query,
   serverTimestamp,
-  startAfter,
   updateDoc,
   where,
 } from "firebase/firestore";
@@ -1600,6 +1594,10 @@ export const deletePublishedReport = async (reportId: string): Promise<void> => 
   await deleteDoc(doc(db, "reports", reportId));
 };
 
+export const deleteReportRecord = async (reportId: string): Promise<void> => {
+  await deleteDoc(doc(db, "reports", reportId));
+};
+
 export const markReportAsRead = async (reportId: string): Promise<void> => {
   try {
     await updateDoc(doc(db, "reports", reportId), {
@@ -1644,52 +1642,6 @@ export const isolateStudentReports = async (studentUid: string): Promise<void> =
 export const deleteStudentAccountData = async (studentUid: string): Promise<void> => {
   await isolateStudentReports(studentUid);
   await deleteDoc(doc(db, "users", studentUid));
-};
-
-export const resetSystemData = async (): Promise<{
-  deletedReports: number;
-}> => {
-  const collectAllDocs = async (
-    collectionName: string,
-    extraConstraints: QueryConstraint[] = [],
-  ): Promise<QueryDocumentSnapshot<DocumentData>[]> => {
-    const docs: QueryDocumentSnapshot<DocumentData>[] = [];
-    let cursor: QueryDocumentSnapshot<DocumentData> | null = null;
-
-    while (true) {
-      const constraints: QueryConstraint[] = [
-        ...extraConstraints,
-        orderBy(documentId()),
-        limit(400),
-      ];
-      if (cursor) {
-        constraints.push(startAfter(cursor));
-      }
-
-      const snapshot = await getDocs(query(collection(db, collectionName), ...constraints));
-      if (snapshot.empty) {
-        break;
-      }
-      docs.push(...snapshot.docs);
-      cursor = snapshot.docs[snapshot.docs.length - 1];
-    }
-
-    return docs;
-  };
-
-  const reportDocs = await collectAllDocs("reports");
-
-  for (const batchDocs of chunkBy(reportDocs, 400)) {
-    const batch = writeBatch(db);
-    for (const reportDoc of batchDocs) {
-      batch.delete(reportDoc.ref);
-    }
-    await batch.commit();
-  }
-
-  return {
-    deletedReports: reportDocs.length,
-  };
 };
 
 export const renderSinglePdfPage = async (
