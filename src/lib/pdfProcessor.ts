@@ -252,6 +252,52 @@ const sanitizeReviewerName = (value: string): string => {
   return compact;
 };
 
+const extractReviewerFromRawText = (rawText: string): string => {
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const match = line.match(/(?:첨삭자|채점자)\s*[:：]\s*(.+)$/i);
+    if (!match?.[1]) {
+      continue;
+    }
+    const reviewer = sanitizeReviewerName(match[1]);
+    if (reviewer) {
+      return reviewer;
+    }
+  }
+
+  return "";
+};
+
+const extractReviewerFromFeedbackFirstLine = (rawText: string): string => {
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const feedbackStart = lines.findIndex((line) => /(첨삭\s*총평|선생님\s*총평|총평)/i.test(line));
+  if (feedbackStart < 0) {
+    return "";
+  }
+
+  const firstFeedbackLine = lines
+    .slice(feedbackStart + 1)
+    .find((line) => line.length > 0);
+
+  if (!firstFeedbackLine) {
+    return "";
+  }
+
+  const match = firstFeedbackLine.match(/^(?:첨삭자|채점자)\s*[:：]\s*(.+)$/i);
+  if (!match?.[1]) {
+    return "";
+  }
+
+  return sanitizeReviewerName(match[1]);
+};
+
 const extractField = (text: string, labels: string[]): string => {
   const stopTokens = [
     "작성일",
@@ -569,7 +615,10 @@ const extractNameFromTokens = (scope: PageScope): string => {
 const extractReviewerFromScope = (scope: PageScope): string => {
   const labelToken = findLabelToken(scope.tokens, ["첨삭자", "채점자"]);
   if (!labelToken) {
-    return sanitizeReviewerName(extractField(scope.normalizedText, ["첨삭자", "채점자"]));
+    return (
+      extractReviewerFromRawText(scope.rawText) ||
+      sanitizeReviewerName(extractField(scope.normalizedText, ["첨삭자", "채점자"]))
+    );
   }
 
   const sameLine = scope.tokens
@@ -577,7 +626,10 @@ const extractReviewerFromScope = (scope: PageScope): string => {
     .sort((a, b) => a.x - b.x);
 
   if (sameLine.length === 0) {
-    return sanitizeReviewerName(extractField(scope.normalizedText, ["첨삭자", "채점자"]));
+    return (
+      extractReviewerFromRawText(scope.rawText) ||
+      sanitizeReviewerName(extractField(scope.normalizedText, ["첨삭자", "채점자"]))
+    );
   }
 
   const chunks: string[] = [];
@@ -598,7 +650,7 @@ const extractReviewerFromScope = (scope: PageScope): string => {
     chunks.push(current.text);
   }
 
-  return sanitizeReviewerName(chunks.join(" "));
+  return sanitizeReviewerName(chunks.join(" ")) || extractReviewerFromRawText(scope.rawText);
 };
 
 const findScoreColumnX = (tokens: PageToken[]): number | null => {
@@ -704,7 +756,11 @@ const extractFeedbackFromScope = (scope: PageScope, studentName: string, classNa
   );
 
   const lines = groupTokensByLine(feedbackTokens);
-  const rawFeedback = lines.map(toLineText).join("\n").trim();
+  const textLines = lines.map(toLineText).filter(Boolean);
+  if (/^(?:첨삭자|채점자)\s*[:：]\s*.+$/i.test(textLines[0] ?? "")) {
+    textLines.shift();
+  }
+  const rawFeedback = textLines.join("\n").trim();
   return sanitizeFeedback(rawFeedback, studentName, className);
 };
 
@@ -714,7 +770,11 @@ const parsePdfPage = (scope: PageScope): ParsedPdfData => {
   const className = extractField(text, ["수강반", "반"]);
   const writtenAt = extractField(text, ["작성일", "작성 일자"]);
   const essayTopic = extractField(text, ["논제", "주제"]);
-  const reviewer = extractReviewerFromScope(scope);
+  const feedback = extractFeedbackFromScope(scope, name, className);
+  const reviewer =
+    extractReviewerFromScope(scope) ||
+    extractReviewerFromFeedbackFirstLine(scope.rawText) ||
+    sanitizeReviewerName(extractField(text, ["첨삭자", "채점자"]));
   const scoreColumnX = findScoreColumnX(scope.tokens);
 
   const readingSegment = getMetricSegment(text, "독해력");
@@ -754,7 +814,7 @@ const parsePdfPage = (scope: PageScope): ParsedPdfData => {
     essayTopic,
     grade: gradeByBox,
     reviewer,
-    feedback: extractFeedbackFromScope(scope, name, className),
+    feedback,
     scores: {
       reading: readingMine,
       comprehension: compMine,
@@ -1461,6 +1521,83 @@ export const fetchReportsByClassId = async (classId: string): Promise<ReportReco
       })
       .sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0));
   }
+};
+
+export const fetchPublishedReports = async (): Promise<ReportRecord[]> => {
+  const reportsRef = collection(db, "reports");
+
+  try {
+    const snapshot = await getDocs(
+      query(
+        reportsRef,
+        where("assignmentStatus", "==", "completed"),
+        orderBy("createdAt", "desc"),
+      ),
+    );
+    return snapshot.docs.map((docSnap) => {
+      const data = docSnap.data() as Omit<ReportRecord, "id">;
+      return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
+    });
+  } catch {
+    const snapshot = await getDocs(
+      query(reportsRef, where("assignmentStatus", "==", "completed")),
+    );
+    return snapshot.docs
+      .map((docSnap) => {
+        const data = docSnap.data() as Omit<ReportRecord, "id">;
+        return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
+      })
+      .sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0));
+  }
+};
+
+export const updatePublishedReport = async (
+  reportId: string,
+  payload: {
+    reviewer: string;
+    feedback: string;
+    scores: ScoreBreakdown;
+  },
+): Promise<void> => {
+  const normalizedScores = {
+    ...payload.scores,
+    total: payload.scores.total ?? sumRequiredScores(payload.scores),
+  };
+  const nextTotal = normalizedScores.total ?? 0;
+  const reportRef = doc(db, "reports", reportId);
+  const snap = await getDoc(reportRef);
+  const prev = (snap.data() ?? {}) as {
+    parsedJson?: ParsedPdfData;
+  };
+  const updatePayload: {
+    reviewer: string;
+    feedback: string;
+    scores: ScoreBreakdown;
+    totalScore: number;
+    parsedJson?: ParsedPdfData;
+    updatedAt: ReturnType<typeof serverTimestamp>;
+  } = {
+    reviewer: payload.reviewer.trim(),
+    feedback: payload.feedback.trim(),
+    scores: normalizedScores,
+    totalScore: nextTotal,
+    updatedAt: serverTimestamp(),
+  };
+
+  if (prev.parsedJson) {
+    updatePayload.parsedJson = {
+      ...prev.parsedJson,
+      reviewer: payload.reviewer.trim(),
+      feedback: payload.feedback.trim(),
+      scores: normalizedScores,
+    };
+  }
+
+  await updateDoc(reportRef, updatePayload);
+};
+
+export const deletePublishedReport = async (reportId: string): Promise<void> => {
+  await deleteDoc(doc(db, "reports", reportId));
 };
 
 export const markReportAsRead = async (reportId: string): Promise<void> => {

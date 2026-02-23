@@ -236,9 +236,9 @@ const ClassManager = () => {
   };
 
   const handleSystemReset = async () => {
-    const confirmed = window.prompt("미배정 리포트 초기화를 진행하려면 RESET 을 입력하세요.");
+    const confirmed = window.prompt("[학습 데이터 정리]를 진행하려면 RESET 을 입력하세요.");
     if (confirmed !== "RESET") {
-      setMessage("미배정 리포트 초기화가 취소되었습니다.");
+      setMessage("[학습 데이터 정리]가 취소되었습니다.");
       return;
     }
 
@@ -250,18 +250,18 @@ const ClassManager = () => {
       setCheckedStudentUids([]);
       setSelectedClassId("none");
       setMessage(
-        `미배정 리포트 초기화 완료: 리포트 ${result.deletedReports}건 삭제`,
+        `[학습 데이터 정리] 완료: 연결되지 않은 리포트 ${result.deletedReports}건 정리`,
       );
       toast({
-        title: "미배정 리포트 초기화 완료",
-        description: `리포트 ${result.deletedReports}건 삭제`,
+        title: "[학습 데이터 정리] 완료",
+        description: `연결되지 않은 리포트 ${result.deletedReports}건 정리`,
       });
     } catch (error) {
-      const reason = error instanceof Error ? error.message : "미배정 리포트 초기화에 실패했습니다.";
+      const reason = error instanceof Error ? error.message : "[학습 데이터 정리]에 실패했습니다.";
       setMessage(reason);
       toast({
         variant: "destructive",
-        title: "미배정 리포트 초기화 실패",
+        title: "[학습 데이터 정리] 실패",
         description: reason,
       });
     } finally {
@@ -275,7 +275,7 @@ const ClassManager = () => {
         <div>
           <h2 className="text-xl font-bold text-foreground">반 관리</h2>
           <p className="text-sm text-muted-foreground">
-            반을 생성/수정/삭제하고 학생을 체크박스로 선택해 일괄 배정합니다.
+            반 배정이 필요한 학생을 선택하여 명단에 추가합니다.
           </p>
         </div>
 
@@ -339,12 +339,15 @@ const ClassManager = () => {
         </div>
 
         <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-5 shadow-card">
-          <h3 className="mb-2 text-sm font-semibold text-destructive">미배정 리포트 초기화</h3>
+          <h3 className="mb-2 text-sm font-semibold text-destructive">학습 데이터 정리</h3>
           <p className="mb-3 text-xs text-destructive/90">
-            reports 컬렉션만 초기화합니다. users(학생/강사) 컬렉션은 삭제하지 않습니다.
+            배정되지 않은 임시 리포트 데이터만 삭제합니다.
+          </p>
+          <p className="mb-3 text-xs text-destructive/90">
+            연결되지 않은 리포트 기록만 정리하며, 학생 계정은 안전하게 유지됩니다.
           </p>
           <Button variant="destructive" onClick={handleSystemReset} disabled={loading}>
-            미배정 리포트 초기화
+            학습 데이터 정리
           </Button>
         </div>
 

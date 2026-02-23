@@ -21,15 +21,18 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2 } from "lucide-react";
+import { CheckCircle2, Circle, Loader2, Pencil, Trash2 } from "lucide-react";
 import {
   assignPendingReportToStudent,
+  deletePublishedReport,
   fetchClasses,
   fetchPendingReports,
+  fetchPublishedReports,
   fetchReportsByClassId,
   fetchStudents,
   prepareUploadCandidates,
   publishReportBatch,
+  updatePublishedReport,
   type ClassLite,
   type ReportRecord,
   type ScoreBreakdown,
@@ -67,6 +70,7 @@ const UploadDashboard = () => {
   const [classes, setClasses] = useState<ClassLite[]>([]);
   const [students, setStudents] = useState<StudentLite[]>([]);
   const [classReports, setClassReports] = useState<ReportRecord[]>([]);
+  const [publishedReports, setPublishedReports] = useState<ReportRecord[]>([]);
   const [pendingReports, setPendingReports] = useState<ReportRecord[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string>("none");
   const [rows, setRows] = useState<UploadCandidate[]>([]);
@@ -80,6 +84,29 @@ const UploadDashboard = () => {
   const [pendingSelectedStudent, setPendingSelectedStudent] = useState<Record<string, string>>({});
   const [resolvingPendingId, setResolvingPendingId] = useState<string | null>(null);
   const [manualMatchTargetId, setManualMatchTargetId] = useState<string | null>(null);
+  const [archiveClassFilter, setArchiveClassFilter] = useState<string>("all");
+  const [archiveStudentFilter, setArchiveStudentFilter] = useState("");
+  const [archiveRoundFilter, setArchiveRoundFilter] = useState<string>("all");
+  const [archiveReadFilter, setArchiveReadFilter] = useState<string>("all");
+  const [editingReport, setEditingReport] = useState<ReportRecord | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [deletingReportId, setDeletingReportId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<{
+    reviewer: string;
+    feedback: string;
+    scores: ScoreBreakdown;
+  }>({
+    reviewer: "",
+    feedback: "",
+    scores: {
+      reading: null,
+      comprehension: null,
+      problemUnderstanding: null,
+      organization: null,
+      expression: null,
+      total: null,
+    },
+  });
 
   const selectedClass = useMemo(
     () => classes.find((item) => item.id === selectedClassId) ?? null,
@@ -107,6 +134,14 @@ const UploadDashboard = () => {
       setPendingReports(pending);
     };
 
+    run();
+  }, []);
+
+  useEffect(() => {
+    const run = async () => {
+      const rows = await fetchPublishedReports();
+      setPublishedReports(rows);
+    };
     run();
   }, []);
 
@@ -251,6 +286,55 @@ const UploadDashboard = () => {
     () => rows.find((row) => row.id === manualMatchTargetId) ?? null,
     [manualMatchTargetId, rows],
   );
+  const roundByReportId = useMemo(() => {
+    const groups = new Map<string, ReportRecord[]>();
+    const map = new Map<string, number>();
+    publishedReports.forEach((report) => {
+      const key = report.studentUid || report.studentName || report.sourceName || report.id;
+      const list = groups.get(key) ?? [];
+      list.push(report);
+      groups.set(key, list);
+    });
+
+    groups.forEach((list) => {
+      const sorted = [...list].sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0));
+      sorted.forEach((report, index) => {
+        map.set(report.id, sorted.length - index);
+      });
+    });
+    return map;
+  }, [publishedReports]);
+  const archiveRounds = useMemo(
+    () => Array.from(new Set(Array.from(roundByReportId.values()))).sort((a, b) => a - b),
+    [roundByReportId],
+  );
+  const filteredPublishedReports = useMemo(() => {
+    return publishedReports.filter((report) => {
+      if (archiveClassFilter !== "all" && report.classId !== archiveClassFilter) {
+        return false;
+      }
+      const keyword = archiveStudentFilter.trim().toLowerCase();
+      if (keyword) {
+        const target = `${report.studentName} ${report.fileName}`.toLowerCase();
+        if (!target.includes(keyword)) {
+          return false;
+        }
+      }
+      if (archiveRoundFilter !== "all") {
+        const round = roundByReportId.get(report.id) ?? 0;
+        if (String(round) !== archiveRoundFilter) {
+          return false;
+        }
+      }
+      if (archiveReadFilter === "read" && !report.isRead) {
+        return false;
+      }
+      if (archiveReadFilter === "unread" && report.isRead) {
+        return false;
+      }
+      return true;
+    });
+  }, [archiveClassFilter, archiveReadFilter, archiveRoundFilter, archiveStudentFilter, publishedReports, roundByReportId]);
 
   const handlePublish = async () => {
     if (!user) {
@@ -356,6 +440,8 @@ const UploadDashboard = () => {
   };
 
   const handleRefreshReadStatus = async () => {
+    const published = await fetchPublishedReports();
+    setPublishedReports(published);
     if (selectedClass) {
       const reports = await fetchReportsByClassId(selectedClass.id);
       setClassReports(reports);
@@ -448,6 +534,93 @@ const UploadDashboard = () => {
       title: "수동 매칭 완료",
       description: `${target.name} (${target.email}) 유저로 배정했습니다.`,
     });
+  };
+
+  const openEditModal = (report: ReportRecord) => {
+    setEditingReport(report);
+    setEditForm({
+      reviewer: report.reviewer || "",
+      feedback: report.feedback || "",
+      scores: {
+        reading: report.scores.reading ?? null,
+        comprehension: report.scores.comprehension ?? null,
+        problemUnderstanding: report.scores.problemUnderstanding ?? null,
+        organization: report.scores.organization ?? null,
+        expression: report.scores.expression ?? null,
+        total: report.scores.total ?? report.totalScore ?? null,
+      },
+    });
+  };
+
+  const handleEditScore = (field: keyof ScoreBreakdown, value: string) => {
+    const numeric = value.trim() === "" ? null : Number(value);
+    setEditForm((prev) => ({
+      ...prev,
+      scores: {
+        ...prev.scores,
+        [field]: Number.isFinite(numeric) ? numeric : null,
+      },
+    }));
+  };
+
+  const handleSaveReportEdit = async () => {
+    if (!editingReport) {
+      return;
+    }
+
+    setSavingEdit(true);
+    try {
+      await updatePublishedReport(editingReport.id, {
+        reviewer: editForm.reviewer,
+        feedback: editForm.feedback,
+        scores: editForm.scores,
+      });
+      const refreshed = await fetchPublishedReports();
+      setPublishedReports(refreshed);
+      if (selectedClass) {
+        const reports = await fetchReportsByClassId(selectedClass.id);
+        setClassReports(reports);
+      }
+      setEditingReport(null);
+      toast({
+        title: "첨삭 내용 수정",
+        description: "데이터가 성공적으로 업데이트되었습니다.",
+      });
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "첨삭 내용 수정 실패",
+        description: error instanceof Error ? error.message : "리포트 수정에 실패했습니다.",
+      });
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const handleDeletePublishedReport = async (reportId: string) => {
+    if (!window.confirm("선택한 리포트를 회수/삭제하시겠습니까?")) {
+      return;
+    }
+
+    setDeletingReportId(reportId);
+    try {
+      await deletePublishedReport(reportId);
+      setPublishedReports((prev) => prev.filter((report) => report.id !== reportId));
+      setClassReports((prev) => prev.filter((report) => report.id !== reportId));
+      setPendingReports((prev) => prev.filter((report) => report.id !== reportId));
+      toast({
+        title: "리포트 회수/삭제",
+        description: "리포트가 삭제되었습니다.",
+      });
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "리포트 회수/삭제 실패",
+        description: error instanceof Error ? error.message : "리포트 삭제에 실패했습니다.",
+      });
+    } finally {
+      setDeletingReportId(null);
+    }
   };
 
   return (
@@ -678,7 +851,7 @@ const UploadDashboard = () => {
             <div>
               <h3 className="text-sm font-semibold text-card-foreground">Step 4. 일괄 배포</h3>
               <p className="text-xs text-muted-foreground">
-                데이터가 유효한 행만 `reports` 컬렉션으로 전송되며 기본 `isRead=false`로 저장됩니다.
+                데이터가 유효한 항목만 학생 대시보드에 배포되며 읽음 상태는 자동으로 추적됩니다.
               </p>
             </div>
             <Button onClick={handlePublish} disabled={uploading || loading || rows.length === 0 || hasAnyInvalidRow}>
@@ -720,10 +893,10 @@ const UploadDashboard = () => {
               >
                 <div>
                   <p className="text-sm font-medium text-card-foreground">
-                    {report.studentName} | {report.essayTopic || "논제 미기재"}
+                    {report.studentName || "기록 없음"} | {report.essayTopic || "기록 없음"}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    총점 {report.totalScore} / 등급 {report.grade || "-"}
+                    총점 {report.totalScore} / 등급 {report.grade || "기록 없음"}
                   </p>
                 </div>
                 <span
@@ -744,6 +917,113 @@ const UploadDashboard = () => {
         </div>
 
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">
+          <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <h3 className="text-sm font-semibold text-card-foreground">배포된 리포트 보관함</h3>
+            <p className="text-xs text-muted-foreground">총 {filteredPublishedReports.length}건</p>
+          </div>
+
+          <div className="mb-4 grid grid-cols-1 gap-2 md:grid-cols-4">
+            <Select value={archiveClassFilter} onValueChange={setArchiveClassFilter}>
+              <SelectTrigger>
+                <SelectValue placeholder="반 필터" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">전체 반</SelectItem>
+                {classes.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    {item.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Input
+              value={archiveStudentFilter}
+              onChange={(event) => setArchiveStudentFilter(event.target.value)}
+              placeholder="학생/파일명 검색"
+            />
+            <Select value={archiveRoundFilter} onValueChange={setArchiveRoundFilter}>
+              <SelectTrigger>
+                <SelectValue placeholder="회차 필터" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">전체 회차</SelectItem>
+                {archiveRounds.map((round) => (
+                  <SelectItem key={round} value={String(round)}>
+                    회차 {round}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={archiveReadFilter} onValueChange={setArchiveReadFilter}>
+              <SelectTrigger>
+                <SelectValue placeholder="읽음 상태" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">전체 상태</SelectItem>
+                <SelectItem value="read">읽음</SelectItem>
+                <SelectItem value="unread">미읽음</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            {filteredPublishedReports.map((report) => {
+              const round = roundByReportId.get(report.id) ?? 1;
+              return (
+                <div
+                  key={report.id}
+                  className="grid grid-cols-1 gap-2 rounded-md border border-border bg-background px-3 py-3 md:grid-cols-[1.4fr_1.2fr_0.8fr_0.8fr_auto]"
+                >
+                  <div>
+                    <p className="text-sm font-semibold text-card-foreground">{report.fileName || "기록 없음"}</p>
+                    <p className="text-xs text-muted-foreground">
+                      학생 {report.studentName || "기록 없음"} | 반 {report.className || "기록 없음"} | 회차 {round}
+                    </p>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    <p>논제: {report.essayTopic || "기록 없음"}</p>
+                    <p>첨삭자: {report.reviewer || "기록 없음"}</p>
+                  </div>
+                  <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                    {report.isRead ? (
+                      <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                    ) : (
+                      <Circle className="h-4 w-4 text-amber-600" />
+                    )}
+                    <span>{report.isRead ? "읽음" : "미읽음"}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    배포일{" "}
+                    {report.createdAt
+                      ? report.createdAt.toDate().toLocaleDateString("ko-KR")
+                      : "기록 없음"}
+                  </p>
+                  <div className="flex gap-2">
+                    <Button type="button" size="sm" variant="outline" onClick={() => openEditModal(report)}>
+                      <Pencil className="mr-1 h-3.5 w-3.5" />
+                      첨삭 내용 수정
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="destructive"
+                      disabled={deletingReportId === report.id}
+                      onClick={() => handleDeletePublishedReport(report.id)}
+                    >
+                      <Trash2 className="mr-1 h-3.5 w-3.5" />
+                      리포트 회수/삭제
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+            {filteredPublishedReports.length === 0 && (
+              <p className="text-sm text-muted-foreground">기록 없음</p>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-card p-5 shadow-card">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-card-foreground">미배정 리포트 관리</h3>
             <p className="text-xs text-muted-foreground">대기 {pendingReports.length}건</p>
@@ -756,7 +1036,7 @@ const UploadDashboard = () => {
                 <div key={report.id} className="rounded-md border border-border bg-background p-4">
                   <div className="mb-2 flex flex-wrap items-center gap-2">
                     <p className="text-sm font-semibold text-card-foreground">
-                      {report.sourceName || "이름 미추출"} | {report.fileName}
+                      {report.sourceName || "기록 없음"} | {report.fileName}
                     </p>
                     <span
                       className={`rounded px-2 py-0.5 text-xs ${
@@ -767,7 +1047,7 @@ const UploadDashboard = () => {
                     </span>
                   </div>
                   <p className="mb-3 text-xs text-muted-foreground">
-                    총점 {report.totalScore} / 등급 {report.grade || "-"} / 작성일 {report.writtenAt || "-"}
+                    총점 {report.totalScore} / 등급 {report.grade || "기록 없음"} / 작성일 {report.writtenAt || "기록 없음"}
                   </p>
                   <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                     <Input
@@ -820,6 +1100,48 @@ const UploadDashboard = () => {
           </pre>
         )}
 
+        <Dialog open={Boolean(editingReport)} onOpenChange={(open) => !open && setEditingReport(null)}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>첨삭 내용 수정</DialogTitle>
+              <DialogDescription>
+                지표 점수, 총평 텍스트, 첨삭자 이름을 수정한 뒤 저장하세요.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3">
+              <Input
+                value={editForm.reviewer}
+                onChange={(event) => setEditForm((prev) => ({ ...prev, reviewer: event.target.value }))}
+                placeholder="첨삭자"
+              />
+              <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
+                {scoreFields.map((field) => (
+                  <Input
+                    key={`edit-${field.key}`}
+                    value={editForm.scores[field.key] ?? ""}
+                    onChange={(event) => handleEditScore(field.key, event.target.value)}
+                    placeholder={field.label}
+                  />
+                ))}
+              </div>
+              <Textarea
+                value={editForm.feedback}
+                onChange={(event) => setEditForm((prev) => ({ ...prev, feedback: event.target.value }))}
+                placeholder="첨삭 총평"
+                className="min-h-36"
+              />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setEditingReport(null)} disabled={savingEdit}>
+                취소
+              </Button>
+              <Button onClick={handleSaveReportEdit} disabled={savingEdit}>
+                {savingEdit ? "저장 중..." : "저장"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         <Dialog open={Boolean(manualMatchTarget)} onOpenChange={(open) => !open && setManualMatchTargetId(null)}>
           <DialogContent>
             <DialogHeader>
@@ -830,7 +1152,7 @@ const UploadDashboard = () => {
             </DialogHeader>
             <div className="space-y-2">
               <p className="text-sm font-medium text-card-foreground">
-                대상 이름: {manualMatchTarget?.parsed.name || "이름 미추출"}
+                대상 이름: {manualMatchTarget?.parsed.name || "기록 없음"}
               </p>
               <div className="max-h-72 space-y-2 overflow-y-auto rounded-md border border-border p-2">
                 {(manualMatchTarget?.candidates ?? []).map((candidate) => (

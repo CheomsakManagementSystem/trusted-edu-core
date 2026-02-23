@@ -14,7 +14,6 @@ import {
   deleteStudentAccountData,
   fetchClasses,
   fetchMyClassJoinRequests,
-  fetchReportsByStudentUid,
   markReportAsRead,
   renderSinglePdfPage,
   submitClassJoinRequest,
@@ -22,8 +21,9 @@ import {
   type ClassLite,
   type ReportRecord,
 } from "@/lib/pdfProcessor";
-import { auth } from "@/lib/firebase";
+import { auth, db } from "@/lib/firebase";
 import { deleteUser } from "firebase/auth";
+import { collection, onSnapshot, orderBy, query, where } from "firebase/firestore";
 import {
   CartesianGrid,
   Line,
@@ -101,33 +101,72 @@ const ReportView = () => {
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
-    const run = async () => {
-      if (!user?.uid) {
-        setReports([]);
-        setLoading(false);
-        return;
-      }
+    if (!user?.uid) {
+      setReports([]);
+      setLoading(false);
+      return;
+    }
 
-      setLoading(true);
-      setError("");
+    setLoading(true);
+    setError("");
 
-      try {
-        const records = await fetchReportsByStudentUid(user.uid);
-        const ownRecords = records.filter((record) => record.studentUid === user.uid);
+    const toRows = (docs: Array<{ id: string; data: () => unknown }>): ReportRecord[] =>
+      docs
+        .map((docSnap) => {
+          const data = docSnap.data() as Omit<ReportRecord, "id">;
+          return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
+        })
+        .filter((row) => row.assignmentStatus !== "duplicate_pending" && row.assignmentStatus !== "unassigned_pending")
+        .sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0));
+
+    const reportsRef = collection(db, "reports");
+    const primaryQuery = query(reportsRef, where("studentUid", "==", user.uid), orderBy("createdAt", "desc"));
+    let fallbackUnsub: (() => void) | null = null;
+
+    const primaryUnsub = onSnapshot(
+      primaryQuery,
+      (snapshot) => {
+        const ownRecords = toRows(snapshot.docs);
         setReports(ownRecords);
-        setSelectedReportId(ownRecords[0]?.id ?? "");
-      } catch (loadError) {
-        setError(
-          loadError instanceof Error
-            ? loadError.message
-            : "리포트 조회 중 오류가 발생했습니다.",
-        );
-      } finally {
+        setSelectedReportId((prev) => {
+          if (ownRecords.some((report) => report.id === prev)) {
+            return prev;
+          }
+          return ownRecords[0]?.id ?? "";
+        });
         setLoading(false);
-      }
-    };
+      },
+      () => {
+        const fallbackQuery = query(reportsRef, where("studentUid", "==", user.uid));
+        fallbackUnsub = onSnapshot(
+          fallbackQuery,
+          (snapshot) => {
+            const ownRecords = toRows(snapshot.docs);
+            setReports(ownRecords);
+            setSelectedReportId((prev) => {
+              if (ownRecords.some((report) => report.id === prev)) {
+                return prev;
+              }
+              return ownRecords[0]?.id ?? "";
+            });
+            setLoading(false);
+          },
+          (loadError) => {
+            setError(
+              loadError instanceof Error
+                ? loadError.message
+                : "리포트 조회 중 오류가 발생했습니다.",
+            );
+            setLoading(false);
+          },
+        );
+      },
+    );
 
-    run();
+    return () => {
+      primaryUnsub();
+      fallbackUnsub?.();
+    };
   }, [user?.uid]);
 
   useEffect(() => {
@@ -214,11 +253,11 @@ const ReportView = () => {
   const feedbackMeta = useMemo(() => {
     if (!selectedReport) {
       return {
-        reviewer: "-",
-        writtenAt: "-",
-        className: "-",
-        essayTopic: "-",
-        studentName: "-",
+        reviewer: "정보를 불러오는 중입니다",
+        writtenAt: "정보를 불러오는 중입니다",
+        className: "정보를 불러오는 중입니다",
+        essayTopic: "정보를 불러오는 중입니다",
+        studentName: "정보를 불러오는 중입니다",
         summary: "",
         nextTask: "",
       };
@@ -228,11 +267,11 @@ const ReportView = () => {
     const { summary, nextTask } = splitFeedbackSections(cleanedFeedback);
 
     return {
-      reviewer: selectedReport.reviewer?.trim() || "-",
-      writtenAt: selectedReport.writtenAt?.trim() || "-",
-      className: selectedReport.className?.trim() || user?.className || "-",
-      essayTopic: selectedReport.essayTopic?.trim() || "-",
-      studentName: selectedReport.studentName?.trim() || user?.name || "-",
+      reviewer: selectedReport.reviewer?.trim() || "기록 없음",
+      writtenAt: selectedReport.writtenAt?.trim() || "기록 없음",
+      className: selectedReport.className?.trim() || user?.className || "기록 없음",
+      essayTopic: selectedReport.essayTopic?.trim() || "기록 없음",
+      studentName: selectedReport.studentName?.trim() || user?.name || "기록 없음",
       summary,
       nextTask,
     };
@@ -336,7 +375,7 @@ const ReportView = () => {
     }
 
     const confirmed = window.confirm(
-      "탈퇴 시 Auth/Firestore 계정이 삭제되고 기존 리포트는 미배정 처리됩니다. 계속하시겠습니까?",
+      "모든 학습 기록과 계정 정보가 삭제되며 복구할 수 없습니다. 계속하시겠습니까?",
     );
     if (!confirmed) {
       return;
@@ -371,7 +410,7 @@ const ReportView = () => {
         <div>
           <h2 className="text-xl font-bold text-slate-900">학생 리포트 분석</h2>
           <p className="text-sm text-slate-500">
-            PDF 첨삭 데이터가 디지털 대시보드에 이식되어 회차별 성장을 확인할 수 있습니다.
+            나의 논술 성장 기록을 한눈에 확인하고 취약점을 보완하세요.
           </p>
         </div>
 
@@ -380,7 +419,7 @@ const ReportView = () => {
             <div>
               <h3 className="text-sm font-semibold text-slate-900">반 가입 신청</h3>
               <p className="text-xs text-slate-500">
-                현재 배정 반: {user?.className ?? "미배정"}
+                현재 배정 반: {user?.className ?? "기록 없음"}
                 {latestPendingClassId ? " | 승인 대기 중" : ""}
               </p>
             </div>
@@ -408,7 +447,7 @@ const ReportView = () => {
           </div>
         </div>
 
-        {loading && <p className="text-sm text-muted-foreground">리포트를 불러오는 중입니다...</p>}
+        {loading && <p className="text-sm text-muted-foreground">정보를 불러오는 중입니다</p>}
         {!loading && error && <p className="text-sm text-destructive">{error}</p>}
 
         {!loading && !error && studentReports.length === 0 && (
@@ -427,7 +466,7 @@ const ReportView = () => {
                   <SelectContent>
                     {studentReports.map((report, index) => (
                       <SelectItem key={report.id} value={report.id}>
-                        회차 {studentReports.length - index} | {report.essayTopic || "논제 미기재"}
+                        회차 {studentReports.length - index} | {report.essayTopic || "기록 없음"}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -438,7 +477,7 @@ const ReportView = () => {
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
               <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
                 <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-base font-semibold text-slate-900">5개 지표 레이더 차트</h3>
+                  <h3 className="text-base font-semibold text-slate-900">영역별 논술 역량 분석</h3>
                   <div className="flex items-center gap-3 text-xs text-slate-500">
                     <span className="inline-flex items-center gap-1">
                       <span className="h-2.5 w-8 rounded bg-amber-400" />
@@ -490,7 +529,7 @@ const ReportView = () => {
                           등급
                         </div>
                         <div className="p-3 text-center text-5xl font-black leading-none">
-                          {selectedReport.grade || "-"}
+                          {selectedReport.grade || "기록 없음"}
                         </div>
                       </div>
                     </div>
@@ -573,7 +612,7 @@ const ReportView = () => {
                       >
                         <div className="flex items-center justify-between gap-2">
                           <p className="text-sm font-semibold text-slate-900">
-                            회차 {studentReports.length - index} / {report.essayTopic || "논제 미기재"}
+                            회차 {studentReports.length - index} / {report.essayTopic || "기록 없음"}
                           </p>
                           <span
                             className={`rounded px-2 py-0.5 text-xs ${
@@ -586,10 +625,10 @@ const ReportView = () => {
                           </span>
                         </div>
                         <p className="mt-1 text-xs text-slate-500">
-                          총점 {report.totalScore} | 등급 {report.grade || "-"} | 날짜{" "}
+                          총점 {report.totalScore} | 등급 {report.grade || "기록 없음"} | 날짜{" "}
                           {report.createdAt
                             ? report.createdAt.toDate().toLocaleDateString("ko-KR")
-                            : "-"}
+                            : "기록 없음"}
                         </p>
                       </button>
                     ))}
@@ -599,22 +638,22 @@ const ReportView = () => {
 
               <div className="space-y-4">
                 <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <h3 className="mb-2 text-sm font-semibold text-slate-900">원본 PDF 미리보기</h3>
+                  <h3 className="mb-2 text-sm font-semibold text-slate-900">나의 실제 답안지와 첨삭 내용 확인하기</h3>
                   {pdfLoading && <p className="text-sm text-muted-foreground">페이지 렌더링 중입니다...</p>}
                   {pdfError && <p className="text-sm text-destructive">{pdfError}</p>}
                   <div className="overflow-auto rounded border border-slate-200 bg-slate-50 p-2">
                     <canvas ref={previewCanvasRef} className="mx-auto h-auto max-w-full" />
                   </div>
                   <p className="mt-2 text-xs text-slate-500">
-                    저장된 페이지 번호({selectedReport.pageNumber ?? selectedReport.sourcePage ?? 1}p) 한 장만
-                    렌더링합니다.
+                    저장된 페이지 번호({selectedReport.pageNumber ?? selectedReport.sourcePage ?? 1}p)를 기준으로
+                    미리보기를 제공합니다.
                   </p>
                 </div>
 
                 <div className="rounded-xl border border-red-200 bg-red-50 p-5 shadow-sm">
                   <h3 className="text-sm font-semibold text-red-900">계정 관리</h3>
                   <p className="mt-1 text-xs text-red-700">
-                    탈퇴 시 사용자(Auth/Firestore) 계정이 삭제되고 기존 리포트는 studentId=null로 고립됩니다.
+                    모든 학습 기록과 계정 정보가 삭제되며 복구할 수 없습니다.
                   </p>
                   <Button
                     className="mt-3 w-full"
