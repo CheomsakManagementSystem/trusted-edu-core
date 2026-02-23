@@ -5,14 +5,14 @@
 @layer base {
   :root {
     color-scheme: light dark;
-    --background: 216 25% 96%;
-    --foreground: 200 30% 18%;
+    --background: 220 14% 96%;
+    --foreground: 221 39% 11%;
 
     --card: 0 0% 100%;
-    --card-foreground: 200 30% 18%;
+    --card-foreground: 221 39% 11%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 200 30% 18%;
+    --popover-foreground: 221 39% 11%;
 
     --primary: 210 64% 16%;
     --primary-foreground: 0 0% 100%;
@@ -23,8 +23,8 @@
     --secondary: 200 14% 33%;
     --secondary-foreground: 0 0% 100%;
 
-    --muted: 216 25% 93%;
-    --muted-foreground: 200 14% 41%;
+    --muted: 220 16% 93%;
+    --muted-foreground: 221 13% 38%;
 
     --accent: 210 76% 46%;
     --accent-foreground: 0 0% 100%;
@@ -38,8 +38,8 @@
     --warning: 27 87% 47%;
     --warning-foreground: 0 0% 100%;
 
-    --border: 214 25% 89%;
-    --input: 214 25% 89%;
+    --border: 220 13% 86%;
+    --input: 220 13% 86%;
     --ring: 210 76% 46%;
 
     --radius: 0.5rem;
@@ -109,6 +109,9 @@
 @layer base {
   * {
     @apply border-border;
+    transition-property: background-color, border-color, color, fill, stroke;
+    transition-duration: 120ms;
+    transition-timing-function: ease-out;
   }
 
   body {

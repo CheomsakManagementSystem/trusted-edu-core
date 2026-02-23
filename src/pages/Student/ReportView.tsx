@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useTheme } from "@/hooks/use-theme";
 import {
   deleteStudentAccountData,
   fetchClasses,
@@ -93,6 +94,7 @@ const ReportView = () => {
   const { user } = useAuth();
   const { toast } = useToast();
   const isMobile = useIsMobile();
+  const { isDark } = useTheme();
 
   const [reports, setReports] = useState<ReportRecord[]>([]);
   const [selectedReportId, setSelectedReportId] = useState<string>("");
@@ -306,6 +308,10 @@ const ReportView = () => {
     }
     return `${text.slice(0, 190)}...`;
   }, [feedbackExpanded, feedbackMeta.summary]);
+
+  const chartAxisColor = isDark ? "#e5e7eb" : "#111827";
+  const chartGridColor = isDark ? "#334155" : "#d1d5db";
+  const chartLineColor = isDark ? "#93c5fd" : "#2563eb";
 
   const handleOpenReport = async (report: ReportRecord) => {
     setSelectedReportId(report.id);
@@ -525,9 +531,17 @@ const ReportView = () => {
                   <div className="mx-auto h-[320px] w-[90vw] max-w-[430px] sm:h-[360px] sm:w-full sm:max-w-2xl">
                     <ResponsiveContainer width="100%" height="100%">
                       <RadarChart data={radarData}>
-                        <PolarGrid />
-                        <PolarAngleAxis dataKey="subject" tick={{ fontSize: isMobile ? 11 : 12 }} />
-                        <PolarRadiusAxis domain={[50, 100]} tick={{ fontSize: isMobile ? 10 : 11 }} />
+                        <PolarGrid stroke={chartGridColor} />
+                        <PolarAngleAxis
+                          dataKey="subject"
+                          tick={{ fontSize: isMobile ? 11 : 12, fill: chartAxisColor }}
+                        />
+                        <PolarRadiusAxis
+                          domain={[50, 100]}
+                          tick={{ fontSize: isMobile ? 10 : 11, fill: chartAxisColor }}
+                          axisLine={{ stroke: chartGridColor }}
+                          tickLine={{ stroke: chartGridColor }}
+                        />
                         <Radar
                           name="나의점수"
                           dataKey="myScore"
@@ -539,7 +553,7 @@ const ReportView = () => {
                         <Radar
                           name="전체평균"
                           dataKey="avgScore"
-                          stroke="#a8a8a8"
+                          stroke={isDark ? "#d1d5db" : "#6b7280"}
                           fillOpacity={0}
                           strokeDasharray="8 6"
                           strokeWidth={2}
@@ -630,11 +644,25 @@ const ReportView = () => {
                   <div className="h-64">
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart data={trendData}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                        <XAxis dataKey="round" tick={{ fontSize: isMobile ? 11 : 12 }} />
-                        <YAxis domain={[0, 100]} tick={{ fontSize: isMobile ? 11 : 12 }} />
-                        <Tooltip />
-                        <Line type="monotone" dataKey="score" stroke="#2563eb" strokeWidth={2} />
+                        <CartesianGrid strokeDasharray="3 3" stroke={chartGridColor} />
+                        <XAxis
+                          dataKey="round"
+                          tick={{ fontSize: isMobile ? 11 : 12, fill: chartAxisColor }}
+                          stroke={chartGridColor}
+                        />
+                        <YAxis
+                          domain={[0, 100]}
+                          tick={{ fontSize: isMobile ? 11 : 12, fill: chartAxisColor }}
+                          stroke={chartGridColor}
+                        />
+                        <Tooltip
+                          contentStyle={{
+                            borderColor: chartGridColor,
+                            backgroundColor: isDark ? "#0f172a" : "#ffffff",
+                            color: chartAxisColor,
+                          }}
+                        />
+                        <Line type="monotone" dataKey="score" stroke={chartLineColor} strokeWidth={2} />
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
