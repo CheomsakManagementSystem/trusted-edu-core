@@ -4,11 +4,12 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
-import { RequireAuth, RequireStaff } from "@/components/RequireAuth";
+import { RequireAdmin, RequireAuth, RequireStaff } from "@/components/RequireAuth";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import UploadDashboard from "./pages/Admin/UploadDashboard";
 import ClassManager from "./pages/Admin/ClassManager";
+import MasterAdminPage from "./pages/Admin/MasterAdminPage";
 import ReportView from "./pages/Student/ReportView";
 import NotFound from "./pages/NotFound";
 
@@ -49,6 +50,14 @@ const App = () => (
                 <RequireStaff>
                   <ClassManager />
                 </RequireStaff>
+              }
+            />
+            <Route
+              path="/admin/master"
+              element={
+                <RequireAdmin>
+                  <MasterAdminPage />
+                </RequireAdmin>
               }
             />
 

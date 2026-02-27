@@ -1279,7 +1279,7 @@ export const publishReportBatch = async (
 
 export const fetchStudents = async (): Promise<StudentLite[]> => {
   try {
-    const snap = await getDocs(query(collection(db, "users"), where("role", "==", "student")));
+    const snap = await getDocs(query(collection(db, "users"), where("role", "in", ["student", "STUDENT"])));
     return snap.docs.map((docSnap) => {
       const data = docSnap.data() as {
         uid?: string;

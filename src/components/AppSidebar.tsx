@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useLocation, Link } from "react-router-dom";
-import { ChevronLeft, ChevronRight, LayoutDashboard, Upload, Users } from "lucide-react";
+import { ChevronLeft, ChevronRight, LayoutDashboard, ShieldCheck, Upload, Users } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import BrandLogo from "@/components/BrandLogo";
+import { isAdminRole, isStaffRole } from "@/lib/authz";
 
 const AppSidebar = () => {
   const [collapsed, setCollapsed] = useState(false);
@@ -12,11 +13,14 @@ const AppSidebar = () => {
   const staffMenu = [
     { icon: Upload, label: "리포트 등록", path: "/admin" },
     { icon: Users, label: "반 관리", path: "/admin/class-manager" },
+    ...(isAdminRole(user?.role)
+      ? [{ icon: ShieldCheck, label: "마스터 관리자", path: "/admin/master" }]
+      : []),
   ];
 
   const studentMenu = [{ icon: LayoutDashboard, label: "나의 성장 리포트", path: "/dashboard" }];
 
-  const menuItems = user?.role === "staff" ? staffMenu : studentMenu;
+  const menuItems = isStaffRole(user?.role) ? staffMenu : studentMenu;
 
   return (
     <aside

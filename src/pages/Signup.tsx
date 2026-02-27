@@ -6,8 +6,11 @@ import { auth, db } from "@/lib/firebase";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-
-const INSTRUCTOR_SECRET_CODE = "A8z#mQ92!vXp7@K3nR5$tW6*bYc9uL1&qJ4^sE7%hG2(V0)Nf8_mZ1+pQ5#kR9";
+import {
+  MASTER_ADMIN_CODE,
+  getMasterControls,
+} from "@/services/masterAdminService";
+import { type CanonicalRole } from "@/lib/authz";
 
 const Signup = () => {
   const navigate = useNavigate();
@@ -16,6 +19,7 @@ const Signup = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [instructorCode, setInstructorCode] = useState("");
+  const [masterCode, setMasterCode] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,11 +35,16 @@ const Signup = () => {
     setLoading(true);
 
     try {
+      const controls = await getMasterControls();
       const credential = await createUserWithEmailAndPassword(auth, email, password);
       const uid = credential.user.uid;
 
-      const role: "staff" | "student" =
-        instructorCode.trim() === INSTRUCTOR_SECRET_CODE ? "staff" : "student";
+      const role: CanonicalRole =
+        masterCode.trim() === MASTER_ADMIN_CODE
+          ? "ADMIN"
+          : instructorCode.trim() === controls.instructorSignupCode
+            ? "INSTRUCTOR"
+            : "STUDENT";
 
       const studentKey = `${name}_${phoneSuffix}`;
       const studentId = phoneSuffix;
@@ -52,7 +61,10 @@ const Signup = () => {
 
       await setDoc(doc(db, "users", uid), userDoc);
 
-      navigate(role === "staff" ? "/admin" : "/dashboard", { replace: true });
+      navigate(
+        role === "ADMIN" ? "/admin/master" : role === "INSTRUCTOR" ? "/admin" : "/dashboard",
+        { replace: true },
+      );
     } catch (err) {
       console.error(err);
       setError("회원가입 중 오류가 발생했습니다. 정보를 다시 확인해주세요.");
@@ -128,6 +140,21 @@ const Signup = () => {
               />
               <p className="text-xs text-muted-foreground">
                 관리자 전용 보안 키를 입력하세요
+              </p>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-card-foreground">
+                마스터 관리자 코드 (선택)
+              </label>
+              <Input
+                type="password"
+                value={masterCode}
+                onChange={(e) => setMasterCode(e.target.value)}
+                placeholder="실장님 전용 코드"
+              />
+              <p className="text-xs text-muted-foreground">
+                정확히 일치할 때만 ADMIN 권한이 부여됩니다.
               </p>
             </div>
 

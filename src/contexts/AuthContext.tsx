@@ -12,8 +12,9 @@ import {
 } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
+import { normalizeRole, type CanonicalRole } from "@/lib/authz";
 
-type Role = "staff" | "student";
+type Role = CanonicalRole;
 
 interface AppUser {
   uid: string;
@@ -57,13 +58,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
             uid: firebaseUser.uid,
             name: firebaseUser.displayName ?? "사용자",
             email: firebaseUser.email,
-            role: "student",
+            role: "STUDENT",
           });
         } else {
           const data = snap.data() as {
             name: string;
             email: string;
-            role: Role;
+            role?: string;
             studentId?: string;
             studentKey?: string;
             phoneSuffix?: string;
@@ -80,7 +81,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
             uid: firebaseUser.uid,
             name: data.name,
             email: data.email,
-            role: data.role,
+            role: normalizeRole(data.role),
             studentId: inferredStudentId,
             studentKey: data.studentKey,
             phoneSuffix: data.phoneSuffix,

@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { User, GraduationCap } from "lucide-react";
+import { normalizeRole } from "@/lib/authz";
 
 type ClassDoc = {
   id: string;
@@ -27,7 +28,7 @@ type StudentDoc = {
   id: string; // uid
   name: string;
   email: string;
-  role: "staff" | "student";
+  role: string;
   classId?: string;
   className?: string;
 };
@@ -73,7 +74,7 @@ const StudentAssignmentSection = () => {
   const filteredStudents = useMemo(
     () =>
       students.filter((s) => {
-        if (s.role !== "student") return false;
+        if (normalizeRole(s.role) !== "STUDENT") return false;
         if (!search.trim()) return true;
         const q = search.toLowerCase();
         return (
@@ -110,7 +111,7 @@ const StudentAssignmentSection = () => {
           <span>
             전체 학생 수:{" "}
             <span className="font-semibold text-slate-200">
-              {students.filter((s) => s.role === "student").length}
+              {students.filter((s) => normalizeRole(s.role) === "STUDENT").length}
             </span>
           </span>
         </div>
@@ -199,4 +200,3 @@ const StudentAssignmentSection = () => {
 };
 
 export default StudentAssignmentSection;
-

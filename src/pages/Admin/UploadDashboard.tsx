@@ -40,6 +40,10 @@ import {
   type StudentLite,
   type UploadCandidate,
 } from "@/lib/pdfProcessor";
+import {
+  enqueueReportNotifications,
+  getMasterControls,
+} from "@/services/masterAdminService";
 
 const scoreFields: Array<{ key: keyof ScoreBreakdown; label: string }> = [
   { key: "reading", label: "독해력" },
@@ -400,6 +404,7 @@ const UploadDashboard = () => {
 
     try {
       const result = await publishReportBatch(rows, selectedClass, students, user.uid, setProgress);
+      const controls = await getMasterControls();
 
       setRows((prev) => {
         const mapById = new Map(result.results.map((item) => [item.candidateId, item]));
@@ -433,6 +438,17 @@ const UploadDashboard = () => {
       if (result.pendingCount > 0) {
         setMessage((prev) => `${prev}\n보류 건은 아래 '미연결 학습 자료 정리'에서 학생을 연결할 수 있습니다.`);
       }
+      if (controls.autoNotifyOnFeedbackComplete) {
+        const created = await enqueueReportNotifications(
+          result.results
+            .filter((item) => item.success && item.reportId)
+            .map((item) => item.reportId as string),
+          user.uid,
+        );
+        if (created > 0) {
+          setMessage((prev) => `${prev}\n자동 알림 ${created}건을 큐에 등록했습니다.`);
+        }
+      }
       if (result.failureCount > 0) {
         setMessage((prev) => `${prev}\n${result.failures.join("\n")}`);
         toast({
@@ -441,7 +457,11 @@ const UploadDashboard = () => {
           description: result.failures[0],
         });
       } else {
-        setMessage("리포트가 학생들에게 성공적으로 전달되었습니다.");
+        setMessage((prev) =>
+          prev
+            ? `${prev}\n리포트가 학생들에게 성공적으로 전달되었습니다.`
+            : "리포트가 학생들에게 성공적으로 전달되었습니다.",
+        );
         toast({
           title: "발송 완료",
           description: "리포트가 학생들에게 성공적으로 전달되었습니다.",

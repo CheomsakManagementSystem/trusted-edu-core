@@ -6,6 +6,7 @@ import { auth, db } from "@/lib/firebase";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { normalizeRole } from "@/lib/authz";
 
 const Login = () => {
   const navigate = useNavigate();
@@ -27,16 +28,16 @@ const Login = () => {
       const userRef = doc(db, "users", uid);
       const snap = await getDoc(userRef);
 
-      let role: "staff" | "student" = "student";
+      let role = "STUDENT";
 
       if (snap.exists()) {
-        const data = snap.data() as { role?: "staff" | "student" };
-        role = data.role ?? "student";
+        const data = snap.data() as { role?: string };
+        role = normalizeRole(data.role);
       }
 
       const redirectTo =
         (location.state?.from as unknown as { pathname?: string } | undefined)?.pathname ??
-        (role === "staff" ? "/admin" : "/dashboard");
+        (role === "ADMIN" ? "/admin/master" : role === "INSTRUCTOR" ? "/admin" : "/dashboard");
 
       navigate(redirectTo, { replace: true });
     } catch (err) {
@@ -103,4 +104,3 @@ const Login = () => {
 };
 
 export default Login;
-

@@ -1,25 +1,33 @@
 import { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { LayoutDashboard, Upload, Users } from "lucide-react";
+import { LayoutDashboard, ShieldCheck, Upload, Users } from "lucide-react";
 import AppSidebar from "./AppSidebar";
 import AppHeader from "./AppHeader";
 import { useAuth } from "@/contexts/AuthContext";
+import { isAdminRole, isStaffRole } from "@/lib/authz";
 
 const MobileBottomNav = () => {
   const location = useLocation();
   const { user } = useAuth();
 
   const items =
-    user?.role === "staff"
+    isStaffRole(user?.role)
       ? [
           { to: "/admin", label: "리포트", icon: Upload },
           { to: "/admin/class-manager", label: "반 관리", icon: Users },
+          ...(isAdminRole(user?.role)
+            ? [{ to: "/admin/master", label: "마스터", icon: ShieldCheck }]
+            : []),
         ]
       : [{ to: "/dashboard", label: "리포트", icon: LayoutDashboard }];
 
   return (
     <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 backdrop-blur md:hidden">
-      <div className={`mx-auto grid max-w-md gap-2 ${items.length === 1 ? "grid-cols-1" : "grid-cols-2"}`}>
+      <div
+        className={`mx-auto grid max-w-md gap-2 ${
+          items.length === 1 ? "grid-cols-1" : items.length === 2 ? "grid-cols-2" : "grid-cols-3"
+        }`}
+      >
         {items.map((item) => {
           const Icon = item.icon;
           const active = location.pathname === item.to;

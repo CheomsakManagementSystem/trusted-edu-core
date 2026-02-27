@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import BrandLogo from "@/components/BrandLogo";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { roleLabel } from "@/lib/authz";
 
 const AppHeader = () => {
   const { user, signOut } = useAuth();
@@ -49,7 +50,7 @@ const AppHeader = () => {
               <div className="hidden text-left text-xs md:block">
                 <p className="font-medium text-card-foreground">{user.name}</p>
                 <p className="text-[10px] uppercase text-muted-foreground">
-                  {user.role === "staff" ? "STAFF" : "STUDENT"}
+                  {roleLabel(user.role)}
                 </p>
               </div>
             </div>

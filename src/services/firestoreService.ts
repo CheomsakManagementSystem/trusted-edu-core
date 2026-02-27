@@ -16,7 +16,7 @@ const SUBMISSIONS_COLLECTION = "submissions";
 export const fetchStudents = async (): Promise<Student[]> => {
   const q = query(
     collection(db, USERS_COLLECTION),
-    where("role", "==", "student")
+    where("role", "in", ["student", "STUDENT"])
   );
   const snap = await getDocs(q);
 
@@ -66,4 +66,3 @@ export const applySyncResults = async (
 
   return { created: matched.length };
 };
-
