@@ -13,10 +13,10 @@ const MobileBottomNav = () => {
   const items =
     isStaffRole(user?.role)
       ? [
-          { to: "/admin", label: "리포트", icon: Upload },
-          { to: "/admin/class-manager", label: "반 관리", icon: Users },
+          { to: "/admin", label: "첨삭지 올리기", icon: Upload },
+          { to: "/admin/class-manager", label: "우리 반 아이들", icon: Users },
           ...(isAdminRole(user?.role)
-            ? [{ to: "/admin/master", label: "마스터", icon: ShieldCheck }]
+            ? [{ to: "/admin/master", label: "학원 전체 관리", icon: ShieldCheck }]
             : []),
         ]
       : [{ to: "/dashboard", label: "리포트", icon: LayoutDashboard }];

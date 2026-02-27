@@ -24,4 +24,13 @@ export const isStaffRole = (role?: string | null): boolean => {
   return normalized === "ADMIN" || normalized === "INSTRUCTOR";
 };
 
-export const roleLabel = (role?: string | null): string => normalizeRole(role);
+export const roleLabel = (role?: string | null): string => {
+  const normalized = normalizeRole(role);
+  if (normalized === "ADMIN") {
+    return "실장님";
+  }
+  if (normalized === "INSTRUCTOR") {
+    return "선생님";
+  }
+  return "학생";
+};

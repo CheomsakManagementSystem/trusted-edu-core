@@ -11,10 +11,10 @@ const AppSidebar = () => {
   const { user } = useAuth();
 
   const staffMenu = [
-    { icon: Upload, label: "리포트 등록", path: "/admin" },
-    { icon: Users, label: "반 관리", path: "/admin/class-manager" },
+    { icon: Upload, label: "첨삭지 올리기", path: "/admin" },
+    { icon: Users, label: "우리 반 아이들", path: "/admin/class-manager" },
     ...(isAdminRole(user?.role)
-      ? [{ icon: ShieldCheck, label: "마스터 관리자", path: "/admin/master" }]
+      ? [{ icon: ShieldCheck, label: "학원 전체 관리", path: "/admin/master" }]
       : []),
   ];
 

@@ -159,8 +159,8 @@ const MasterAdminPage = () => {
     if (!instructorSignupCode.trim()) {
       toast({
         variant: "destructive",
-        title: "강사 코드 확인",
-        description: "강사 가입 코드는 비워둘 수 없습니다.",
+        title: "선생님 코드 확인",
+        description: "선생님용 가입 비밀코드는 비워둘 수 없습니다.",
       });
       return;
     }
@@ -175,13 +175,13 @@ const MasterAdminPage = () => {
         user.uid,
       );
       toast({
-        title: "시스템 제어 설정 저장 완료",
-        description: "알림 토글 및 강사 코드가 반영되었습니다.",
+        title: "운영 환경 설정이 저장되었습니다",
+        description: "자동 알림과 선생님 초대 코드가 반영되었습니다.",
       });
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "설정 저장 실패",
+        title: "설정 완료 처리 실패",
         description: error instanceof Error ? error.message : "설정을 저장하지 못했습니다.",
       });
     } finally {
@@ -194,9 +194,10 @@ const MasterAdminPage = () => {
     try {
       await updateManagedUserRole(target.uid, nextRole);
       setUsers((prev) => prev.map((row) => (row.uid === target.uid ? { ...row, role: nextRole } : row)));
+      const roleText = nextRole === "INSTRUCTOR" ? "선생님" : "학생";
       toast({
         title: "권한 변경 완료",
-        description: `${target.name} 사용자의 권한을 ${nextRole}로 변경했습니다.`,
+        description: `${target.name}님의 역할을 ${roleText}(으)로 변경했습니다.`,
       });
     } catch (error) {
       toast({
@@ -232,17 +233,17 @@ const MasterAdminPage = () => {
       await deleteManagedUserCompletely(target.uid);
       setUsers((prev) => prev.filter((row) => row.uid !== target.uid));
       toast({
-        title: "계정 삭제 완료",
-        description: "Auth 계정과 관련 DB 데이터를 삭제했습니다.",
+        title: "정보 지우기 완료",
+        description: "해당 가입자 정보를 정리했습니다.",
       });
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "계정 삭제 실패",
+        title: "정보 지우기 실패",
         description:
           error instanceof Error
             ? error.message
-            : "계정 삭제를 완료하지 못했습니다. Functions 설정을 확인해주세요.",
+            : "정보 지우기를 완료하지 못했습니다. 함수 설정을 확인해주세요.",
       });
     } finally {
       setDeletingUid(null);
@@ -306,6 +307,10 @@ const MasterAdminPage = () => {
         messages.push("🏆 최상위권 안정권");
       }
 
+      if (messages.length === 0) {
+        messages.push("데이터가 안정적이며 특이사항이 없습니다.");
+      }
+
       setAnalysisMessages(messages);
     } catch (error) {
       toast({
@@ -329,27 +334,27 @@ const MasterAdminPage = () => {
     <DashboardLayout>
       <div className="space-y-6">
         <section className="rounded-xl border border-border bg-card p-5">
-          <h2 className="text-lg font-semibold text-card-foreground">마스터 시스템 제어</h2>
+          <h2 className="text-lg font-semibold text-card-foreground">운영 환경 설정</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            실장님 전용 알림 정책과 강사 가입 코드를 직접 제어합니다.
+            선생님 초대 코드와 자동 알림 기능을 관리하는 공간입니다.
           </p>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
-              <label className="text-sm font-medium text-card-foreground">강사 가입 코드</label>
+              <label className="text-sm font-medium text-card-foreground">선생님용 가입 비밀코드</label>
               <Input
                 type="text"
                 value={instructorSignupCode}
                 onChange={(event) => setInstructorSignupCode(event.target.value)}
-                placeholder="강사 가입 코드"
+                placeholder="선생님용 가입 비밀코드"
               />
             </div>
 
             <div className="flex items-center justify-between rounded-lg border border-border px-4 py-3">
               <div>
-                <p className="text-sm font-medium text-card-foreground">Master Notification Toggle</p>
+                <p className="text-sm font-medium text-card-foreground">자동 알림 발송 활성화</p>
                 <p className="text-xs text-muted-foreground">
-                  첨삭 완료 시 학생 자동 알림 발송을 제어합니다.
+                  첨삭이 끝나면 학생에게 자동으로 알림 문자가 가도록 설정합니다.
                 </p>
               </div>
               <Switch
@@ -361,10 +366,10 @@ const MasterAdminPage = () => {
 
           <div className="mt-4 flex items-center gap-2">
             <Button onClick={saveControls} disabled={savingControls || loading}>
-              {savingControls ? "저장 중..." : "설정 저장"}
+              {savingControls ? "저장 중..." : "설정 완료"}
             </Button>
             <p className="text-xs text-muted-foreground">
-              저장 후 가입/리포트 발송 로직에 즉시 반영됩니다.
+              저장 즉시 가입 코드와 알림 기능에 적용됩니다.
             </p>
           </div>
         </section>
@@ -372,9 +377,9 @@ const MasterAdminPage = () => {
         <section className="rounded-xl border border-border bg-card p-5">
           <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-card-foreground">유저 관리 및 사고 수습</h2>
+              <h2 className="text-lg font-semibold text-card-foreground">가입자 명단 및 계정 관리</h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                이름/아이디 검색, 권한 변경, 계정 완전 삭제(Auth + DB) 기능입니다.
+                학생/선생님 정보를 확인하거나, 잘못 가입된 계정을 지워줄 수 있습니다.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -398,7 +403,7 @@ const MasterAdminPage = () => {
                   <th className="px-3 py-2 text-left text-muted-foreground">이메일</th>
                   <th className="px-3 py-2 text-left text-muted-foreground">학생ID</th>
                   <th className="px-3 py-2 text-left text-muted-foreground">권한</th>
-                  <th className="px-3 py-2 text-left text-muted-foreground">조치</th>
+                  <th className="px-3 py-2 text-left text-muted-foreground">관리</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -410,7 +415,7 @@ const MasterAdminPage = () => {
                     <td className="px-3 py-2">
                       {normalizeRole(row.role) === "ADMIN" ? (
                         <span className="rounded-md bg-primary/15 px-2 py-1 text-xs font-semibold text-primary">
-                          ADMIN
+                          실장님
                         </span>
                       ) : (
                         <Select
@@ -424,8 +429,8 @@ const MasterAdminPage = () => {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="STUDENT">STUDENT</SelectItem>
-                            <SelectItem value="INSTRUCTOR">INSTRUCTOR</SelectItem>
+                            <SelectItem value="STUDENT">학생</SelectItem>
+                            <SelectItem value="INSTRUCTOR">선생님</SelectItem>
                           </SelectContent>
                         </Select>
                       )}
@@ -437,7 +442,7 @@ const MasterAdminPage = () => {
                         disabled={deletingUid === row.uid || normalizeRole(row.role) === "ADMIN"}
                         onClick={() => handleDelete(row)}
                       >
-                        {deletingUid === row.uid ? "삭제 중..." : "계정 삭제"}
+                        {deletingUid === row.uid ? "처리 중..." : "정보 지우기"}
                       </Button>
                     </td>
                   </tr>
@@ -455,14 +460,14 @@ const MasterAdminPage = () => {
           </div>
 
           <p className="mt-3 text-xs text-muted-foreground">
-            Auth 삭제는 Firebase callable 함수(`adminDeleteUser` 또는 `deleteUserByUid`)가 배포되어야 동작합니다.
+            ※ 정보 지우기 버튼을 누르면 해당 사용자는 처음부터 다시 가입해야 합니다.
           </p>
         </section>
 
         <section className="rounded-xl border border-border bg-card p-5">
-          <h2 className="text-lg font-semibold text-card-foreground">학생 리포트 상세 조회</h2>
+          <h2 className="text-lg font-semibold text-card-foreground">성적표 모아보기 및 상담 지원</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            선택한 학생의 실제 리포트(점수/첨삭/총평)를 우선 노출하고, 분석 문구는 보조로 제공합니다.
+            학생이 받은 실제 점수와 선생님의 한마디를 한눈에 확인하세요.
           </p>
 
           <div className="mt-4 flex flex-col gap-2 md:flex-row md:items-center">
@@ -479,7 +484,7 @@ const MasterAdminPage = () => {
               </SelectContent>
             </Select>
             <Button onClick={runAnalysis} disabled={analysisLoading || !analysisStudentUid}>
-              {analysisLoading ? "불러오는 중..." : "상세 조회"}
+              {analysisLoading ? "불러오는 중..." : "데이터 불러오기"}
             </Button>
           </div>
 
@@ -497,10 +502,10 @@ const MasterAdminPage = () => {
                           {round}회차 - {formatDate(report)}
                         </p>
                         <p className="text-sm text-card-foreground">
-                          획득 점수: {total !== null ? `${total}점 / 100점` : "점수 정보 없음"}
+                          받은 점수: {total !== null ? `${total}점 / 100점` : "점수 정보 없음"}
                         </p>
                         <p className="text-sm text-card-foreground">
-                          강사 총평: {report.feedback?.trim() || "총평 없음"}
+                          선생님이 남겨주신 한마디: {report.feedback?.trim() || "총평 없음"}
                         </p>
                       </div>
                       <Button variant="outline" size="sm" onClick={() => toggleReportOpen(report.id)}>
@@ -511,7 +516,7 @@ const MasterAdminPage = () => {
                     {opened && (
                       <div className="mt-3 space-y-2 rounded-md border border-border p-3">
                         <p className="text-xs text-muted-foreground">
-                          강사: {report.reviewer || "미기재"} / 주제: {report.essayTopic || "미기재"}
+                          선생님: {report.reviewer || "미기재"} / 주제: {report.essayTopic || "미기재"}
                         </p>
                         <p className="text-xs text-muted-foreground">
                           등급: {report.grade || "미기재"} / 원본 이름: {report.sourceName || "미기재"}

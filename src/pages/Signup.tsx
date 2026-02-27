@@ -79,7 +79,7 @@ const Signup = () => {
         <div className="w-full max-w-md rounded-xl border border-border bg-card p-8 shadow-card">
           <h2 className="mb-2 text-xl font-bold text-card-foreground">회원가입</h2>
           <p className="mb-6 text-sm text-muted-foreground">
-            강사/학생 정보를 입력하여 계정을 생성하세요.
+            선생님/학생 정보를 입력하여 계정을 생성하세요.
           </p>
 
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -130,13 +130,13 @@ const Signup = () => {
 
             <div className="space-y-1">
               <label className="text-sm font-medium text-card-foreground">
-                강사 비밀코드 (선택)
+                선생님 비밀코드 (선택)
               </label>
               <Input
                 type="password"
                 value={instructorCode}
                 onChange={(e) => setInstructorCode(e.target.value)}
-                placeholder="강사일 경우에만 입력"
+                placeholder="선생님일 경우에만 입력"
               />
               <p className="text-xs text-muted-foreground">
                 관리자 전용 보안 키를 입력하세요
@@ -145,7 +145,7 @@ const Signup = () => {
 
             <div className="space-y-1">
               <label className="text-sm font-medium text-card-foreground">
-                마스터 관리자 코드 (선택)
+                학원 전체 관리 코드 (선택)
               </label>
               <Input
                 type="password"
@@ -154,7 +154,7 @@ const Signup = () => {
                 placeholder="실장님 전용 코드"
               />
               <p className="text-xs text-muted-foreground">
-                정확히 일치할 때만 ADMIN 권한이 부여됩니다.
+                정확히 일치할 때만 실장님 권한이 부여됩니다.
               </p>
             </div>
 
