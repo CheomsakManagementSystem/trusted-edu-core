@@ -76,6 +76,23 @@ const avg = (rows: number[]) => {
   return rows.reduce((sum, value) => sum + value, 0) / rows.length;
 };
 
+const formatDate = (report: ReportRecord): string => {
+  const dateMs = getTimestampMs(report);
+  if (dateMs) {
+    const date = new Date(dateMs);
+    const y = date.getFullYear();
+    const m = `${date.getMonth() + 1}`.padStart(2, "0");
+    const d = `${date.getDate()}`.padStart(2, "0");
+    return `${y}.${m}.${d}`;
+  }
+
+  if (report.writtenAt?.trim()) {
+    return report.writtenAt.trim();
+  }
+
+  return "날짜 정보 없음";
+};
+
 const MasterAdminPage = () => {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -93,6 +110,7 @@ const MasterAdminPage = () => {
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisReports, setAnalysisReports] = useState<ReportRecord[]>([]);
   const [analysisMessages, setAnalysisMessages] = useState<string[]>([]);
+  const [openReportIds, setOpenReportIds] = useState<Record<string, boolean>>({});
 
   const loadData = async () => {
     setLoading(true);
@@ -243,6 +261,7 @@ const MasterAdminPage = () => {
 
     setAnalysisLoading(true);
     setAnalysisMessages([]);
+    setOpenReportIds({});
 
     try {
       const reports = await fetchReportsByStudentUid(analysisStudentUid);
@@ -287,10 +306,6 @@ const MasterAdminPage = () => {
         messages.push("🏆 최상위권 안정권");
       }
 
-      if (messages.length === 0) {
-        messages.push("기준 로직상 특이 경보 없음");
-      }
-
       setAnalysisMessages(messages);
     } catch (error) {
       toast({
@@ -301,6 +316,13 @@ const MasterAdminPage = () => {
     } finally {
       setAnalysisLoading(false);
     }
+  };
+
+  const toggleReportOpen = (reportId: string) => {
+    setOpenReportIds((prev) => ({
+      ...prev,
+      [reportId]: !prev[reportId],
+    }));
   };
 
   return (
@@ -438,9 +460,9 @@ const MasterAdminPage = () => {
         </section>
 
         <section className="rounded-xl border border-border bg-card p-5">
-          <h2 className="text-lg font-semibold text-card-foreground">고도화 룰베이스 분석 엔진</h2>
+          <h2 className="text-lg font-semibold text-card-foreground">학생 리포트 상세 조회</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            학생 누적 성적을 불러와 추세/항목별/종합 상담 인사이트를 자동 생성합니다.
+            선택한 학생의 실제 리포트(점수/첨삭/총평)를 우선 노출하고, 분석 문구는 보조로 제공합니다.
           </p>
 
           <div className="mt-4 flex flex-col gap-2 md:flex-row md:items-center">
@@ -457,14 +479,65 @@ const MasterAdminPage = () => {
               </SelectContent>
             </Select>
             <Button onClick={runAnalysis} disabled={analysisLoading || !analysisStudentUid}>
-              {analysisLoading ? "분석 중..." : "분석 실행"}
+              {analysisLoading ? "불러오는 중..." : "상세 조회"}
             </Button>
           </div>
 
-          {analysisReports.length > 0 && (
-            <p className="mt-3 text-xs text-muted-foreground">
-              누적 데이터 {analysisReports.length}건 기준으로 분석했습니다.
-            </p>
+          {analysisReports.length > 0 ? (
+            <div className="mt-4 space-y-3">
+              {analysisReports.map((report, index) => {
+                const total = reportTotal(report);
+                const round = index + 1;
+                const opened = Boolean(openReportIds[report.id]);
+                return (
+                  <div key={report.id} className="rounded-lg border border-border bg-background p-4">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div className="space-y-1">
+                        <p className="text-sm font-semibold text-card-foreground">
+                          {round}회차 - {formatDate(report)}
+                        </p>
+                        <p className="text-sm text-card-foreground">
+                          획득 점수: {total !== null ? `${total}점 / 100점` : "점수 정보 없음"}
+                        </p>
+                        <p className="text-sm text-card-foreground">
+                          강사 총평: {report.feedback?.trim() || "총평 없음"}
+                        </p>
+                      </div>
+                      <Button variant="outline" size="sm" onClick={() => toggleReportOpen(report.id)}>
+                        {opened ? "상세 닫기" : "상세 보기"}
+                      </Button>
+                    </div>
+
+                    {opened && (
+                      <div className="mt-3 space-y-2 rounded-md border border-border p-3">
+                        <p className="text-xs text-muted-foreground">
+                          강사: {report.reviewer || "미기재"} / 주제: {report.essayTopic || "미기재"}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          등급: {report.grade || "미기재"} / 원본 이름: {report.sourceName || "미기재"}
+                        </p>
+                        <div className="grid gap-2 text-xs text-card-foreground md:grid-cols-2">
+                          <p>독해력: {safeNumber(report.scores?.reading) ?? "-"}</p>
+                          <p>내용 이해력: {safeNumber(report.scores?.comprehension) ?? "-"}</p>
+                          <p>문제 이해력: {safeNumber(report.scores?.problemUnderstanding) ?? "-"}</p>
+                          <p>구성력: {safeNumber(report.scores?.organization) ?? "-"}</p>
+                          <p>논증/표현력: {safeNumber(report.scores?.expression) ?? "-"}</p>
+                        </div>
+                        <div className="rounded-md bg-card p-3 text-sm text-card-foreground whitespace-pre-wrap">
+                          {report.feedback?.trim() || "상세 첨삭 내용이 없습니다."}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            !analysisLoading && (
+              <div className="mt-4 rounded-md border border-border bg-background px-3 py-4 text-sm text-muted-foreground">
+                작성된 리포트가 없습니다
+              </div>
+            )
           )}
 
           <div className="mt-4 space-y-2">
