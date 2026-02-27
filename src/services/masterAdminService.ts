@@ -160,11 +160,41 @@ const deleteDocumentsInQuery = async (targetQuery: ReturnType<typeof query>) => 
   }
 };
 
+const invokeOnRequestFunction = async (fnName: string, uid: string): Promise<void> => {
+  const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
+  const region = import.meta.env.VITE_FIREBASE_FUNCTIONS_REGION || "us-central1";
+
+  if (!projectId) {
+    throw new Error("VITE_FIREBASE_PROJECT_ID 환경변수가 필요합니다.");
+  }
+
+  const endpoint = `https://${region}-${projectId}.cloudfunctions.net/${fnName}`;
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ uid }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(text || `${fnName} 호출 실패 (${response.status})`);
+  }
+};
+
 const deleteAuthUserByUid = async (uid: string): Promise<void> => {
   const functions = getFunctions();
   const functionNames = ["adminDeleteUser", "deleteUserByUid"];
 
   for (const fnName of functionNames) {
+    try {
+      await invokeOnRequestFunction(fnName, uid);
+      return;
+    } catch {
+      // onRequest 함수가 없거나 호출 실패 시 callable도 시도
+    }
     try {
       const callable = httpsCallable<{ uid: string }, { ok?: boolean }>(functions, fnName);
       await callable({ uid });
