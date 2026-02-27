@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { deleteUser } from "firebase/auth";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -12,6 +13,7 @@ import {
 } from "@/components/ui/select";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
+import { auth } from "@/lib/firebase";
 import { fetchReportsByStudentUid, type ReportRecord } from "@/lib/pdfProcessor";
 import { normalizeRole } from "@/lib/authz";
 import {
@@ -94,7 +96,7 @@ const formatDate = (report: ReportRecord): string => {
 };
 
 const MasterAdminPage = () => {
-  const { user } = useAuth();
+  const { user, signOut } = useAuth();
   const { toast } = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -105,6 +107,7 @@ const MasterAdminPage = () => {
   const [autoNotifyOnFeedbackComplete, setAutoNotifyOnFeedbackComplete] = useState(true);
   const [roleUpdatingUid, setRoleUpdatingUid] = useState<string | null>(null);
   const [deletingUid, setDeletingUid] = useState<string | null>(null);
+  const [withdrawingAdmin, setWithdrawingAdmin] = useState(false);
 
   const [analysisStudentUid, setAnalysisStudentUid] = useState("");
   const [analysisLoading, setAnalysisLoading] = useState(false);
@@ -330,13 +333,56 @@ const MasterAdminPage = () => {
     }));
   };
 
+  const handleWithdrawAdminAccount = async () => {
+    if (!user?.uid) {
+      toast({
+        variant: "destructive",
+        title: "회원 탈퇴 실패",
+        description: "인증 상태를 확인할 수 없습니다.",
+      });
+      return;
+    }
+
+    const confirmed = window.confirm("정말 탈퇴하시겠습니까?");
+    if (!confirmed) {
+      return;
+    }
+
+    setWithdrawingAdmin(true);
+    try {
+      await deleteManagedUserCompletely(user.uid);
+      if (auth.currentUser) {
+        try {
+          await deleteUser(auth.currentUser);
+        } catch {
+          // 서버 함수에서 이미 삭제된 경우 클라이언트 삭제 에러는 무시
+        }
+      }
+      await signOut();
+      toast({
+        title: "회원 탈퇴 완료",
+        description: "관리자 계정이 삭제되었습니다.",
+      });
+      window.location.href = "/login";
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "회원 탈퇴 실패",
+        description:
+          error instanceof Error ? error.message : "탈퇴 처리 중 오류가 발생했습니다.",
+      });
+    } finally {
+      setWithdrawingAdmin(false);
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
         <section className="rounded-xl border border-border bg-card p-5">
-          <h2 className="text-lg font-semibold text-card-foreground">운영 환경 설정</h2>
+          <h2 className="text-lg font-semibold text-card-foreground">마스터 시스템 제어</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            선생님 초대 코드와 자동 알림 기능을 관리하는 공간입니다.
+            실장님 전용 알림 정책과 강사 가입 코드를 직접 제어합니다.
           </p>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
@@ -377,7 +423,7 @@ const MasterAdminPage = () => {
         <section className="rounded-xl border border-border bg-card p-5">
           <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-card-foreground">가입자 명단 및 계정 관리</h2>
+              <h2 className="text-lg font-semibold text-card-foreground">유저 관리 및 사고 수습</h2>
               <p className="mt-1 text-sm text-muted-foreground">
                 학생/선생님 정보를 확인하거나, 잘못 가입된 계정을 지워줄 수 있습니다.
               </p>
@@ -460,7 +506,7 @@ const MasterAdminPage = () => {
           </div>
 
           <p className="mt-3 text-xs text-muted-foreground">
-            ※ 정보 지우기 버튼을 누르면 해당 사용자는 처음부터 다시 가입해야 합니다.
+            계정 삭제 시 해당 유저는 처음부터 다시 가입해야 하며, 삭제된 데이터는 복구되지 않습니다.
           </p>
         </section>
 
@@ -502,10 +548,10 @@ const MasterAdminPage = () => {
                           {round}회차 - {formatDate(report)}
                         </p>
                         <p className="text-sm text-card-foreground">
-                          받은 점수: {total !== null ? `${total}점 / 100점` : "점수 정보 없음"}
+                          획득 점수: {total !== null ? `${total}점 / 100점` : "점수 정보 없음"}
                         </p>
                         <p className="text-sm text-card-foreground">
-                          선생님이 남겨주신 한마디: {report.feedback?.trim() || "총평 없음"}
+                          강사 총평: {report.feedback?.trim() || "총평 없음"}
                         </p>
                       </div>
                       <Button variant="outline" size="sm" onClick={() => toggleReportOpen(report.id)}>
@@ -552,6 +598,21 @@ const MasterAdminPage = () => {
               </div>
             ))}
           </div>
+        </section>
+
+        <section className="rounded-xl border border-red-200 bg-red-50 p-4 shadow-sm md:p-5">
+          <h3 className="text-sm font-semibold text-red-900">계정 관리</h3>
+          <p className="mt-1 text-xs text-red-700">
+            관리자 계정 탈퇴 시 모든 시스템 제어 권한이 상실되며 복구가 불가능합니다.
+          </p>
+          <Button
+            className="mt-3 w-full"
+            variant="destructive"
+            onClick={handleWithdrawAdminAccount}
+            disabled={withdrawingAdmin}
+          >
+            {withdrawingAdmin ? "탈퇴 처리 중..." : "회원 탈퇴"}
+          </Button>
         </section>
       </div>
     </DashboardLayout>
