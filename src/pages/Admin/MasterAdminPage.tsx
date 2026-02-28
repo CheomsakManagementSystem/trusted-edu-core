@@ -236,17 +236,17 @@ const MasterAdminPage = () => {
       await deleteManagedUserCompletely(target.uid);
       setUsers((prev) => prev.filter((row) => row.uid !== target.uid));
       toast({
-        title: "정보 지우기 완료",
+        title: "계정 삭제 완료",
         description: "해당 가입자 정보를 정리했습니다.",
       });
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "정보 지우기 실패",
+        title: "계정 삭제 실패",
         description:
           error instanceof Error
             ? error.message
-            : "정보 지우기를 완료하지 못했습니다. 함수 설정을 확인해주세요.",
+            : "계정 삭제를 완료하지 못했습니다. 함수 설정을 확인해주세요.",
       });
     } finally {
       setDeletingUid(null);
@@ -311,7 +311,7 @@ const MasterAdminPage = () => {
       }
 
       if (messages.length === 0) {
-        messages.push("데이터가 안정적이며 특이사항이 없습니다.");
+        messages.push("기준 로직상 특이 경보 없음");
       }
 
       setAnalysisMessages(messages);
@@ -398,7 +398,7 @@ const MasterAdminPage = () => {
 
             <div className="flex items-center justify-between rounded-lg border border-border px-4 py-3">
               <div>
-                <p className="text-sm font-medium text-card-foreground">자동 알림 발송 활성화</p>
+                <p className="text-sm font-medium text-card-foreground">첨삭 완료 알림 끄고 켜기</p>
                 <p className="text-xs text-muted-foreground">
                   첨삭이 끝나면 학생에게 자동으로 알림 문자가 가도록 설정합니다.
                 </p>
@@ -425,7 +425,7 @@ const MasterAdminPage = () => {
             <div>
               <h2 className="text-lg font-semibold text-card-foreground">유저 관리 및 사고 수습</h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                학생/선생님 정보를 확인하거나, 잘못 가입된 계정을 지워줄 수 있습니다.
+                실장님 전용 알림 정책과 강사 가입 코드를 직접 제어합니다.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -488,7 +488,7 @@ const MasterAdminPage = () => {
                         disabled={deletingUid === row.uid || normalizeRole(row.role) === "ADMIN"}
                         onClick={() => handleDelete(row)}
                       >
-                        {deletingUid === row.uid ? "처리 중..." : "정보 지우기"}
+                        {deletingUid === row.uid ? "처리 중..." : "계정 삭제"}
                       </Button>
                     </td>
                   </tr>
@@ -511,9 +511,9 @@ const MasterAdminPage = () => {
         </section>
 
         <section className="rounded-xl border border-border bg-card p-5">
-          <h2 className="text-lg font-semibold text-card-foreground">성적표 모아보기 및 상담 지원</h2>
+          <h2 className="text-lg font-semibold text-card-foreground">학생 리포트 상세 조회</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            학생이 받은 실제 점수와 선생님의 한마디를 한눈에 확인하세요.
+            학생 획득 점수와 강사 총평을 한눈에 확인하세요.
           </p>
 
           <div className="mt-4 flex flex-col gap-2 md:flex-row md:items-center">
@@ -530,7 +530,7 @@ const MasterAdminPage = () => {
               </SelectContent>
             </Select>
             <Button onClick={runAnalysis} disabled={analysisLoading || !analysisStudentUid}>
-              {analysisLoading ? "불러오는 중..." : "데이터 불러오기"}
+              {analysisLoading ? "불러오는 중..." : "상세 조회"}
             </Button>
           </div>
 
