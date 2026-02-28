@@ -284,7 +284,7 @@ const ClassManager = () => {
         </div>
 
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">
-          <h3 className="mb-3 text-sm font-semibold text-card-foreground">반 CRUD</h3>
+          <h3 className="mb-3 text-sm font-semibold text-card-foreground">강의실 개설 및 편집</h3>
           <form className="flex flex-col gap-3 sm:flex-row" onSubmit={handleCreateOrUpdateClass}>
             <Input
               value={classForm.name}
