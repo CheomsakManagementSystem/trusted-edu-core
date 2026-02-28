@@ -49,6 +49,7 @@ const ClassManager = () => {
   const [classForm, setClassForm] = useState<ClassFormState>({ id: null, name: "" });
   const [message, setMessage] = useState<string>("");
   const [loading, setLoading] = useState(false);
+  const [expandedClassId, setExpandedClassId] = useState<string | null>(null);
 
   const loadData = async () => {
     const [classDocs, studentDocs, joinRequests] = await Promise.all([
@@ -70,9 +71,15 @@ const ClassManager = () => {
     [classes, selectedClassId],
   );
 
+  const hasAssignedClass = (student: StudentLite) =>
+    Boolean(student.classId) || Boolean(student.className && student.className !== "미배정");
+
   const filteredStudents = useMemo(() => {
     const keyword = search.trim().toLowerCase();
     return students.filter((student) => {
+      if (hasAssignedClass(student)) {
+        return false;
+      }
       if (!keyword) {
         return true;
       }
@@ -82,6 +89,31 @@ const ClassManager = () => {
       );
     });
   }, [search, students]);
+
+  const studentsByClassId = useMemo(() => {
+    const map = new Map<string, StudentLite[]>();
+    classes.forEach((item) => {
+      map.set(item.id, []);
+    });
+
+    students.forEach((student) => {
+      if (!student.classId) {
+        return;
+      }
+      const list = map.get(student.classId);
+      if (!list) {
+        return;
+      }
+      list.push(student);
+    });
+
+    return map;
+  }, [classes, students]);
+
+  useEffect(() => {
+    const assignableUids = new Set(filteredStudents.map((student) => student.uid));
+    setCheckedStudentUids((prev) => prev.filter((uid) => assignableUids.has(uid)));
+  }, [filteredStudents]);
 
   const toggleChecked = (uid: string, checked: boolean) => {
     setCheckedStudentUids((prev) => {
@@ -189,12 +221,13 @@ const ClassManager = () => {
       return;
     }
 
+    const assignedUids = [...checkedStudentUids];
     setLoading(true);
     setMessage("");
 
     try {
       await Promise.all(
-        checkedStudentUids.map((uid) =>
+        assignedUids.map((uid) =>
           updateDoc(doc(db, "users", uid), {
             classId: selectedClass.id,
             className: selectedClass.name,
@@ -202,11 +235,19 @@ const ClassManager = () => {
           }),
         ),
       );
+
+      setStudents((prev) =>
+        prev.map((student) =>
+          assignedUids.includes(student.uid)
+            ? { ...student, classId: selectedClass.id, className: selectedClass.name }
+            : student,
+        ),
+      );
       setCheckedStudentUids([]);
-      setMessage(`${checkedStudentUids.length}명의 학생을 '${selectedClass.name}'에 배정했습니다.`);
-      await loadData();
+      setMessage(`${assignedUids.length}명의 학생을 '${selectedClass.name}'에 배정했습니다.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "학생 배정에 실패했습니다.");
+      await loadData();
     } finally {
       setLoading(false);
     }
@@ -238,7 +279,7 @@ const ClassManager = () => {
         <div>
           <h2 className="text-xl font-bold text-foreground">반 관리</h2>
           <p className="text-sm text-muted-foreground">
-            반 배정이 필요한 학생을 선택하여 명단에 추가합니다.
+            반 배정이 필요한 학생만 표시됩니다.
           </p>
         </div>
 
@@ -276,6 +317,17 @@ const ClassManager = () => {
                 <div className="flex items-center gap-2">
                   <Button
                     type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() =>
+                      setExpandedClassId((prev) => (prev === item.id ? null : item.id))
+                    }
+                    disabled={loading}
+                  >
+                    현황 보기
+                  </Button>
+                  <Button
+                    type="button"
                     variant="outline"
                     size="sm"
                     onClick={() => setClassForm({ id: item.id, name: item.name })}
@@ -299,6 +351,40 @@ const ClassManager = () => {
               <p className="text-sm text-muted-foreground">등록된 반이 없습니다.</p>
             )}
           </div>
+
+          {expandedClassId && (
+            <div className="mt-4 rounded-md border border-border bg-background p-3">
+              {(() => {
+                const targetClass = classes.find((item) => item.id === expandedClassId);
+                if (!targetClass) {
+                  return <p className="text-sm text-muted-foreground">반 정보를 찾을 수 없습니다.</p>;
+                }
+                const members = studentsByClassId.get(expandedClassId) ?? [];
+                return (
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-card-foreground">
+                      현재 [{targetClass.name}] 소속 학생: {members.length}명
+                    </p>
+                    {members.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">아직 배정된 학생이 없습니다.</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {members.map((student) => (
+                          <div
+                            key={`member-${targetClass.id}-${student.uid}`}
+                            className="rounded border border-border px-3 py-2"
+                          >
+                            <p className="text-sm text-card-foreground">{student.name}</p>
+                            <p className="text-xs text-muted-foreground">{student.email}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
         </div>
 
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">
@@ -329,6 +415,9 @@ const ClassManager = () => {
               </Button>
             </div>
           </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            반 배정이 필요한 학생만 표시됩니다.
+          </p>
 
           <div className="mt-4 space-y-2">
             {filteredStudents.map((student) => {
