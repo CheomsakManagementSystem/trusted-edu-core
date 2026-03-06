@@ -453,7 +453,7 @@ const ReportView = () => {
           </p>
         </div>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+        <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <h3 className="text-base font-semibold text-slate-900 md:text-sm">반 가입 신청</h3>
@@ -495,7 +495,7 @@ const ReportView = () => {
 
         {!loading && !error && studentReports.length > 0 && selectedReport && (
             <div className="space-y-4">
-            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+            <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <h3 className="text-base font-semibold text-slate-900 md:text-sm">리포트 회차 선택</h3>
                 <Select value={selectedReportId} onValueChange={setSelectedReportId}>
@@ -514,7 +514,7 @@ const ReportView = () => {
             </div>
 
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5 xl:col-span-2">
+              <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5 xl:col-span-2">
                 <div className="mb-3 flex items-center justify-between">
                   <h3 className="text-lg font-semibold text-slate-900 md:text-base">영역별 역량 분석표</h3>
                   <div className="hidden items-center gap-3 text-xs text-slate-500 md:flex">
@@ -587,7 +587,7 @@ const ReportView = () => {
                 </div>
               </div>
 
-              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+              <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5">
                 <h3 className="mb-3 text-lg font-semibold text-slate-900 md:text-base">선생님의 핵심 조언</h3>
                 <div className="mb-3 grid grid-cols-1 gap-2 text-sm md:grid-cols-2 md:text-xs">
                   <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
@@ -640,15 +640,18 @@ const ReportView = () => {
 
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
               <div className="space-y-4 xl:col-span-2">
-                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+                <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5">
                   <h3 className="mb-3 text-base font-semibold text-slate-900 md:text-sm">회차별 점수 변화 그래프</h3>
-                  <div className="h-64">
+                  <div className="h-48 sm:h-56 md:h-64">
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart data={trendData}>
                         <CartesianGrid strokeDasharray="3 3" stroke={chartGridColor} />
                         <XAxis
                           dataKey="round"
-                          tick={{ fontSize: isMobile ? 11 : 12, fill: chartAxisColor }}
+                          tick={{ fontSize: isMobile ? 9 : 12, fill: chartAxisColor }}
+                          angle={isMobile ? -20 : 0}
+                          textAnchor={isMobile ? "end" : "middle"}
+                          height={isMobile ? 40 : 30}
                           stroke={chartGridColor}
                         />
                         <YAxis
@@ -669,7 +672,7 @@ const ReportView = () => {
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+                <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5">
                   <h3 className="mb-3 text-base font-semibold text-slate-900 md:text-sm">리포트 목록</h3>
                   <div className="space-y-2">
                     {studentReports.map((report, index) => (
@@ -684,7 +687,7 @@ const ReportView = () => {
                         }`}
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <p className="text-base font-semibold text-slate-900 md:text-sm">
+                          <p className="line-clamp-2 break-all text-base font-semibold text-slate-900 md:text-sm">
                             회차 {studentReports.length - index} / {report.essayTopic || "기록 없음"}
                           </p>
                           <span
@@ -710,7 +713,7 @@ const ReportView = () => {
               </div>
 
               <div className="space-y-4">
-                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+                <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5">
                   <h3 className="mb-2 text-base font-semibold text-slate-900 md:text-sm">나의 답안 및 첨삭 원본 보기</h3>
                   {pdfLoading && <p className="text-sm text-muted-foreground">페이지 렌더링 중입니다...</p>}
                   {pdfError && <p className="text-sm text-destructive">{pdfError}</p>}
@@ -740,7 +743,7 @@ const ReportView = () => {
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-red-200 bg-red-50 p-4 shadow-sm md:p-5">
+                <div className="rounded-xl border border-red-200 bg-red-50 p-3 shadow-sm md:p-5">
                   <h3 className="text-sm font-semibold text-red-900">계정 관리</h3>
                   <p className="mt-1 text-xs text-red-700">
                     회원 탈퇴 시 그동안의 모든 학습 기록과 성적 데이터가 소멸되며 복구가 불가능합니다.

@@ -157,16 +157,23 @@ const StudentDashboard = () => {
           </p>
         </div>
 
-        <div className="rounded-lg border border-border bg-card p-5 shadow-card">
+        <div className="rounded-lg border border-border bg-card p-3 shadow-card md:p-5">
           <div className="mb-3 flex items-center gap-2">
             <TrendingUp className="h-4 w-4 text-primary" />
             <h3 className="text-sm font-semibold text-card-foreground">점수 추이</h3>
           </div>
-          <div className="h-64">
+          <div className="h-48 sm:h-56 md:h-64">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 9 }}
+                  angle={-20}
+                  textAnchor="end"
+                  height={44}
+                  interval={0}
+                />
                 <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} />
                 <Tooltip />
                 <Line
@@ -186,7 +193,7 @@ const StudentDashboard = () => {
           )}
         </div>
 
-        <div className="rounded-lg border border-border bg-card p-5 shadow-card">
+        <div className="rounded-lg border border-border bg-card p-3 shadow-card md:p-5">
           <h3 className="mb-3 text-sm font-semibold text-card-foreground">첨삭 PDF 목록</h3>
 
           {loading && (
@@ -216,9 +223,9 @@ const StudentDashboard = () => {
                   onClick={() => window.open(report.fileUrl, "_blank", "noopener,noreferrer")}
                   className="rounded-md border border-border bg-background p-4 text-left transition-colors hover:border-primary/30 hover:bg-muted/40"
                 >
-                  <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-start justify-between gap-1.5 sm:gap-2">
                     <div>
-                      <p className="text-sm font-semibold text-card-foreground">
+                      <p className="line-clamp-2 break-all text-sm font-semibold text-card-foreground">
                         {report.fileName}
                       </p>
                       <p className="mt-1 text-xs text-muted-foreground">
@@ -227,7 +234,7 @@ const StudentDashboard = () => {
                           : "날짜 정보 없음"}
                       </p>
                     </div>
-                    <FileText className="h-4 w-4 shrink-0 text-primary" />
+                    <FileText className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                   </div>
                   <p className="mt-2 text-sm text-card-foreground">
                     점수: <span className="font-semibold">{report.score}점</span>
@@ -238,15 +245,15 @@ const StudentDashboard = () => {
           )}
         </div>
 
-        <div className="relative mt-10 block rounded-lg border-2 border-primary/20 bg-primary/5 p-5 shadow-card">
+        <div className="relative mt-10 block rounded-lg border-2 border-primary/20 bg-primary/5 p-3 shadow-card md:p-5">
           <h3 className="text-base font-bold text-card-foreground">계정 관리</h3>
           <p className="mt-1 text-sm text-muted-foreground">
             계정 보안을 위해 정기적으로 비밀번호를 변경하세요.
           </p>
 
-          <div className="mt-4 rounded-md border border-primary/20 bg-background p-4">
+          <div className="mt-4 rounded-md border border-primary/20 bg-background p-3 md:p-4">
             <h4 className="mb-3 text-sm font-semibold text-card-foreground">비밀번호 변경</h4>
-            <form className="space-y-3" onSubmit={handlePasswordChange}>
+            <form className="space-y-4" onSubmit={handlePasswordChange}>
               <div className="space-y-1.5">
                 <label className="text-sm font-medium text-card-foreground">현재 비밀번호</label>
                 <Input
@@ -254,6 +261,7 @@ const StudentDashboard = () => {
                   value={currentPassword}
                   onChange={(event) => setCurrentPassword(event.target.value)}
                   autoComplete="current-password"
+                  className="text-base"
                   required
                 />
               </div>
@@ -264,6 +272,7 @@ const StudentDashboard = () => {
                   value={newPassword}
                   onChange={(event) => setNewPassword(event.target.value)}
                   autoComplete="new-password"
+                  className="text-base"
                   required
                 />
               </div>
@@ -274,13 +283,14 @@ const StudentDashboard = () => {
                   value={newPasswordConfirm}
                   onChange={(event) => setNewPasswordConfirm(event.target.value)}
                   autoComplete="new-password"
+                  className="text-base"
                   required
                 />
               </div>
 
               {passwordError && <p className="text-sm text-destructive">{passwordError}</p>}
 
-              <Button type="submit" disabled={passwordSaving} className="w-full md:w-auto">
+              <Button type="submit" disabled={passwordSaving} className="w-full">
                 {passwordSaving ? "변경 중..." : "비밀번호 변경하기"}
               </Button>
             </form>

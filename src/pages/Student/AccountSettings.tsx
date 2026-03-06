@@ -93,9 +93,9 @@ const AccountSettings = () => {
           </p>
         </div>
 
-        <div className="relative block rounded-lg border-2 border-primary/20 bg-primary/5 p-5 shadow-card">
+        <div className="relative block rounded-lg border-2 border-primary/20 bg-primary/5 p-3 shadow-card md:p-5">
           <h3 className="text-base font-bold text-card-foreground">비밀번호 변경</h3>
-          <form className="mt-4 space-y-3 rounded-md border border-primary/20 bg-background p-4" onSubmit={handlePasswordChange}>
+          <form className="mt-4 space-y-4 rounded-md border border-primary/20 bg-background p-3 md:p-4" onSubmit={handlePasswordChange}>
             <div className="space-y-1.5">
               <label className="text-sm font-medium text-card-foreground">현재 비밀번호</label>
               <Input
@@ -103,6 +103,7 @@ const AccountSettings = () => {
                 value={currentPassword}
                 onChange={(event) => setCurrentPassword(event.target.value)}
                 autoComplete="current-password"
+                className="text-base"
                 required
               />
             </div>
@@ -113,6 +114,7 @@ const AccountSettings = () => {
                 value={newPassword}
                 onChange={(event) => setNewPassword(event.target.value)}
                 autoComplete="new-password"
+                className="text-base"
                 required
               />
             </div>
@@ -123,13 +125,14 @@ const AccountSettings = () => {
                 value={newPasswordConfirm}
                 onChange={(event) => setNewPasswordConfirm(event.target.value)}
                 autoComplete="new-password"
+                className="text-base"
                 required
               />
             </div>
 
             {passwordError && <p className="text-sm text-destructive">{passwordError}</p>}
 
-            <Button type="submit" disabled={passwordSaving} className="w-full md:w-auto">
+            <Button type="submit" disabled={passwordSaving} className="w-full">
               {passwordSaving ? "변경 중..." : "비밀번호 변경하기"}
             </Button>
           </form>
@@ -140,4 +143,3 @@ const AccountSettings = () => {
 };
 
 export default AccountSettings;
-

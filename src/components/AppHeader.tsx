@@ -2,13 +2,11 @@ import { Bell, LogOut, Search, User } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import BrandLogo from "@/components/BrandLogo";
-import { useIsMobile } from "@/hooks/use-mobile";
 import { roleLabel } from "@/lib/authz";
 
 const AppHeader = () => {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
-  const isMobile = useIsMobile();
 
   const handleLogout = async () => {
     await signOut();
@@ -17,11 +15,7 @@ const AppHeader = () => {
 
   return (
     <header className="flex h-16 items-center justify-between border-b border-border bg-card px-4 md:h-20 md:px-6">
-      {isMobile ? (
-        <BrandLogo iconOnly className="text-foreground" />
-      ) : (
-        <BrandLogo compact className="text-foreground" />
-      )}
+      <BrandLogo compact className="text-foreground" />
 
       <div className="flex items-center gap-2 md:gap-4">
         {/* Search */}
