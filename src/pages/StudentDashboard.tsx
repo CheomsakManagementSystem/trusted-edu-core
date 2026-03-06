@@ -149,7 +149,7 @@ const StudentDashboard = () => {
 
   return (
     <DashboardLayout>
-      <div className="space-y-6">
+      <div className="space-y-6 pb-20">
         <div>
           <h2 className="text-xl font-bold text-foreground">학생 대시보드</h2>
           <p className="text-sm text-muted-foreground">
@@ -238,7 +238,7 @@ const StudentDashboard = () => {
           )}
         </div>
 
-        <div className="sticky bottom-3 z-30 block rounded-lg border border-primary/30 bg-card p-5 shadow-card">
+        <div className="relative mt-10 block rounded-lg border-2 border-primary/20 bg-primary/5 p-5 shadow-card">
           <h3 className="text-base font-bold text-card-foreground">계정 관리</h3>
           <p className="mt-1 text-sm text-muted-foreground">
             계정 보안을 위해 정기적으로 비밀번호를 변경하세요.
