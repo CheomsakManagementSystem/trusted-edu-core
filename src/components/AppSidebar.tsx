@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useLocation, Link } from "react-router-dom";
-import { ChevronLeft, ChevronRight, LayoutDashboard, ShieldCheck, Upload, Users } from "lucide-react";
+import { ChevronLeft, ChevronRight, LayoutDashboard, Settings, ShieldCheck, Upload, Users } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import BrandLogo from "@/components/BrandLogo";
 import { isAdminRole, isStaffRole } from "@/lib/authz";
@@ -18,7 +18,10 @@ const AppSidebar = () => {
       : []),
   ];
 
-  const studentMenu = [{ icon: LayoutDashboard, label: "나의 성장 리포트", path: "/dashboard" }];
+  const studentMenu = [
+    { icon: LayoutDashboard, label: "나의 성장 리포트", path: "/dashboard" },
+    { icon: Settings, label: "계정 관리", path: "/dashboard/account" },
+  ];
 
   const menuItems = isStaffRole(user?.role) ? staffMenu : studentMenu;
 

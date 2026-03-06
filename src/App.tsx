@@ -11,6 +11,7 @@ import UploadDashboard from "./pages/Admin/UploadDashboard";
 import ClassManager from "./pages/Admin/ClassManager";
 import MasterAdminPage from "./pages/Admin/MasterAdminPage";
 import ReportView from "./pages/Student/ReportView";
+import AccountSettings from "./pages/Student/AccountSettings";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -32,6 +33,14 @@ const App = () => (
               element={
                 <RequireAuth>
                   <ReportView />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/dashboard/account"
+              element={
+                <RequireAuth>
+                  <AccountSettings />
                 </RequireAuth>
               }
             />

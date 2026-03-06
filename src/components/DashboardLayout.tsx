@@ -1,6 +1,6 @@
 import { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { LayoutDashboard, ShieldCheck, Upload, Users } from "lucide-react";
+import { LayoutDashboard, Settings, ShieldCheck, Upload, Users } from "lucide-react";
 import AppSidebar from "./AppSidebar";
 import AppHeader from "./AppHeader";
 import { useAuth } from "@/contexts/AuthContext";
@@ -19,7 +19,10 @@ const MobileBottomNav = () => {
             ? [{ to: "/admin/master", label: "학원 전체 관리", icon: ShieldCheck }]
             : []),
         ]
-      : [{ to: "/dashboard", label: "리포트", icon: LayoutDashboard }];
+      : [
+          { to: "/dashboard", label: "리포트", icon: LayoutDashboard },
+          { to: "/dashboard/account", label: "계정 관리", icon: Settings },
+        ];
 
   return (
     <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 backdrop-blur md:hidden">
