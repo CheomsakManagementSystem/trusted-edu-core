@@ -88,7 +88,7 @@ const StudentDashboard = () => {
     }
 
     if (newPassword !== newPasswordConfirm) {
-      setPasswordError("새 비밀번호와 새 비밀번호 확인이 일치하지 않습니다.");
+      setPasswordError("새 비밀번호가 서로 다릅니다");
       return;
     }
 
@@ -114,7 +114,7 @@ const StudentDashboard = () => {
       setNewPasswordConfirm("");
       toast({
         title: "비밀번호 변경 완료",
-        description: "비밀번호가 성공적으로 변경되었습니다. 다음 로그인부터 적용됩니다.",
+        description: "비밀번호가 안전하게 변경되었습니다!",
       });
     } catch (passwordUpdateError) {
       const errorCode =
@@ -230,45 +230,52 @@ const StudentDashboard = () => {
         </div>
 
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">
-          <h3 className="mb-3 text-sm font-semibold text-card-foreground">비밀번호 변경</h3>
-          <form className="space-y-3" onSubmit={handlePasswordChange}>
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-card-foreground">현재 비밀번호</label>
-              <Input
-                type="password"
-                value={currentPassword}
-                onChange={(event) => setCurrentPassword(event.target.value)}
-                autoComplete="current-password"
-                required
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-card-foreground">새 비밀번호</label>
-              <Input
-                type="password"
-                value={newPassword}
-                onChange={(event) => setNewPassword(event.target.value)}
-                autoComplete="new-password"
-                required
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-card-foreground">새 비밀번호 확인</label>
-              <Input
-                type="password"
-                value={newPasswordConfirm}
-                onChange={(event) => setNewPasswordConfirm(event.target.value)}
-                autoComplete="new-password"
-                required
-              />
-            </div>
+          <h3 className="text-base font-bold text-card-foreground">계정 관리</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            계정 보안을 위해 정기적으로 비밀번호를 변경하세요.
+          </p>
 
-            {passwordError && <p className="text-sm text-destructive">{passwordError}</p>}
+          <div className="mt-4 rounded-md border border-primary/20 bg-background p-4">
+            <h4 className="mb-3 text-sm font-semibold text-card-foreground">비밀번호 변경</h4>
+            <form className="space-y-3" onSubmit={handlePasswordChange}>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-card-foreground">현재 비밀번호</label>
+                <Input
+                  type="password"
+                  value={currentPassword}
+                  onChange={(event) => setCurrentPassword(event.target.value)}
+                  autoComplete="current-password"
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-card-foreground">새 비밀번호</label>
+                <Input
+                  type="password"
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  autoComplete="new-password"
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-card-foreground">새 비밀번호 확인</label>
+                <Input
+                  type="password"
+                  value={newPasswordConfirm}
+                  onChange={(event) => setNewPasswordConfirm(event.target.value)}
+                  autoComplete="new-password"
+                  required
+                />
+              </div>
 
-            <Button type="submit" disabled={passwordSaving}>
-              {passwordSaving ? "변경 중..." : "비밀번호 변경하기"}
-            </Button>
-          </form>
+              {passwordError && <p className="text-sm text-destructive">{passwordError}</p>}
+
+              <Button type="submit" disabled={passwordSaving} className="w-full md:w-auto">
+                {passwordSaving ? "변경 중..." : "비밀번호 변경하기"}
+              </Button>
+            </form>
+          </div>
         </div>
       </div>
     </DashboardLayout>
