@@ -24,6 +24,7 @@ import {
   updateManagedUserRole,
   type ManagedUser,
 } from "@/services/masterAdminService";
+import { formatStudentName } from "@/lib/studentName";
 
 const scoreMetrics: Array<{ key: keyof NonNullable<ReportRecord["scores"]>; label: string }> = [
   { key: "reading", label: "독해력" },
@@ -524,7 +525,11 @@ const MasterAdminPage = () => {
               <SelectContent>
                 {studentCandidates.map((student) => (
                   <SelectItem key={student.uid} value={student.uid}>
-                    {student.name} ({student.email || "이메일 없음"})
+                    {formatStudentName(student.name, {
+                      phoneSuffix: student.phoneSuffix,
+                      studentId: student.studentId,
+                    })}{" "}
+                    ({student.email || "이메일 없음"})
                   </SelectItem>
                 ))}
               </SelectContent>

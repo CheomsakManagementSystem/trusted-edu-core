@@ -44,6 +44,7 @@ import {
   enqueueReportNotifications,
   getMasterControls,
 } from "@/services/masterAdminService";
+import { formatStudentName } from "@/lib/studentName";
 
 const scoreFields: Array<{ key: keyof ScoreBreakdown; label: string }> = [
   { key: "reading", label: "독해력" },
@@ -134,6 +135,18 @@ const UploadDashboard = () => {
     [selectedClassId, students],
   );
 
+  const formatStudentLabel = (student: StudentLite) =>
+    formatStudentName(student.name, {
+      phoneNumber: student.phoneNumber,
+      phoneSuffix: student.phoneSuffix,
+      studentId: student.studentId,
+    });
+
+  const formatReportStudentLabel = (report: ReportRecord) =>
+    formatStudentName(report.studentName || "기록 없음", {
+      studentId: report.studentId,
+    });
+
   useEffect(() => {
     const run = async () => {
       const [classDocs, studentDocs] = await Promise.all([fetchClasses(), fetchStudents()]);
@@ -173,6 +186,15 @@ const UploadDashboard = () => {
 
     run();
   }, [selectedClass, selectedClassId]);
+
+  useEffect(() => {
+    setRows([]);
+    setStudentSearch({});
+    setPendingSearch({});
+    setPendingSelectedStudent({});
+    setManualMatchTargetId(null);
+    setMessage("");
+  }, [selectedClassId]);
 
   const parseAndAppendFiles = async (files: File[]) => {
     if (files.length === 0) {
@@ -272,7 +294,14 @@ const UploadDashboard = () => {
   };
 
   const getSearchableCandidates = (row: UploadCandidate) => {
-    const base = row.status === "needs_selection" ? row.candidates : students;
+    if (!selectedClass) {
+      return [];
+    }
+
+    const base =
+      row.status === "needs_selection"
+        ? row.candidates.filter((student) => student.classId === selectedClass.id)
+        : classStudents;
     const keyword = (studentSearch[row.id] ?? "").trim().toLowerCase();
 
     if (!keyword) {
@@ -280,10 +309,7 @@ const UploadDashboard = () => {
     }
 
     return base.filter((student) => {
-      return (
-        student.name.toLowerCase().includes(keyword) ||
-        student.email.toLowerCase().includes(keyword)
-      );
+      return student.name.toLowerCase().includes(keyword) || student.email.toLowerCase().includes(keyword);
     });
   };
 
@@ -499,11 +525,16 @@ const UploadDashboard = () => {
   };
 
   const getPendingCandidates = (report: ReportRecord) => {
+    if (!selectedClass) {
+      return [];
+    }
+
+    const scopedStudents = students.filter((student) => student.classId === selectedClass.id);
     const keyword = (pendingSearch[report.id] ?? "").trim().toLowerCase();
     const exactNameMatches = report.sourceName?.trim()
-      ? students.filter((student) => student.name.trim() === report.sourceName.trim())
+      ? scopedStudents.filter((student) => student.name.trim() === report.sourceName.trim())
       : [];
-    const base = exactNameMatches.length > 0 ? exactNameMatches : students;
+    const base = exactNameMatches.length > 0 ? exactNameMatches : scopedStudents;
 
     if (!keyword) {
       return base;
@@ -511,8 +542,7 @@ const UploadDashboard = () => {
 
     return base.filter((student) => {
       return (
-        student.name.toLowerCase().includes(keyword) ||
-        student.email.toLowerCase().includes(keyword)
+        student.name.toLowerCase().includes(keyword) || student.email.toLowerCase().includes(keyword)
       );
     });
   };
@@ -549,7 +579,7 @@ const UploadDashboard = () => {
       setClassReports(classRows);
       toast({
         title: "연결 완료",
-        description: `${target.name} 학생으로 리포트가 배정되었습니다.`,
+        description: `${formatStudentLabel(target)} 학생으로 리포트가 배정되었습니다.`,
       });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "리포트 배정에 실패했습니다.";
@@ -580,7 +610,7 @@ const UploadDashboard = () => {
     setManualMatchTargetId(null);
     toast({
       title: "수동 매칭 완료",
-      description: `${target.name} (${target.email}) 유저로 배정했습니다.`,
+      description: `${formatStudentLabel(target)} (${target.email}) 유저로 배정했습니다.`,
     });
   };
 
@@ -805,6 +835,11 @@ const UploadDashboard = () => {
             <h3 className="text-sm font-semibold text-card-foreground">3단계: 내용 확인</h3>
             <p className="text-xs text-muted-foreground">총 {rows.length}건</p>
           </div>
+          {!selectedClass && (
+            <p className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              반을 먼저 선택해주세요
+            </p>
+          )}
 
           <div className="space-y-4">
             {rows.map((row) => {
@@ -880,7 +915,7 @@ const UploadDashboard = () => {
                         <SelectItem value="none">학생 선택</SelectItem>
                         {options.map((student) => (
                           <SelectItem key={student.uid} value={student.uid}>
-                            {student.name} ({student.className || "미배정"})
+                            {formatStudentLabel(student)} ({student.className || "미배정"})
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -1010,7 +1045,7 @@ const UploadDashboard = () => {
               >
                 <div>
                   <p className="text-sm font-medium text-card-foreground">
-                    {report.studentName || "기록 없음"} | {report.essayTopic || "기록 없음"}
+                    {formatReportStudentLabel(report)} | {report.essayTopic || "기록 없음"}
                   </p>
                   <p className="text-xs text-muted-foreground">
                     총점 {report.totalScore} / 등급 {report.grade || "기록 없음"}
@@ -1094,7 +1129,7 @@ const UploadDashboard = () => {
                   <div>
                     <p className="text-sm font-semibold text-card-foreground">{report.fileName || "기록 없음"}</p>
                     <p className="text-xs text-muted-foreground">
-                      학생 {report.studentName || "기록 없음"} | 반 {report.className || "기록 없음"} | 회차 {round}
+                      학생 {formatReportStudentLabel(report)} | 반 {report.className || "기록 없음"} | 회차 {round}
                     </p>
                   </div>
                   <div className="text-xs text-muted-foreground">
@@ -1203,7 +1238,7 @@ const UploadDashboard = () => {
                         <SelectItem value="none">학생 선택</SelectItem>
                         {options.map((student) => (
                           <SelectItem key={student.uid} value={student.uid}>
-                            {student.name} ({student.email || "이메일 없음"})
+                            {formatStudentLabel(student)} ({student.email || "이메일 없음"})
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -1292,7 +1327,7 @@ const UploadDashboard = () => {
                     onClick={() => handleManualMatchApply(candidate.uid)}
                     className="w-full rounded-md border border-border px-3 py-2 text-left text-sm hover:border-primary/50 hover:bg-primary/5"
                   >
-                    <p className="font-medium text-card-foreground">{candidate.name}</p>
+                    <p className="font-medium text-card-foreground">{formatStudentLabel(candidate)}</p>
                     <p className="text-xs text-muted-foreground">{candidate.email || "이메일 없음"}</p>
                   </button>
                 ))}

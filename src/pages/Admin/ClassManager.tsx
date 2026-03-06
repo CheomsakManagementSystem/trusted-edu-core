@@ -32,6 +32,7 @@ import {
   type ClassLite,
   type StudentLite,
 } from "@/lib/pdfProcessor";
+import { formatStudentName } from "@/lib/studentName";
 
 type ClassFormState = {
   id: string | null;
@@ -73,6 +74,13 @@ const ClassManager = () => {
 
   const hasAssignedClass = (student: StudentLite) =>
     Boolean(student.classId) || Boolean(student.className && student.className !== "미배정");
+
+  const formatStudentLabel = (student: StudentLite) =>
+    formatStudentName(student.name, {
+      phoneNumber: student.phoneNumber,
+      phoneSuffix: student.phoneSuffix,
+      studentId: student.studentId,
+    });
 
   const filteredStudents = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -374,7 +382,7 @@ const ClassManager = () => {
                             key={`member-${targetClass.id}-${student.uid}`}
                             className="rounded border border-border px-3 py-2"
                           >
-                            <p className="text-sm text-card-foreground">{student.name}</p>
+                            <p className="text-sm text-card-foreground">{formatStudentLabel(student)}</p>
                             <p className="text-xs text-muted-foreground">{student.email}</p>
                           </div>
                         ))}
@@ -433,7 +441,7 @@ const ClassManager = () => {
                       onCheckedChange={(value) => toggleChecked(student.uid, Boolean(value))}
                     />
                     <div>
-                      <p className="text-sm font-medium text-card-foreground">{student.name}</p>
+                      <p className="text-sm font-medium text-card-foreground">{formatStudentLabel(student)}</p>
                       <p className="text-xs text-muted-foreground">{student.email}</p>
                     </div>
                   </div>

@@ -28,6 +28,7 @@ import {
   type ClassLite,
   type ReportRecord,
 } from "@/lib/pdfProcessor";
+import { formatStudentName } from "@/lib/studentName";
 import { auth, db } from "@/lib/firebase";
 import { deleteUser } from "firebase/auth";
 import { collection, onSnapshot, orderBy, query, where } from "firebase/firestore";
@@ -281,11 +282,13 @@ const ReportView = () => {
       writtenAt: selectedReport.writtenAt?.trim() || "기록 없음",
       className: selectedReport.className?.trim() || user?.className || "기록 없음",
       essayTopic: selectedReport.essayTopic?.trim() || "기록 없음",
-      studentName: selectedReport.studentName?.trim() || user?.name || "기록 없음",
+      studentName: formatStudentName(selectedReport.studentName?.trim() || user?.name || "기록 없음", {
+        studentId: selectedReport.studentId ?? user?.studentId ?? null,
+      }),
       summary,
       nextTask,
     };
-  }, [selectedReport, user?.className, user?.name]);
+  }, [selectedReport, user?.className, user?.name, user?.studentId]);
 
   useEffect(() => {
     setFeedbackExpanded(false);

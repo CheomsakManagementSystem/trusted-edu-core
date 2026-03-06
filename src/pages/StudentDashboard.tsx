@@ -84,22 +84,26 @@ const StudentDashboard = () => {
 
     if (!currentPassword || !newPassword || !newPasswordConfirm) {
       setPasswordError("모든 비밀번호 입력값을 채워주세요.");
+      window.alert("모든 비밀번호 입력값을 채워주세요.");
       return;
     }
 
     if (newPassword !== newPasswordConfirm) {
       setPasswordError("새 비밀번호가 서로 다릅니다");
+      window.alert("새 비밀번호가 서로 다릅니다");
       return;
     }
 
     const firebaseUser = auth.currentUser;
     if (!firebaseUser?.email) {
       setPasswordError("비밀번호 변경을 위한 사용자 인증 정보를 확인할 수 없습니다.");
+      window.alert("비밀번호 변경을 위한 사용자 인증 정보를 확인할 수 없습니다.");
       return;
     }
 
     if (currentPassword === newPassword) {
       setPasswordError("새 비밀번호는 현재 비밀번호와 다르게 설정해주세요.");
+      window.alert("새 비밀번호는 현재 비밀번호와 다르게 설정해주세요.");
       return;
     }
 
@@ -116,6 +120,7 @@ const StudentDashboard = () => {
         title: "비밀번호 변경 완료",
         description: "비밀번호가 안전하게 변경되었습니다!",
       });
+      window.alert("비밀번호가 안전하게 변경되었습니다!");
     } catch (passwordUpdateError) {
       const errorCode =
         typeof passwordUpdateError === "object" &&
@@ -126,12 +131,16 @@ const StudentDashboard = () => {
 
       if (errorCode === "auth/wrong-password" || errorCode === "auth/invalid-credential") {
         setPasswordError("현재 비밀번호가 올바르지 않습니다.");
+        window.alert("현재 비밀번호가 올바르지 않습니다.");
       } else if (errorCode === "auth/weak-password") {
         setPasswordError("새 비밀번호가 너무 약합니다. 더 안전한 비밀번호를 입력해주세요.");
+        window.alert("새 비밀번호가 너무 약합니다. 더 안전한 비밀번호를 입력해주세요.");
       } else if (errorCode === "auth/too-many-requests") {
         setPasswordError("요청이 일시적으로 제한되었습니다. 잠시 후 다시 시도해주세요.");
+        window.alert("요청이 일시적으로 제한되었습니다. 잠시 후 다시 시도해주세요.");
       } else {
         setPasswordError("비밀번호 변경 중 오류가 발생했습니다. 다시 시도해주세요.");
+        window.alert("비밀번호 변경 중 오류가 발생했습니다. 다시 시도해주세요.");
       }
     } finally {
       setPasswordSaving(false);
@@ -229,7 +238,7 @@ const StudentDashboard = () => {
           )}
         </div>
 
-        <div className="rounded-lg border border-border bg-card p-5 shadow-card">
+        <div className="sticky bottom-3 z-30 block rounded-lg border border-primary/30 bg-card p-5 shadow-card">
           <h3 className="text-base font-bold text-card-foreground">계정 관리</h3>
           <p className="mt-1 text-sm text-muted-foreground">
             계정 보안을 위해 정기적으로 비밀번호를 변경하세요.

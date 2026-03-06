@@ -30,6 +30,8 @@ export type StudentLite = {
   classId?: string | null;
   className?: string | null;
   studentId?: string | null;
+  phoneNumber?: string | null;
+  phoneSuffix?: string | null;
 };
 
 export type ClassLite = {
@@ -1288,14 +1290,21 @@ export const fetchStudents = async (): Promise<StudentLite[]> => {
         classId?: string;
         className?: string;
         studentId?: string;
+        phoneNumber?: string;
+        phoneSuffix?: string;
       };
+      const phoneDigits = (data.phoneNumber ?? "").replace(/\D/g, "");
+      const phoneLast4 = phoneDigits.length >= 4 ? phoneDigits.slice(-4) : null;
+      const studentId = data.studentId ?? data.phoneSuffix ?? phoneLast4 ?? null;
       return {
         uid: data.uid ?? docSnap.id,
         name: data.name ?? "이름없음",
         email: data.email ?? "",
         classId: data.classId ?? null,
         className: data.className ?? null,
-        studentId: data.studentId ?? null,
+        studentId,
+        phoneNumber: data.phoneNumber ?? null,
+        phoneSuffix: data.phoneSuffix ?? null,
       };
     });
   } catch {
