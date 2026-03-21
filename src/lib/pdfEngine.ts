@@ -39,9 +39,32 @@ export interface ReportRecord {
   studentId: string;
   studentName: string;
   score: number;
-  fileUrl: string;
+  fileUrl?: string;
   fileName: string;
   createdAt: Timestamp | null;
+  feedback?: string;
+  reviewer?: string;
+  writtenAt?: string;
+  className?: string | null;
+  essayTopic?: string;
+  grade?: string;
+  totalScore?: number;
+  scores?: {
+    reading?: number | null;
+    comprehension?: number | null;
+    problemUnderstanding?: number | null;
+    organization?: number | null;
+    expression?: number | null;
+    total?: number | null;
+  };
+  averageScores?: {
+    reading?: number | null;
+    comprehension?: number | null;
+    problemUnderstanding?: number | null;
+    organization?: number | null;
+    expression?: number | null;
+    total?: number | null;
+  };
 }
 
 export interface UploadFailure {
