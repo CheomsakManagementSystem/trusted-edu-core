@@ -25,6 +25,9 @@ import { auth, db } from "@/lib/firebase";
 import { deleteUser } from "firebase/auth";
 import { collection, onSnapshot, orderBy, query, where } from "firebase/firestore";
 import {
+  CartesianGrid,
+  Line,
+  LineChart,
   PolarAngleAxis,
   PolarGrid,
   PolarRadiusAxis,
@@ -32,6 +35,8 @@ import {
   RadarChart,
   ResponsiveContainer,
   Tooltip,
+  XAxis,
+  YAxis,
 } from "recharts";
 
 const cleanFeedbackText = (value: string): string => {
@@ -235,6 +240,16 @@ const ReportView = () => {
     ];
   }, [isMobile, selectedReport]);
 
+  const trendData = useMemo(
+    () =>
+      [...studentReports].reverse().map((report, index) => ({
+        round: `회차 ${index + 1}`,
+        score: report.totalScore,
+        reportId: report.id,
+      })),
+    [studentReports],
+  );
+
   const feedbackMeta = useMemo(() => {
     if (!selectedReport) {
       return {
@@ -278,6 +293,7 @@ const ReportView = () => {
 
   const chartAxisColor = "#111827";
   const chartGridColor = "#d1d5db";
+  const chartLineColor = "#2563eb";
 
   const handleJoinRequest = async () => {
     if (!user?.uid || !user?.email) {
@@ -443,7 +459,7 @@ const ReportView = () => {
             </div>
 
             <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-              <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+              <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
                 <div className="flex items-center justify-between border-b border-slate-200 px-4 py-4 md:px-5">
                   <h3 className="text-lg font-semibold text-slate-900 md:text-base">영역별 역량 분석표</h3>
                   <div className="hidden items-center gap-3 text-xs text-slate-500 md:flex">
@@ -518,7 +534,7 @@ const ReportView = () => {
                 </div>
               </div>
 
-              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+              <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:p-5">
                 <h3 className="mb-3 text-lg font-semibold text-slate-900 md:text-base">선생님의 핵심 조언</h3>
                 <div className="mb-4 grid grid-cols-1 gap-2 text-sm md:grid-cols-2 md:text-xs">
                   <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
@@ -569,7 +585,83 @@ const ReportView = () => {
               </div>
             </div>
 
-            <div className="rounded-xl border border-red-200 bg-red-50 p-3 shadow-sm md:p-5">
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+              <div className="order-1 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:order-2 md:p-5">
+                <h3 className="mb-3 text-lg font-semibold text-slate-900 md:text-base">회차별 점수 변화 그래프</h3>
+                <div className="h-64 sm:h-72">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={trendData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={chartGridColor} />
+                      <XAxis
+                        dataKey="round"
+                        tick={{ fontSize: isMobile ? 11 : 12, fill: chartAxisColor }}
+                        angle={isMobile ? -18 : 0}
+                        textAnchor={isMobile ? "end" : "middle"}
+                        height={isMobile ? 44 : 32}
+                        stroke={chartGridColor}
+                      />
+                      <YAxis
+                        domain={[0, 100]}
+                        tick={{ fontSize: isMobile ? 11 : 12, fill: chartAxisColor }}
+                        stroke={chartGridColor}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          borderColor: chartGridColor,
+                          backgroundColor: "#ffffff",
+                          color: chartAxisColor,
+                        }}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="score"
+                        stroke={chartLineColor}
+                        strokeWidth={3}
+                        dot={{ r: 4 }}
+                        activeDot={{ r: 6 }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="order-2 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:order-1 md:p-5">
+                <h3 className="mb-3 text-lg font-semibold text-slate-900 md:text-base">리포트 목록</h3>
+                <div className="space-y-3">
+                  {studentReports.map((report, index) => (
+                    <button
+                      key={report.id}
+                      type="button"
+                      onClick={() => setSelectedReportId(report.id)}
+                      className={`w-full rounded-xl border px-4 py-4 text-left transition-colors ${
+                        selectedReport.id === report.id
+                          ? "border-slate-900 bg-slate-50"
+                          : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xl font-bold tracking-tight text-slate-900 md:text-lg">
+                            회차 {studentReports.length - index} / {report.essayTopic || "기록 없음"}
+                          </p>
+                          <p className="mt-2 text-sm text-slate-600 md:text-base">
+                            총점 {report.totalScore} | 등급 {report.grade || "기록 없음"} | 날짜{" "}
+                            {report.createdAt
+                              ? report.createdAt.toDate().toLocaleDateString("ko-KR")
+                              : "기록 없음"}
+                          </p>
+                        </div>
+                        <span className="rounded-xl bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700">
+                          읽음
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 shadow-sm md:p-5">
               <h3 className="text-sm font-semibold text-red-900">계정 관리</h3>
               <p className="mt-1 text-xs text-red-700">
                 회원 탈퇴 시 그동안의 모든 학습 기록과 성적 데이터가 소멸되며 복구가 불가능합니다.
