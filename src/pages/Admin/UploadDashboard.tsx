@@ -105,6 +105,10 @@ const UploadDashboard = () => {
   const [archiveStudentFilter, setArchiveStudentFilter] = useState("");
   const [archiveRoundFilter, setArchiveRoundFilter] = useState<string>("all");
   const [archiveReadFilter, setArchiveReadFilter] = useState<string>("all");
+  const [cleanupSearch, setCleanupSearch] = useState("");
+  const [pendingMatchTarget, setPendingMatchTarget] = useState<ReportRecord | null>(null);
+  const [pendingMatchSearch, setPendingMatchSearch] = useState("");
+  const [pendingMatchStudentUid, setPendingMatchStudentUid] = useState<string>("");
   const [editingReport, setEditingReport] = useState<ReportRecord | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
   const [deletingReportId, setDeletingReportId] = useState<string | null>(null);
@@ -334,7 +338,10 @@ const UploadDashboard = () => {
     return map;
   }, [classReports, pendingReports, publishedReports]);
   const cleanupPendingReports = useMemo(
-    () => pendingReports.filter((report) => !report.studentId && !report.studentUid),
+    () =>
+      pendingReports
+        .filter((report) => !report.studentId && !report.studentUid)
+        .sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0)),
     [pendingReports],
   );
   const manualMatchTarget = useMemo(
@@ -364,32 +371,59 @@ const UploadDashboard = () => {
     [roundByReportId],
   );
   const filteredPublishedReports = useMemo(() => {
-    return publishedReports.filter((report) => {
-      if (archiveClassFilter !== "all" && report.classId !== archiveClassFilter) {
-        return false;
-      }
-      const keyword = archiveStudentFilter.trim().toLowerCase();
-      if (keyword) {
-        const target = `${report.studentName} ${report.fileName}`.toLowerCase();
-        if (!target.includes(keyword)) {
+    return [...publishedReports]
+      .sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0))
+      .filter((report) => {
+        if (archiveClassFilter !== "all" && report.classId !== archiveClassFilter) {
           return false;
         }
-      }
-      if (archiveRoundFilter !== "all") {
-        const round = roundByReportId.get(report.id) ?? 0;
-        if (String(round) !== archiveRoundFilter) {
+        const keyword = archiveStudentFilter.trim().toLowerCase();
+        if (keyword) {
+          const target = `${report.studentName} ${report.fileName} ${report.sourceName} ${report.essayTopic}`.toLowerCase();
+          if (!target.includes(keyword)) {
+            return false;
+          }
+        }
+        if (archiveRoundFilter !== "all") {
+          const round = roundByReportId.get(report.id) ?? 0;
+          if (String(round) !== archiveRoundFilter) {
+            return false;
+          }
+        }
+        if (archiveReadFilter === "read" && !report.isRead) {
           return false;
         }
-      }
-      if (archiveReadFilter === "read" && !report.isRead) {
-        return false;
-      }
-      if (archiveReadFilter === "unread" && report.isRead) {
-        return false;
-      }
-      return true;
-    });
+        if (archiveReadFilter === "unread" && report.isRead) {
+          return false;
+        }
+        return true;
+      });
   }, [archiveClassFilter, archiveReadFilter, archiveRoundFilter, archiveStudentFilter, publishedReports, roundByReportId]);
+
+  const filteredCleanupPendingReports = useMemo(() => {
+    const keyword = cleanupSearch.trim().toLowerCase();
+    if (!keyword) {
+      return cleanupPendingReports;
+    }
+
+    return cleanupPendingReports.filter((report) => {
+      const target = `${report.sourceName} ${report.fileName} ${report.essayTopic} ${report.reviewer}`.toLowerCase();
+      return target.includes(keyword);
+    });
+  }, [cleanupPendingReports, cleanupSearch]);
+
+  const pendingMatchCandidates = useMemo(() => {
+    const keyword = pendingMatchSearch.trim().toLowerCase();
+    const base = [...students].sort((a, b) => a.name.localeCompare(b.name, "ko"));
+    if (!keyword) {
+      return base;
+    }
+
+    return base.filter((student) => {
+      const target = `${student.name} ${student.email} ${student.studentId ?? ""} ${student.className ?? ""}`.toLowerCase();
+      return target.includes(keyword);
+    });
+  }, [pendingMatchSearch, students]);
 
   const handlePublish = async () => {
     if (!user) {
@@ -571,12 +605,14 @@ const UploadDashboard = () => {
     setResolvingPendingId(report.id);
     try {
       await assignPendingReportToStudent(report.id, target);
-      const [pendingRows, classRows] = await Promise.all([
+      const [pendingRows, classRows, publishedRows] = await Promise.all([
         fetchPendingReports(),
         selectedClass ? fetchReportsByClassId(selectedClass.id) : Promise.resolve(classReports),
+        fetchPublishedReports(),
       ]);
       setPendingReports(pendingRows);
       setClassReports(classRows);
+      setPublishedReports(publishedRows);
       toast({
         title: "연결 완료",
         description: `${formatStudentLabel(target)} 학생으로 리포트가 배정되었습니다.`,
@@ -587,6 +623,61 @@ const UploadDashboard = () => {
         variant: "destructive",
         title: "연결 실패",
         description: reason,
+      });
+    } finally {
+      setResolvingPendingId(null);
+    }
+  };
+
+  const handleOpenPendingMatch = (report: ReportRecord) => {
+    setPendingMatchTarget(report);
+    setPendingMatchSearch(report.sourceName || "");
+    setPendingMatchStudentUid("");
+  };
+
+  const handleApplyPendingMatch = async () => {
+    if (!pendingMatchTarget || !pendingMatchStudentUid) {
+      toast({
+        variant: "destructive",
+        title: "학생 매칭 실패",
+        description: "연결할 학생을 선택해주세요.",
+      });
+      return;
+    }
+
+    const student = students.find((item) => item.uid === pendingMatchStudentUid);
+    if (!student) {
+      toast({
+        variant: "destructive",
+        title: "학생 매칭 실패",
+        description: "선택한 학생 정보를 찾을 수 없습니다.",
+      });
+      return;
+    }
+
+    setResolvingPendingId(pendingMatchTarget.id);
+    try {
+      await assignPendingReportToStudent(pendingMatchTarget.id, student);
+      const [pendingRows, classRows, publishedRows] = await Promise.all([
+        fetchPendingReports(),
+        selectedClass ? fetchReportsByClassId(selectedClass.id) : Promise.resolve(classReports),
+        fetchPublishedReports(),
+      ]);
+      setPendingReports(pendingRows);
+      setClassReports(classRows);
+      setPublishedReports(publishedRows);
+      setPendingMatchTarget(null);
+      setPendingMatchSearch("");
+      setPendingMatchStudentUid("");
+      toast({
+        title: "학생 매칭 완료",
+        description: `${formatStudentLabel(student)} 학생으로 자료를 연결했습니다.`,
+      });
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "학생 매칭 실패",
+        description: error instanceof Error ? error.message : "학생 연결에 실패했습니다.",
       });
     } finally {
       setResolvingPendingId(null);
@@ -1118,16 +1209,16 @@ const UploadDashboard = () => {
             </Select>
           </div>
 
-          <div className="space-y-2">
+          <div className="max-h-[400px] space-y-2 overflow-y-auto pr-1">
             {filteredPublishedReports.map((report) => {
               const round = roundByReportId.get(report.id) ?? 1;
               return (
                 <div
                   key={report.id}
-                  className="grid grid-cols-1 gap-2 rounded-md border border-border bg-background px-3 py-3 md:grid-cols-[1.4fr_1.2fr_0.8fr_0.8fr_auto]"
+                  className="grid grid-cols-1 gap-2 rounded-lg border border-border bg-background px-3 py-2.5 md:grid-cols-[1.2fr_1fr_0.7fr_0.7fr_auto]"
                 >
                   <div>
-                    <p className="text-sm font-semibold text-card-foreground">{report.fileName || "기록 없음"}</p>
+                    <p className="truncate text-sm font-semibold text-card-foreground">{report.fileName || "기록 없음"}</p>
                     <p className="text-xs text-muted-foreground">
                       학생 {formatReportStudentLabel(report)} | 반 {report.className || "기록 없음"} | 회차 {round}
                     </p>
@@ -1153,7 +1244,7 @@ const UploadDashboard = () => {
                   <div className="flex gap-2">
                     <Button type="button" size="sm" variant="outline" onClick={() => openEditModal(report)}>
                       <Pencil className="mr-1 h-3.5 w-3.5" />
-                      첨삭 내용 수정
+                      수정
                     </Button>
                     <Button
                       type="button"
@@ -1163,14 +1254,14 @@ const UploadDashboard = () => {
                       onClick={() => handleDeletePublishedReport(report.id)}
                     >
                       <Trash2 className="mr-1 h-3.5 w-3.5" />
-                      리포트 회수/삭제
+                      삭제
                     </Button>
                   </div>
                 </div>
               );
             })}
             {filteredPublishedReports.length === 0 && (
-              <p className="text-sm text-muted-foreground">기록 없음</p>
+              <p className="text-sm text-muted-foreground">검색 결과가 없습니다</p>
             )}
           </div>
         </div>
@@ -1178,17 +1269,24 @@ const UploadDashboard = () => {
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-card-foreground">미연결 학습 자료 정리</h3>
-            <p className="text-xs text-muted-foreground">대기 {cleanupPendingReports.length}건</p>
+            <p className="text-xs text-muted-foreground">대기 {filteredCleanupPendingReports.length}건</p>
           </div>
           <p className="mb-3 text-xs text-muted-foreground">
             이제 전체 초기화 대신, 필요한 데이터만 선택적으로 삭제하여 안전하게 관리할 수 있습니다.
           </p>
-          <div className="space-y-3">
-            {cleanupPendingReports.map((report) => {
+          <div className="mb-3">
+            <Input
+              value={cleanupSearch}
+              onChange={(event) => setCleanupSearch(event.target.value)}
+              placeholder="학생 이름 또는 파일명 검색"
+            />
+          </div>
+          <div className="max-h-[400px] space-y-2 overflow-y-auto pr-1">
+            {filteredCleanupPendingReports.map((report) => {
               const options = getPendingCandidates(report);
               const isDuplicate = report.assignmentStatus === "duplicate_pending";
               return (
-                <div key={report.id} className="rounded-md border border-border bg-background p-4">
+                <div key={report.id} className="rounded-lg border border-border bg-background p-3">
                   <div className="mb-2 flex flex-wrap items-center gap-2">
                     <p className="text-sm font-semibold text-card-foreground">
                       {report.sourceName || "기록 없음"} | {report.fileName}
@@ -1200,6 +1298,14 @@ const UploadDashboard = () => {
                     >
                       {isDuplicate ? "동명이인 대기" : "미가입자 대기"}
                     </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => handleOpenPendingMatch(report)}
+                    >
+                      학생 매칭
+                    </Button>
                     <Button
                       type="button"
                       size="sm"
@@ -1253,8 +1359,10 @@ const UploadDashboard = () => {
                 </div>
               );
             })}
-            {cleanupPendingReports.length === 0 && (
-              <p className="text-sm text-muted-foreground">현재 보류 중인 리포트가 없습니다.</p>
+            {filteredCleanupPendingReports.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                {cleanupPendingReports.length === 0 ? "현재 보류 중인 리포트가 없습니다." : "검색 결과가 없습니다"}
+              </p>
             )}
           </div>
         </div>
@@ -1336,6 +1444,74 @@ const UploadDashboard = () => {
             <DialogFooter>
               <Button variant="outline" onClick={() => setManualMatchTargetId(null)}>
                 닫기
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={Boolean(pendingMatchTarget)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setPendingMatchTarget(null);
+              setPendingMatchSearch("");
+              setPendingMatchStudentUid("");
+            }
+          }}
+        >
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>미연결 자료 학생 매칭</DialogTitle>
+              <DialogDescription>
+                가입된 전체 학생을 검색해 이 자료를 바로 연결하세요.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3">
+              <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm text-card-foreground">
+                {pendingMatchTarget?.sourceName || "기록 없음"} | {pendingMatchTarget?.fileName || "기록 없음"}
+              </div>
+              <Input
+                value={pendingMatchSearch}
+                onChange={(event) => setPendingMatchSearch(event.target.value)}
+                placeholder="학생 이름, 이메일, 학번, 반 이름 검색"
+              />
+              <div className="max-h-[320px] space-y-2 overflow-y-auto pr-1">
+                {pendingMatchCandidates.map((student) => (
+                  <button
+                    key={student.uid}
+                    type="button"
+                    onClick={() => setPendingMatchStudentUid(student.uid)}
+                    className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${
+                      pendingMatchStudentUid === student.uid
+                        ? "border-primary bg-primary/5"
+                        : "border-border bg-background hover:border-primary/30 hover:bg-muted/40"
+                    }`}
+                  >
+                    <p className="text-sm font-semibold text-card-foreground">{formatStudentLabel(student)}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {student.email || "이메일 없음"} | {student.className || "반 정보 없음"}
+                    </p>
+                  </button>
+                ))}
+                {pendingMatchCandidates.length === 0 && (
+                  <p className="text-sm text-muted-foreground">검색 결과가 없습니다</p>
+                )}
+              </div>
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setPendingMatchTarget(null);
+                  setPendingMatchSearch("");
+                  setPendingMatchStudentUid("");
+                }}
+                disabled={Boolean(resolvingPendingId)}
+              >
+                취소
+              </Button>
+              <Button onClick={handleApplyPendingMatch} disabled={!pendingMatchStudentUid || Boolean(resolvingPendingId)}>
+                {resolvingPendingId ? "연결 중..." : "선택 학생으로 연결"}
               </Button>
             </DialogFooter>
           </DialogContent>
