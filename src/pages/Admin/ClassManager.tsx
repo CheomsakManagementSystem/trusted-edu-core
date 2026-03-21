@@ -22,13 +22,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { db } from "@/lib/firebase";
-import { useAuth } from "@/contexts/AuthContext";
 import {
-  approveClassJoinRequest,
   fetchClasses,
-  fetchPendingClassJoinRequests,
   fetchStudents,
-  type ClassJoinRequestRecord,
   type ClassLite,
   type StudentLite,
 } from "@/lib/pdfProcessor";
@@ -40,10 +36,8 @@ type ClassFormState = {
 };
 
 const ClassManager = () => {
-  const { user } = useAuth();
   const [classes, setClasses] = useState<ClassLite[]>([]);
   const [students, setStudents] = useState<StudentLite[]>([]);
-  const [pendingRequests, setPendingRequests] = useState<ClassJoinRequestRecord[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string>("none");
   const [checkedStudentUids, setCheckedStudentUids] = useState<string[]>([]);
   const [search, setSearch] = useState("");
@@ -53,14 +47,9 @@ const ClassManager = () => {
   const [expandedClassId, setExpandedClassId] = useState<string | null>(null);
 
   const loadData = async () => {
-    const [classDocs, studentDocs, joinRequests] = await Promise.all([
-      fetchClasses(),
-      fetchStudents(),
-      fetchPendingClassJoinRequests(),
-    ]);
+    const [classDocs, studentDocs] = await Promise.all([fetchClasses(), fetchStudents()]);
     setClasses(classDocs);
     setStudents(studentDocs);
-    setPendingRequests(joinRequests);
   };
 
   useEffect(() => {
@@ -198,6 +187,8 @@ const ClassManager = () => {
           updateDoc(studentDoc.ref, {
             classId: null,
             className: null,
+            isEnrolled: false,
+            enrollmentStatus: null,
             updatedAt: serverTimestamp(),
           }),
         ),
@@ -239,6 +230,8 @@ const ClassManager = () => {
           updateDoc(doc(db, "users", uid), {
             classId: selectedClass.id,
             className: selectedClass.name,
+            isEnrolled: true,
+            enrollmentStatus: "active",
             updatedAt: serverTimestamp(),
           }),
         ),
@@ -261,9 +254,8 @@ const ClassManager = () => {
     }
   };
 
-  const handleApproveRequest = async (requestId: string) => {
-    if (!user?.uid) {
-      setMessage("관리자 인증 정보가 없습니다.");
+  const handleRemoveStudentFromClass = async (student: StudentLite) => {
+    if (!window.confirm(`${formatStudentLabel(student)} 학생을 현재 반에서 내보내시겠습니까?`)) {
       return;
     }
 
@@ -271,11 +263,17 @@ const ClassManager = () => {
     setMessage("");
 
     try {
-      await approveClassJoinRequest(requestId, user.uid);
-      setMessage("가입 신청을 승인했습니다.");
+      await updateDoc(doc(db, "users", student.uid), {
+        classId: null,
+        className: null,
+        isEnrolled: false,
+        enrollmentStatus: null,
+        updatedAt: serverTimestamp(),
+      });
+      setMessage(`${formatStudentLabel(student)} 학생의 반 배정을 취소했습니다.`);
       await loadData();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "가입 신청 승인에 실패했습니다.");
+      setMessage(error instanceof Error ? error.message : "학생 배정 취소에 실패했습니다.");
     } finally {
       setLoading(false);
     }
@@ -371,7 +369,7 @@ const ClassManager = () => {
                 return (
                   <div className="space-y-2">
                     <p className="text-sm font-medium text-card-foreground">
-                      현재 [{targetClass.name}] 소속 학생: {members.length}명
+                      현재 [{targetClass.name}] 수강생 목록: {members.length}명
                     </p>
                     {members.length === 0 ? (
                       <p className="text-sm text-muted-foreground">아직 배정된 학생이 없습니다.</p>
@@ -380,10 +378,21 @@ const ClassManager = () => {
                         {members.map((student) => (
                           <div
                             key={`member-${targetClass.id}-${student.uid}`}
-                            className="rounded border border-border px-3 py-2"
+                            className="flex flex-col gap-2 rounded border border-border px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
                           >
-                            <p className="text-sm text-card-foreground">{formatStudentLabel(student)}</p>
-                            <p className="text-xs text-muted-foreground">{student.email}</p>
+                            <div>
+                              <p className="text-sm text-card-foreground">{formatStudentLabel(student)}</p>
+                              <p className="text-xs text-muted-foreground">{student.email}</p>
+                            </div>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="destructive"
+                              onClick={() => handleRemoveStudentFromClass(student)}
+                              disabled={loading}
+                            >
+                              배정 취소/강퇴
+                            </Button>
                           </div>
                         ))}
                       </div>
@@ -453,43 +462,6 @@ const ClassManager = () => {
             })}
             {filteredStudents.length === 0 && (
               <p className="text-sm text-muted-foreground">표시할 학생이 없습니다.</p>
-            )}
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-border bg-card p-5 shadow-card">
-          <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-card-foreground">학생 가입 신청</h3>
-            <p className="text-xs text-muted-foreground">대기 {pendingRequests.length}건</p>
-          </div>
-          <div className="space-y-2">
-            {pendingRequests.map((request) => (
-              <div
-                key={request.id}
-                className="flex flex-col gap-2 rounded-md border border-border bg-background px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div>
-                  <p className="text-sm font-medium text-card-foreground">
-                    {request.studentName} ({request.studentEmail})
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    신청 반: {request.className}
-                    {request.createdAt
-                      ? ` | 신청일 ${request.createdAt.toDate().toLocaleString("ko-KR")}`
-                      : ""}
-                  </p>
-                </div>
-                <Button
-                  size="sm"
-                  onClick={() => handleApproveRequest(request.id)}
-                  disabled={loading}
-                >
-                  승인
-                </Button>
-              </div>
-            ))}
-            {pendingRequests.length === 0 && (
-              <p className="text-sm text-muted-foreground">대기 중인 신청이 없습니다.</p>
             )}
           </div>
         </div>

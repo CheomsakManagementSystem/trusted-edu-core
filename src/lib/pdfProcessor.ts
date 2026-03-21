@@ -1328,27 +1328,27 @@ export const submitClassJoinRequest = async (
   student: Pick<StudentLite, "uid" | "name" | "email">,
   classInfo: ClassLite,
 ): Promise<void> => {
-  const pendingSnap = await getDocs(
-    query(
-      collection(db, "classJoinRequests"),
-      where("studentUid", "==", student.uid),
-      where("classId", "==", classInfo.id),
-      where("status", "==", "pending"),
-    ),
-  );
+  const studentRef = doc(db, "users", student.uid);
+  const studentSnap = await getDoc(studentRef);
 
-  if (!pendingSnap.empty) {
-    throw new Error("이미 해당 반에 가입 신청이 접수되어 있습니다.");
+  if (!studentSnap.exists()) {
+    throw new Error("학생 계정 정보를 찾을 수 없습니다.");
   }
 
-  await addDoc(collection(db, "classJoinRequests"), {
-    studentUid: student.uid,
-    studentName: student.name,
-    studentEmail: student.email,
+  const studentData = studentSnap.data() as {
+    classId?: string | null;
+    className?: string | null;
+  };
+
+  if (studentData.classId === classInfo.id) {
+    throw new Error("이미 배정된 반입니다.");
+  }
+
+  await updateDoc(studentRef, {
     classId: classInfo.id,
     className: classInfo.name,
-    status: "pending",
-    createdAt: serverTimestamp(),
+    isEnrolled: true,
+    enrollmentStatus: "active",
     updatedAt: serverTimestamp(),
   });
 };

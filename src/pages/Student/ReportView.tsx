@@ -14,9 +14,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   fetchClasses,
-  fetchMyClassJoinRequests,
   submitClassJoinRequest,
-  type ClassJoinRequestRecord,
   type ClassLite,
   type ReportRecord,
 } from "@/lib/pdfProcessor";
@@ -97,7 +95,6 @@ const ReportView = () => {
   const [error, setError] = useState("");
 
   const [classes, setClasses] = useState<ClassLite[]>([]);
-  const [joinRequests, setJoinRequests] = useState<ClassJoinRequestRecord[]>([]);
   const [selectedClassId, setSelectedClassId] = useState("none");
   const [joinLoading, setJoinLoading] = useState(false);
   const [withdrawing, setWithdrawing] = useState(false);
@@ -179,17 +176,12 @@ const ReportView = () => {
     const run = async () => {
       if (!user?.uid) {
         setClasses([]);
-        setJoinRequests([]);
         return;
       }
 
       try {
-        const [classRows, joinRows] = await Promise.all([
-          fetchClasses(),
-          fetchMyClassJoinRequests(user.uid),
-        ]);
+        const classRows = await fetchClasses();
         setClasses(classRows);
-        setJoinRequests(joinRows);
       } catch {
         // 신청 상태 조회 실패는 대시보드 핵심 기능을 막지 않음
       }
@@ -208,10 +200,6 @@ const ReportView = () => {
       studentReports.find((report) => report.id === selectedReportId) ?? studentReports[0] ?? null,
     [studentReports, selectedReportId],
   );
-
-  const latestPendingClassId = useMemo(() => {
-    return joinRequests.find((request) => request.status === "pending")?.classId ?? null;
-  }, [joinRequests]);
 
   const radarData = useMemo(() => {
     if (!selectedReport) {
@@ -333,12 +321,13 @@ const ReportView = () => {
         },
         targetClass,
       );
-      const joinRows = await fetchMyClassJoinRequests(user.uid);
-      setJoinRequests(joinRows);
       toast({
-        title: "가입 신청 완료",
-        description: `${targetClass.name} 반 신청이 접수되었습니다.`,
+        title: "반 배정이 완료되었습니다!",
+        description: `${targetClass.name} 반으로 즉시 배정되었습니다.`,
       });
+      window.setTimeout(() => {
+        window.location.reload();
+      }, 600);
     } catch (submitError) {
       toast({
         variant: "destructive",
@@ -409,10 +398,9 @@ const ReportView = () => {
         <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <h3 className="text-base font-semibold text-slate-900 md:text-sm">반 가입 신청</h3>
+              <h3 className="text-base font-semibold text-slate-900 md:text-sm">반 배정 신청</h3>
               <p className="text-sm text-slate-600 md:text-xs">
                 현재 배정 반: {user?.className ?? "기록 없음"}
-                {latestPendingClassId ? " | 선생님의 승인을 기다리고 있습니다. 잠시만 기다려 주세요." : ""}
               </p>
             </div>
             <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
