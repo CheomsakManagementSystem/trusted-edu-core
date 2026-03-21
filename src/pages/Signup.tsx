@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { createUserWithEmailAndPassword } from "firebase/auth";
+import { createUserWithEmailAndPassword, type AuthError } from "firebase/auth";
 import { doc, setDoc } from "firebase/firestore";
+import { Loader2 } from "lucide-react";
 import { auth, db } from "@/lib/firebase";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { toast } from "@/components/ui/sonner";
 import {
   MASTER_ADMIN_CODE,
   getMasterControls,
@@ -22,6 +24,17 @@ const Signup = () => {
   const [masterCode, setMasterCode] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const getSignupErrorMessage = (code?: string) => {
+    switch (code) {
+      case "auth/invalid-email":
+        return "유효하지 않은 이메일 형식입니다.";
+      case "auth/weak-password":
+        return "비밀번호는 최소 6자 이상이어야 합니다.";
+      default:
+        return "회원가입 중 오류가 발생했습니다. 정보를 다시 확인해주세요.";
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -61,13 +74,37 @@ const Signup = () => {
 
       await setDoc(doc(db, "users", uid), userDoc);
 
+      toast.success("가입을 환영합니다!", {
+        description: "잠시 후 해당 권한의 대시보드로 이동합니다.",
+        duration: 1000,
+      });
+
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+
       navigate(
         role === "ADMIN" ? "/admin/master" : role === "INSTRUCTOR" ? "/admin" : "/dashboard",
         { replace: true },
       );
     } catch (err) {
       console.error(err);
-      setError("회원가입 중 오류가 발생했습니다. 정보를 다시 확인해주세요.");
+      const authError = err as AuthError;
+
+      if (authError.code === "auth/email-already-in-use") {
+        const message = "이미 가입된 이메일입니다. 로그인 페이지로 이동하시겠습니까?";
+        setError(message);
+        toast.error(message, {
+          action: {
+            label: "로그인",
+            onClick: () => navigate("/login"),
+          },
+          duration: 5000,
+        });
+        return;
+      }
+
+      const message = getSignupErrorMessage(authError.code);
+      setError(message);
+      toast.error(message);
     } finally {
       setLoading(false);
     }
@@ -165,6 +202,7 @@ const Signup = () => {
               className="w-full"
               disabled={loading}
             >
+              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
               {loading ? "회원가입 중..." : "회원가입"}
             </Button>
           </form>

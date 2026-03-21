@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import { signInWithEmailAndPassword, type AuthError } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
+import { Loader2 } from "lucide-react";
 import { auth, db } from "@/lib/firebase";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { toast } from "@/components/ui/sonner";
 import { normalizeRole } from "@/lib/authz";
 
 const Login = () => {
@@ -15,6 +17,20 @@ const Login = () => {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const getLoginErrorMessage = (code?: string) => {
+    switch (code) {
+      case "auth/user-not-found":
+        return "등록되지 않은 이메일입니다. 회원가입을 먼저 진행해 주세요.";
+      case "auth/wrong-password":
+      case "auth/invalid-credential":
+        return "비밀번호가 일치하지 않습니다. 다시 확인해 주세요.";
+      case "auth/invalid-email":
+        return "유효하지 않은 이메일 형식입니다.";
+      default:
+        return "로그인 중 오류가 발생했습니다. 다시 시도해 주세요.";
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -39,10 +55,13 @@ const Login = () => {
         (location.state?.from as unknown as { pathname?: string } | undefined)?.pathname ??
         (role === "ADMIN" ? "/admin/master" : role === "INSTRUCTOR" ? "/admin" : "/dashboard");
 
+      toast.success("로그인되었습니다.");
       navigate(redirectTo, { replace: true });
     } catch (err) {
       console.error(err);
-      setError("이메일 또는 비밀번호를 다시 확인해주세요.");
+      const message = getLoginErrorMessage((err as AuthError).code);
+      setError(message);
+      toast.error(message);
     } finally {
       setLoading(false);
     }
@@ -87,6 +106,7 @@ const Login = () => {
               className="w-full"
               disabled={loading}
             >
+              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
               {loading ? "로그인 중..." : "로그인"}
             </Button>
           </form>
