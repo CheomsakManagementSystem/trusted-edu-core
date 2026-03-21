@@ -1,13 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -21,8 +15,6 @@ import {
   deleteStudentAccountData,
   fetchClasses,
   fetchMyClassJoinRequests,
-  markReportAsRead,
-  renderSinglePdfPage,
   submitClassJoinRequest,
   type ClassJoinRequestRecord,
   type ClassLite,
@@ -33,9 +25,6 @@ import { auth, db } from "@/lib/firebase";
 import { deleteUser } from "firebase/auth";
 import { collection, onSnapshot, orderBy, query, where } from "firebase/firestore";
 import {
-  CartesianGrid,
-  Line,
-  LineChart,
   PolarAngleAxis,
   PolarGrid,
   PolarRadiusAxis,
@@ -43,8 +32,6 @@ import {
   RadarChart,
   ResponsiveContainer,
   Tooltip,
-  XAxis,
-  YAxis,
 } from "recharts";
 
 const cleanFeedbackText = (value: string): string => {
@@ -104,12 +91,8 @@ const ReportView = () => {
   const [joinRequests, setJoinRequests] = useState<ClassJoinRequestRecord[]>([]);
   const [selectedClassId, setSelectedClassId] = useState("none");
   const [joinLoading, setJoinLoading] = useState(false);
-  const [pdfLoading, setPdfLoading] = useState(false);
-  const [pdfError, setPdfError] = useState("");
   const [withdrawing, setWithdrawing] = useState(false);
   const [feedbackExpanded, setFeedbackExpanded] = useState(false);
-  const [pdfPreviewOpen, setPdfPreviewOpen] = useState(false);
-  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
     if (!user?.uid) {
@@ -252,15 +235,6 @@ const ReportView = () => {
     ];
   }, [isMobile, selectedReport]);
 
-  const trendData = useMemo(
-    () =>
-      [...studentReports].reverse().map((report, index) => ({
-        round: `회차 ${index + 1}`,
-        score: report.totalScore,
-      })),
-    [studentReports],
-  );
-
   const feedbackMeta = useMemo(() => {
     if (!selectedReport) {
       return {
@@ -294,14 +268,6 @@ const ReportView = () => {
     setFeedbackExpanded(false);
   }, [selectedReportId]);
 
-  const fullPreviewUrl = useMemo(() => {
-    if (!selectedReport?.fileUrl) {
-      return "";
-    }
-    const pageNumber = selectedReport.pageNumber ?? selectedReport.sourcePage ?? 1;
-    return `${selectedReport.fileUrl}#page=${pageNumber}`;
-  }, [selectedReport?.fileUrl, selectedReport?.pageNumber, selectedReport?.sourcePage]);
-
   const summaryPreview = useMemo(() => {
     const text = feedbackMeta.summary || "첨삭 총평이 없습니다.";
     if (feedbackExpanded || text.length <= 190) {
@@ -312,18 +278,6 @@ const ReportView = () => {
 
   const chartAxisColor = "#111827";
   const chartGridColor = "#d1d5db";
-  const chartLineColor = "#2563eb";
-
-  const handleOpenReport = async (report: ReportRecord) => {
-    setSelectedReportId(report.id);
-
-    if (!report.isRead) {
-      await markReportAsRead(report.id);
-      setReports((prev) =>
-        prev.map((item) => (item.id === report.id ? { ...item, isRead: true } : item)),
-      );
-    }
-  };
 
   const handleJoinRequest = async () => {
     if (!user?.uid || !user?.email) {
@@ -376,31 +330,6 @@ const ReportView = () => {
     }
   };
 
-  useEffect(() => {
-    const run = async () => {
-      if (!selectedReport || !previewCanvasRef.current) {
-        return;
-      }
-
-      setPdfLoading(true);
-      setPdfError("");
-      try {
-        const pageNumber = selectedReport.pageNumber ?? selectedReport.sourcePage ?? 1;
-        await renderSinglePdfPage(selectedReport.fileUrl, pageNumber, previewCanvasRef.current);
-      } catch (renderError) {
-        setPdfError(
-          renderError instanceof Error
-            ? renderError.message
-            : "PDF 미리보기를 렌더링하지 못했습니다.",
-        );
-      } finally {
-        setPdfLoading(false);
-      }
-    };
-
-    run();
-  }, [selectedReport]);
-
   const handleWithdrawAccount = async () => {
     if (!user?.uid || !auth.currentUser) {
       toast({
@@ -443,7 +372,7 @@ const ReportView = () => {
 
   return (
     <DashboardLayout>
-      <div className="space-y-5 md:space-y-6">
+      <div className="space-y-5 px-4 md:space-y-6 md:px-0">
         <div>
           <h2 className="text-2xl font-extrabold tracking-tight text-slate-900 md:text-xl">
             나의 논술 성장 리포트
@@ -494,7 +423,7 @@ const ReportView = () => {
         )}
 
         {!loading && !error && studentReports.length > 0 && selectedReport && (
-            <div className="space-y-4">
+          <div className="space-y-6">
             <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <h3 className="text-base font-semibold text-slate-900 md:text-sm">리포트 회차 선택</h3>
@@ -513,9 +442,9 @@ const ReportView = () => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-              <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5 xl:col-span-2">
-                <div className="mb-3 flex items-center justify-between">
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+              <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                <div className="flex items-center justify-between border-b border-slate-200 px-4 py-4 md:px-5">
                   <h3 className="text-lg font-semibold text-slate-900 md:text-base">영역별 역량 분석표</h3>
                   <div className="hidden items-center gap-3 text-xs text-slate-500 md:flex">
                     <span className="inline-flex items-center gap-1">
@@ -528,42 +457,44 @@ const ReportView = () => {
                     </span>
                   </div>
                 </div>
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_260px]">
-                  <div className="mx-auto h-[320px] w-[90vw] max-w-[430px] sm:h-[360px] sm:w-full sm:max-w-2xl">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <RadarChart data={radarData}>
-                        <PolarGrid stroke={chartGridColor} />
-                        <PolarAngleAxis
-                          dataKey="subject"
-                          tick={{ fontSize: isMobile ? 11 : 12, fill: chartAxisColor }}
-                        />
-                        <PolarRadiusAxis
-                          domain={[50, 100]}
-                          tick={{ fontSize: isMobile ? 10 : 11, fill: chartAxisColor }}
-                          axisLine={{ stroke: chartGridColor }}
-                          tickLine={{ stroke: chartGridColor }}
-                        />
-                        <Radar
-                          name="나의점수"
-                          dataKey="myScore"
-                          stroke="#eab308"
-                          fill="#eab308"
-                          fillOpacity={0.14}
-                          strokeWidth={3}
-                        />
-                        <Radar
-                          name="전체평균"
-                          dataKey="avgScore"
-                          stroke="#6b7280"
-                          fillOpacity={0}
-                          strokeDasharray="8 6"
-                          strokeWidth={2}
-                        />
-                        <Tooltip />
-                      </RadarChart>
-                    </ResponsiveContainer>
+                <div className="grid grid-cols-1 gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_220px] md:p-5">
+                  <div className="rounded-2xl border border-slate-200 bg-[radial-gradient(circle_at_top,_rgba(59,130,246,0.08),_transparent_55%),linear-gradient(to_right,_rgba(148,163,184,0.12)_1px,_transparent_1px),linear-gradient(to_bottom,_rgba(148,163,184,0.12)_1px,_transparent_1px)] bg-[size:auto,28px_28px,28px_28px] bg-center p-2">
+                    <div className="aspect-[4/3] min-h-[280px] w-full sm:min-h-[320px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <RadarChart data={radarData} outerRadius="76%">
+                          <PolarGrid stroke={chartGridColor} />
+                          <PolarAngleAxis
+                            dataKey="subject"
+                            tick={{ fontSize: isMobile ? 11 : 12, fill: chartAxisColor }}
+                          />
+                          <PolarRadiusAxis
+                            domain={[0, 100]}
+                            tick={{ fontSize: isMobile ? 10 : 11, fill: chartAxisColor }}
+                            axisLine={false}
+                            tickLine={false}
+                          />
+                          <Radar
+                            name="나의점수"
+                            dataKey="myScore"
+                            stroke="#eab308"
+                            fill="#eab308"
+                            fillOpacity={0.14}
+                            strokeWidth={3}
+                          />
+                          <Radar
+                            name="전체평균"
+                            dataKey="avgScore"
+                            stroke="#6b7280"
+                            fillOpacity={0}
+                            strokeDasharray="8 6"
+                            strokeWidth={2}
+                          />
+                          <Tooltip />
+                        </RadarChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 md:grid-cols-2">
+                  <div className="grid grid-cols-2 gap-2">
                     {[
                       { label: "독해력", value: selectedReport.scores.reading ?? "-" },
                       { label: "내용 이해력", value: selectedReport.scores.comprehension ?? "-" },
@@ -587,9 +518,9 @@ const ReportView = () => {
                 </div>
               </div>
 
-              <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5">
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
                 <h3 className="mb-3 text-lg font-semibold text-slate-900 md:text-base">선생님의 핵심 조언</h3>
-                <div className="mb-3 grid grid-cols-1 gap-2 text-sm md:grid-cols-2 md:text-xs">
+                <div className="mb-4 grid grid-cols-1 gap-2 text-sm md:grid-cols-2 md:text-xs">
                   <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
                     <p className="text-slate-500">첨삭자</p>
                     <p className="font-semibold text-slate-800">{feedbackMeta.reviewer}</p>
@@ -611,11 +542,11 @@ const ReportView = () => {
                     <p className="font-semibold text-slate-800">{feedbackMeta.essayTopic}</p>
                   </div>
                 </div>
-                <div className="rounded-lg border border-slate-200 bg-white">
+                <div className="rounded-xl border border-slate-200 bg-white">
                   <div className="border-b border-slate-200 px-3 py-2 text-sm font-bold text-slate-700">
                     첨삭 총평
                   </div>
-                  <div className="min-h-28 px-3 py-3 text-base font-semibold leading-relaxed text-slate-900 md:text-lg">
+                  <div className="min-h-28 px-4 py-4 text-[15px] font-semibold leading-7 text-slate-900 md:text-lg md:leading-8">
                     {summaryPreview}
                   </div>
                 </div>
@@ -629,151 +560,32 @@ const ReportView = () => {
                     {feedbackExpanded ? "접기" : "더 보기"}
                   </Button>
                 )}
-                <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800">
+                <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-800">
                   <p className="mb-1 text-xs font-semibold text-slate-500">[향후 과제]</p>
-                  <p className="text-base leading-relaxed md:text-sm">
+                  <p className="text-[15px] leading-7 md:text-base md:leading-8">
                     {feedbackMeta.nextTask || "향후 과제가 명시되지 않았습니다."}
                   </p>
                 </div>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-              <div className="space-y-4 xl:col-span-2">
-                <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5">
-                  <h3 className="mb-3 text-base font-semibold text-slate-900 md:text-sm">회차별 점수 변화 그래프</h3>
-                  <div className="h-48 sm:h-56 md:h-64">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={trendData}>
-                        <CartesianGrid strokeDasharray="3 3" stroke={chartGridColor} />
-                        <XAxis
-                          dataKey="round"
-                          tick={{ fontSize: isMobile ? 9 : 12, fill: chartAxisColor }}
-                          angle={isMobile ? -20 : 0}
-                          textAnchor={isMobile ? "end" : "middle"}
-                          height={isMobile ? 40 : 30}
-                          stroke={chartGridColor}
-                        />
-                        <YAxis
-                          domain={[0, 100]}
-                          tick={{ fontSize: isMobile ? 11 : 12, fill: chartAxisColor }}
-                          stroke={chartGridColor}
-                        />
-                        <Tooltip
-                          contentStyle={{
-                            borderColor: chartGridColor,
-                            backgroundColor: "#ffffff",
-                            color: chartAxisColor,
-                          }}
-                        />
-                        <Line type="monotone" dataKey="score" stroke={chartLineColor} strokeWidth={2} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5">
-                  <h3 className="mb-3 text-base font-semibold text-slate-900 md:text-sm">리포트 목록</h3>
-                  <div className="space-y-2">
-                    {studentReports.map((report, index) => (
-                      <button
-                        key={report.id}
-                        type="button"
-                        onClick={() => handleOpenReport(report)}
-                        className={`w-full rounded-md border px-3 py-3 text-left transition-colors ${
-                          selectedReport.id === report.id
-                            ? "border-primary bg-primary/5"
-                            : "border-border bg-background hover:border-primary/40"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="line-clamp-2 break-all text-base font-semibold text-slate-900 md:text-sm">
-                            회차 {studentReports.length - index} / {report.essayTopic || "기록 없음"}
-                          </p>
-                          <span
-                            className={`rounded px-2 py-0.5 text-xs ${
-                              report.isRead
-                                ? "bg-emerald-500/10 text-emerald-700"
-                                : "bg-amber-500/10 text-amber-700"
-                            }`}
-                          >
-                            {report.isRead ? "읽음" : "새 리포트"}
-                          </span>
-                        </div>
-                        <p className="mt-1 text-sm text-slate-600 md:text-xs">
-                          총점 {report.totalScore} | 등급 {report.grade || "기록 없음"} | 날짜{" "}
-                          {report.createdAt
-                            ? report.createdAt.toDate().toLocaleDateString("ko-KR")
-                            : "기록 없음"}
-                        </p>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5">
-                  <h3 className="mb-2 text-base font-semibold text-slate-900 md:text-sm">나의 답안 및 첨삭 원본 보기</h3>
-                  {pdfLoading && <p className="text-sm text-muted-foreground">페이지 렌더링 중입니다...</p>}
-                  {pdfError && <p className="text-sm text-destructive">{pdfError}</p>}
-                  <div className="overflow-auto rounded border border-slate-200 bg-slate-50 p-2">
-                    <canvas ref={previewCanvasRef} className="mx-auto h-auto max-w-full" />
-                  </div>
-                  <p className="mt-2 text-sm text-slate-600 md:text-xs">
-                    저장된 페이지 번호({selectedReport.pageNumber ?? selectedReport.sourcePage ?? 1}p)를 기준으로
-                    미리보기를 제공합니다.
-                  </p>
-                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="w-full"
-                      onClick={() => setPdfPreviewOpen(true)}
-                    >
-                      전체 화면 보기
-                    </Button>
-                    <Button
-                      type="button"
-                      className="w-full"
-                      onClick={() => window.open(fullPreviewUrl || selectedReport.fileUrl, "_blank", "noopener,noreferrer")}
-                    >
-                      새 탭에서 열기
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-red-200 bg-red-50 p-3 shadow-sm md:p-5">
-                  <h3 className="text-sm font-semibold text-red-900">계정 관리</h3>
-                  <p className="mt-1 text-xs text-red-700">
-                    회원 탈퇴 시 그동안의 모든 학습 기록과 성적 데이터가 소멸되며 복구가 불가능합니다.
-                  </p>
-                  <Button
-                    className="mt-3 w-full"
-                    variant="destructive"
-                    onClick={handleWithdrawAccount}
-                    disabled={withdrawing}
-                  >
-                    {withdrawing ? "탈퇴 처리 중..." : "회원 탈퇴"}
-                  </Button>
-                </div>
-              </div>
+            <div className="rounded-xl border border-red-200 bg-red-50 p-3 shadow-sm md:p-5">
+              <h3 className="text-sm font-semibold text-red-900">계정 관리</h3>
+              <p className="mt-1 text-xs text-red-700">
+                회원 탈퇴 시 그동안의 모든 학습 기록과 성적 데이터가 소멸되며 복구가 불가능합니다.
+              </p>
+              <Button
+                className="mt-3 w-full"
+                variant="destructive"
+                onClick={handleWithdrawAccount}
+                disabled={withdrawing}
+              >
+                {withdrawing ? "탈퇴 처리 중..." : "회원 탈퇴"}
+              </Button>
             </div>
           </div>
         )}
       </div>
-      <Dialog open={pdfPreviewOpen} onOpenChange={setPdfPreviewOpen}>
-        <DialogContent className="h-[92dvh] max-w-[96vw] rounded-xl p-3 sm:max-w-4xl sm:p-4">
-          <DialogHeader>
-            <DialogTitle>리포트 전체 화면 미리보기</DialogTitle>
-          </DialogHeader>
-          <iframe
-            title="리포트 PDF 미리보기"
-            src={fullPreviewUrl || selectedReport?.fileUrl}
-            className="h-full min-h-[75dvh] w-full rounded-md border border-border bg-white"
-          />
-        </DialogContent>
-      </Dialog>
     </DashboardLayout>
   );
 };

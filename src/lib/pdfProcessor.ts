@@ -1652,34 +1652,3 @@ export const deleteStudentAccountData = async (studentUid: string): Promise<void
   await isolateStudentReports(studentUid);
   await deleteDoc(doc(db, "users", studentUid));
 };
-
-export const renderSinglePdfPage = async (
-  fileUrl: string,
-  pageNumber: number,
-  canvas: HTMLCanvasElement,
-): Promise<void> => {
-  const pdfjs = await loadPdfJs();
-  const pdf = await pdfjs.getDocument({ url: fileUrl }).promise;
-  const safePage = Math.max(1, Math.min(pageNumber, pdf.numPages));
-  const page = await pdf.getPage(safePage);
-
-  if (!page.getViewport || !page.render) {
-    throw new Error("PDF 렌더링 엔진이 페이지 뷰포트를 지원하지 않습니다.");
-  }
-
-  const viewport = page.getViewport({ scale: 1.25 });
-  const context = canvas.getContext("2d");
-  if (!context) {
-    throw new Error("캔버스 컨텍스트를 가져올 수 없습니다.");
-  }
-
-  const pixelRatio = window.devicePixelRatio || 1;
-  canvas.width = Math.floor(viewport.width * pixelRatio);
-  canvas.height = Math.floor(viewport.height * pixelRatio);
-  canvas.style.width = `${Math.floor(viewport.width)}px`;
-  canvas.style.height = `${Math.floor(viewport.height)}px`;
-
-  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-  context.clearRect(0, 0, viewport.width, viewport.height);
-  await page.render({ canvasContext: context, viewport }).promise;
-};
