@@ -44,6 +44,15 @@ const extractUid = (req) => {
   return String(fromBody || fromCallableStyle || fromQuery || "").trim();
 };
 
+const extractAction = (req) => {
+  const fromBody = req?.body?.action;
+  const fromCallableStyle = req?.body?.data?.action;
+  const fromQuery = req?.query?.action;
+  const action = String(fromBody || fromCallableStyle || fromQuery || "delete").trim();
+
+  return action === "disable" ? "disable" : "delete";
+};
+
 const deleteUserHandler = async (req, res) => {
   if (req.method !== "POST" && req.method !== "GET") {
     res.status(405).json({ success: false, reason: "Method not allowed" });
@@ -51,6 +60,7 @@ const deleteUserHandler = async (req, res) => {
   }
 
   const uid = extractUid(req);
+  const action = extractAction(req);
 
   if (!uid) {
     res.status(400).json({ success: false, reason: "uid is required" });
@@ -58,6 +68,12 @@ const deleteUserHandler = async (req, res) => {
   }
 
   try {
+    if (action === "disable") {
+      await admin.auth().updateUser(uid, { disabled: true });
+      res.status(200).json({ success: true, uid, status: "disabled" });
+      return;
+    }
+
     await admin.auth().deleteUser(uid);
     res.status(200).json({ success: true, uid, status: "deleted" });
   } catch (error) {

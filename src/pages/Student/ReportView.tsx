@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
+import WithdrawalDialog from "@/components/WithdrawalDialog";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,7 +13,6 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
-  deleteStudentAccountData,
   fetchClasses,
   fetchMyClassJoinRequests,
   submitClassJoinRequest,
@@ -21,9 +21,13 @@ import {
   type ReportRecord,
 } from "@/lib/pdfProcessor";
 import { formatStudentName } from "@/lib/studentName";
-import { auth, db } from "@/lib/firebase";
-import { deleteUser } from "firebase/auth";
+import { db } from "@/lib/firebase";
 import { collection, onSnapshot, orderBy, query, where } from "firebase/firestore";
+import {
+  clearClientSession,
+  deleteCurrentUserAccount,
+  getAccountDeletionErrorMessage,
+} from "@/services/accountDeletionService";
 import {
   CartesianGrid,
   Line,
@@ -83,7 +87,7 @@ const splitFeedbackSections = (feedback: string): { summary: string; nextTask: s
 };
 
 const ReportView = () => {
-  const { user } = useAuth();
+  const { user, signOut } = useAuth();
   const { toast } = useToast();
   const isMobile = useIsMobile();
 
@@ -97,6 +101,9 @@ const ReportView = () => {
   const [selectedClassId, setSelectedClassId] = useState("none");
   const [joinLoading, setJoinLoading] = useState(false);
   const [withdrawing, setWithdrawing] = useState(false);
+  const [withdrawDialogOpen, setWithdrawDialogOpen] = useState(false);
+  const [withdrawPassword, setWithdrawPassword] = useState("");
+  const [withdrawError, setWithdrawError] = useState<string | null>(null);
   const [feedbackExpanded, setFeedbackExpanded] = useState(false);
 
   useEffect(() => {
@@ -347,7 +354,7 @@ const ReportView = () => {
   };
 
   const handleWithdrawAccount = async () => {
-    if (!user?.uid || !auth.currentUser) {
+    if (!user?.uid) {
       toast({
         variant: "destructive",
         title: "회원 탈퇴 실패",
@@ -356,30 +363,31 @@ const ReportView = () => {
       return;
     }
 
-    const confirmed = window.confirm(
-      "회원 탈퇴 시 그동안의 모든 학습 기록과 성적 데이터가 소멸되며 복구가 불가능합니다. 계속하시겠습니까?",
-    );
-    if (!confirmed) {
-      return;
-    }
+    setWithdrawPassword("");
+    setWithdrawError(null);
+    setWithdrawDialogOpen(true);
+  };
 
+  const confirmWithdrawAccount = async () => {
     setWithdrawing(true);
+    setWithdrawError(null);
+
     try {
-      await deleteStudentAccountData(user.uid);
-      await deleteUser(auth.currentUser);
+      await deleteCurrentUserAccount(withdrawPassword);
       toast({
         title: "회원 탈퇴 완료",
         description: "계정이 삭제되었습니다.",
       });
-      window.location.href = "/login";
+      setWithdrawDialogOpen(false);
+      await clearClientSession(signOut);
+      window.location.replace("/");
     } catch (withdrawError) {
+      const message = getAccountDeletionErrorMessage(withdrawError);
+      setWithdrawError(message);
       toast({
         variant: "destructive",
         title: "회원 탈퇴 실패",
-        description:
-          withdrawError instanceof Error
-            ? withdrawError.message
-            : "탈퇴 처리 중 오류가 발생했습니다. 다시 로그인 후 재시도하세요.",
+        description: message,
       });
     } finally {
       setWithdrawing(false);
@@ -678,6 +686,17 @@ const ReportView = () => {
           </div>
         )}
       </div>
+
+      <WithdrawalDialog
+        open={withdrawDialogOpen}
+        onOpenChange={setWithdrawDialogOpen}
+        password={withdrawPassword}
+        onPasswordChange={setWithdrawPassword}
+        onConfirm={confirmWithdrawAccount}
+        loading={withdrawing}
+        error={withdrawError}
+        description="보안을 위해 현재 비밀번호를 다시 입력해 주세요. 탈퇴 후에는 학습 기록 연결과 계정 정보가 복구되지 않습니다."
+      />
     </DashboardLayout>
   );
 };

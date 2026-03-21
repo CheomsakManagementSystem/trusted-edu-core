@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { deleteUser } from "firebase/auth";
 import DashboardLayout from "@/components/DashboardLayout";
+import WithdrawalDialog from "@/components/WithdrawalDialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -13,9 +13,13 @@ import {
 } from "@/components/ui/select";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import { auth } from "@/lib/firebase";
 import { fetchReportsByStudentUid, type ReportRecord } from "@/lib/pdfProcessor";
 import { normalizeRole } from "@/lib/authz";
+import {
+  clearClientSession,
+  deleteCurrentUserAccount,
+  getAccountDeletionErrorMessage,
+} from "@/services/accountDeletionService";
 import {
   deleteManagedUserCompletely,
   fetchManagedUsers,
@@ -109,6 +113,9 @@ const MasterAdminPage = () => {
   const [roleUpdatingUid, setRoleUpdatingUid] = useState<string | null>(null);
   const [deletingUid, setDeletingUid] = useState<string | null>(null);
   const [withdrawingAdmin, setWithdrawingAdmin] = useState(false);
+  const [withdrawDialogOpen, setWithdrawDialogOpen] = useState(false);
+  const [withdrawPassword, setWithdrawPassword] = useState("");
+  const [withdrawError, setWithdrawError] = useState<string | null>(null);
 
   const [analysisStudentUid, setAnalysisStudentUid] = useState("");
   const [analysisLoading, setAnalysisLoading] = useState(false);
@@ -344,33 +351,31 @@ const MasterAdminPage = () => {
       return;
     }
 
-    const confirmed = window.confirm("정말 탈퇴하시겠습니까?");
-    if (!confirmed) {
-      return;
-    }
+    setWithdrawPassword("");
+    setWithdrawError(null);
+    setWithdrawDialogOpen(true);
+  };
 
+  const confirmWithdrawAdminAccount = async () => {
     setWithdrawingAdmin(true);
+    setWithdrawError(null);
+
     try {
-      await deleteManagedUserCompletely(user.uid);
-      if (auth.currentUser) {
-        try {
-          await deleteUser(auth.currentUser);
-        } catch {
-          // 서버 함수에서 이미 삭제된 경우 클라이언트 삭제 에러는 무시
-        }
-      }
-      await signOut();
+      await deleteCurrentUserAccount(withdrawPassword);
       toast({
         title: "회원 탈퇴 완료",
         description: "관리자 계정이 삭제되었습니다.",
       });
-      window.location.href = "/login";
+      setWithdrawDialogOpen(false);
+      await clearClientSession(signOut);
+      window.location.replace("/");
     } catch (error) {
+      const message = getAccountDeletionErrorMessage(error);
+      setWithdrawError(message);
       toast({
         variant: "destructive",
         title: "회원 탈퇴 실패",
-        description:
-          error instanceof Error ? error.message : "탈퇴 처리 중 오류가 발생했습니다.",
+        description: message,
       });
     } finally {
       setWithdrawingAdmin(false);
@@ -620,6 +625,17 @@ const MasterAdminPage = () => {
           </Button>
         </section>
       </div>
+
+      <WithdrawalDialog
+        open={withdrawDialogOpen}
+        onOpenChange={setWithdrawDialogOpen}
+        password={withdrawPassword}
+        onPasswordChange={setWithdrawPassword}
+        onConfirm={confirmWithdrawAdminAccount}
+        loading={withdrawingAdmin}
+        error={withdrawError}
+        description="보안을 위해 현재 비밀번호를 다시 입력해 주세요. 탈퇴 후에는 관리자 권한과 계정 정보가 즉시 영구 삭제됩니다."
+      />
     </DashboardLayout>
   );
 };

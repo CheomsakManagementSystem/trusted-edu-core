@@ -1,7 +1,6 @@
 import {
   addDoc,
   collection,
-  deleteDoc,
   doc,
   documentId,
   getDoc,
@@ -12,11 +11,12 @@ import {
   setDoc,
   updateDoc,
   where,
-  writeBatch,
 } from "firebase/firestore";
-import { getFunctions, httpsCallable } from "firebase/functions";
 import { db } from "@/lib/firebase";
 import { normalizeRole, type CanonicalRole } from "@/lib/authz";
+import { deleteManagedUserCompletely } from "@/services/accountDeletionService";
+
+export { deleteManagedUserCompletely };
 
 export const MASTER_ADMIN_CODE =
   "Admin_Master_#92!vXp7@K3nR5$tW6*bYc9uL1&qJ4^sE7%hG2_Z8mQ_A7xP9@L#2026_Secured";
@@ -146,81 +146,6 @@ export const updateManagedUserRole = async (
     role,
     updatedAt: serverTimestamp(),
   });
-};
-
-const deleteDocumentsInQuery = async (targetQuery: ReturnType<typeof query>) => {
-  const snapshot = await getDocs(targetQuery);
-
-  for (const docs of chunkBy(snapshot.docs, 400)) {
-    const batch = writeBatch(db);
-    docs.forEach((docSnap) => {
-      batch.delete(docSnap.ref);
-    });
-    await batch.commit();
-  }
-};
-
-const invokeOnRequestFunction = async (fnName: string, uid: string): Promise<void> => {
-  const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
-  const region = import.meta.env.VITE_FIREBASE_FUNCTIONS_REGION || "us-central1";
-
-  if (!projectId) {
-    throw new Error("VITE_FIREBASE_PROJECT_ID 환경변수가 필요합니다.");
-  }
-
-  const endpoint = `https://${region}-${projectId}.cloudfunctions.net/${fnName}`;
-
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ uid }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(text || `${fnName} 호출 실패 (${response.status})`);
-  }
-};
-
-const deleteAuthUserByUid = async (uid: string): Promise<void> => {
-  const functions = getFunctions();
-  const functionNames = ["adminDeleteUser", "deleteUserByUid"];
-
-  for (const fnName of functionNames) {
-    try {
-      await invokeOnRequestFunction(fnName, uid);
-      return;
-    } catch {
-      // onRequest 함수가 없거나 호출 실패 시 callable도 시도
-    }
-    try {
-      const callable = httpsCallable<{ uid: string }, { ok?: boolean }>(functions, fnName);
-      await callable({ uid });
-      return;
-    } catch {
-      continue;
-    }
-  }
-
-  throw new Error(
-    "Auth 계정 삭제 함수(adminDeleteUser 또는 deleteUserByUid)를 찾지 못했습니다. Firebase Functions를 먼저 배포해주세요.",
-  );
-};
-
-export const deleteManagedUserCompletely = async (uid: string): Promise<void> => {
-  await deleteAuthUserByUid(uid);
-
-  await Promise.all([
-    deleteDocumentsInQuery(query(collection(db, "reports"), where("studentUid", "==", uid))),
-    deleteDocumentsInQuery(query(collection(db, "reports"), where("uid", "==", uid))),
-    deleteDocumentsInQuery(query(collection(db, "classJoinRequests"), where("studentUid", "==", uid))),
-    deleteDocumentsInQuery(query(collection(db, "submissions"), where("studentUid", "==", uid))),
-    deleteDocumentsInQuery(query(collection(db, "notifications"), where("studentUid", "==", uid))),
-  ]);
-
-  await deleteDoc(doc(db, "users", uid));
 };
 
 export const enqueueReportNotifications = async (
