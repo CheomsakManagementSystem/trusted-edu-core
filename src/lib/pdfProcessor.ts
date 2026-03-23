@@ -39,12 +39,6 @@ export type ClassLite = {
   name: string;
 };
 
-export type UploadSession = {
-  id: string;
-  sessionNumber: number;
-  testDate: string;
-};
-
 export type ScoreBreakdown = {
   reading: number | null;
   comprehension: number | null;
@@ -91,6 +85,7 @@ export type ReportRecord = {
   className: string | null;
   sessionId?: string | null;
   testSession?: number | null;
+  testRound?: string | null;
   testDate?: string | null;
   fileHash?: string | null;
   studentUid: string | null;
@@ -227,8 +222,8 @@ export const getReportSortTimestamp = (
   return report.createdAt?.toMillis() ?? 0;
 };
 
-export const formatSessionLabel = (session: UploadSession) =>
-  `${session.sessionNumber}회차 (${session.testDate})`;
+export const formatSessionLabel = (sessionNumber: number, testDate: string) =>
+  `${sessionNumber}회차 (${testDate})`;
 
 const parseFileNameHint = (fileName: string): { name?: string; total?: number | null } => {
   const base = fileName.replace(/\.pdf$/i, "");
@@ -1195,7 +1190,8 @@ const uploadPdfToStorage = async (
 export const publishReportBatch = async (
   uploadRows: UploadCandidate[],
   selectedClass: ClassLite,
-  selectedSession: UploadSession,
+  selectedRound: number,
+  selectedDate: string,
   allStudents: StudentLite[],
   uid: string,
   onOverallProgress?: (progress: number) => void,
@@ -1266,12 +1262,12 @@ export const publishReportBatch = async (
         uid,
         classId: selectedClass.id,
         className: selectedClass.name,
-        sessionId: selectedSession.id,
-        testSession: selectedSession.sessionNumber,
-        testDate: selectedSession.testDate,
-        session_id: selectedSession.id,
-        test_session: selectedSession.sessionNumber,
-        test_date: selectedSession.testDate,
+        sessionId: null,
+        testSession: selectedRound,
+        testRound: `${selectedRound}회차`,
+        testDate: selectedDate,
+        test_session: `${selectedRound}회차`,
+        test_date: selectedDate,
         fileHash: row.fileHash ?? null,
         studentUid: completedStudent?.uid ?? null,
         studentId: completedStudent?.studentId ?? null,

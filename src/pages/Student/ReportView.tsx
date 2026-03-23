@@ -242,13 +242,13 @@ const ReportView = () => {
       [...studentReports]
         .sort((a, b) => getReportSortTimestamp(a) - getReportSortTimestamp(b))
         .map((report, index) => ({
-        round:
-          Number.isFinite(report.testSession)
-            ? `${report.testSession}회차`
-            : `회차 ${index + 1}`,
-        score: report.totalScore,
-        reportId: report.id,
-      })),
+          round:
+            Number.isFinite(report.testSession)
+              ? `${report.testSession}회차`
+              : `회차 ${index + 1}`,
+          score: report.totalScore,
+          reportId: report.id,
+        })),
     [studentReports],
   );
 
@@ -454,11 +454,7 @@ const ReportView = () => {
                     {studentReports.map((report, index) => (
                       <SelectItem key={report.id} value={report.id}>
                         {report.testSession && report.testDate
-                          ? formatSessionLabel({
-                              id: report.sessionId ?? report.id,
-                              sessionNumber: report.testSession,
-                              testDate: report.testDate,
-                            })
+                          ? formatSessionLabel(report.testSession, report.testDate)
                           : `회차 ${studentReports.length - index}`}{" "}
                         | {report.essayTopic || "기록 없음"}
                       </SelectItem>

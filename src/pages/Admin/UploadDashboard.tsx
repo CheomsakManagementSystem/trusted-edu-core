@@ -1,5 +1,4 @@
 import { DragEvent, useEffect, useMemo, useRef, useState } from "react";
-import { collection, onSnapshot, query, where } from "firebase/firestore";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import { Input } from "@/components/ui/input";
@@ -15,6 +14,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  Calendar,
+} from "@/components/ui/calendar";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -22,7 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { CheckCircle2, Circle, Loader2, Pencil, Trash2 } from "lucide-react";
+import { CheckCircle2, Calendar as CalendarIcon, Circle, Loader2, Pencil, Trash2 } from "lucide-react";
 import {
   assignPendingReportToStudent,
   deletePublishedReport,
@@ -32,7 +39,6 @@ import {
   fetchPublishedReports,
   fetchReportsByClassId,
   fetchStudents,
-  formatSessionLabel,
   getReportSortTimestamp,
   normalizeDateString,
   prepareUploadCandidates,
@@ -43,9 +49,7 @@ import {
   type ScoreBreakdown,
   type StudentLite,
   type UploadCandidate,
-  type UploadSession,
 } from "@/lib/pdfProcessor";
-import { db } from "@/lib/firebase";
 import {
   enqueueReportNotifications,
   getMasterControls,
@@ -96,8 +100,8 @@ const UploadDashboard = () => {
   const [publishedReports, setPublishedReports] = useState<ReportRecord[]>([]);
   const [pendingReports, setPendingReports] = useState<ReportRecord[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string>("none");
-  const [sessions, setSessions] = useState<UploadSession[]>([]);
-  const [selectedSessionId, setSelectedSessionId] = useState<string>("none");
+  const [selectedRound, setSelectedRound] = useState<string>("none");
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
   const [rows, setRows] = useState<UploadCandidate[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -141,10 +145,15 @@ const UploadDashboard = () => {
     () => classes.find((item) => item.id === selectedClassId) ?? null,
     [classes, selectedClassId],
   );
-  const selectedSession = useMemo(
-    () => sessions.find((item) => item.id === selectedSessionId) ?? null,
-    [selectedSessionId, sessions],
-  );
+  const selectedDateText = useMemo(() => {
+    if (!selectedDate) {
+      return "";
+    }
+    const year = selectedDate.getFullYear();
+    const month = `${selectedDate.getMonth() + 1}`.padStart(2, "0");
+    const day = `${selectedDate.getDate()}`.padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }, [selectedDate]);
 
   const classStudents = useMemo(
     () => students.filter((student) => student.classId === selectedClassId),
@@ -159,33 +168,6 @@ const UploadDashboard = () => {
     return Array.from(new Uint8Array(digest))
       .map((byte) => byte.toString(16).padStart(2, "0"))
       .join("");
-  };
-
-  const normalizeSessionDoc = (
-    id: string,
-    data: {
-      sessionNumber?: number;
-      round?: number;
-      session?: number;
-      testDate?: string;
-      date?: string;
-      sessionDate?: string;
-    },
-  ): UploadSession | null => {
-    const sessionNumber = Number(
-      data.sessionNumber ?? data.round ?? data.session ?? 0,
-    );
-    const testDate = normalizeDateString(data.testDate ?? data.date ?? data.sessionDate ?? "");
-
-    if (!Number.isFinite(sessionNumber) || sessionNumber <= 0 || !testDate) {
-      return null;
-    }
-
-    return {
-      id,
-      sessionNumber,
-      testDate,
-    };
   };
 
   const formatStudentLabel = (student: StudentLite) =>
@@ -209,50 +191,6 @@ const UploadDashboard = () => {
 
     run();
   }, []);
-
-  useEffect(() => {
-    if (!selectedClass || selectedClassId === "none") {
-      setSessions([]);
-      setSelectedSessionId("none");
-      return;
-    }
-
-    const sessionsRef = collection(db, "sessions");
-    const sessionsQuery = query(sessionsRef, where("classId", "==", selectedClass.id));
-
-    const unsubscribe = onSnapshot(
-      sessionsQuery,
-      (snapshot) => {
-        const nextSessions = snapshot.docs
-          .map((docSnap) =>
-            normalizeSessionDoc(
-              docSnap.id,
-              docSnap.data() as {
-                sessionNumber?: number;
-                round?: number;
-                session?: number;
-                testDate?: string;
-                date?: string;
-                sessionDate?: string;
-              },
-            ),
-          )
-          .filter((session): session is UploadSession => Boolean(session))
-          .sort((a, b) => a.sessionNumber - b.sessionNumber);
-
-        setSessions(nextSessions);
-        setSelectedSessionId((prev) =>
-          nextSessions.some((session) => session.id === prev) ? prev : "none",
-        );
-      },
-      () => {
-        setSessions([]);
-        setSelectedSessionId("none");
-      },
-    );
-
-    return () => unsubscribe();
-  }, [selectedClass, selectedClassId]);
 
   useEffect(() => {
     const run = async () => {
@@ -291,7 +229,7 @@ const UploadDashboard = () => {
     setPendingSelectedStudent({});
     setManualMatchTargetId(null);
     setMessage("");
-  }, [selectedClassId, selectedSessionId]);
+  }, [selectedClassId, selectedRound, selectedDateText]);
 
   const parseAndAppendFiles = async (files: File[]) => {
     if (files.length === 0) {
@@ -303,8 +241,8 @@ const UploadDashboard = () => {
       return;
     }
 
-    if (!selectedSession) {
-      setMessage("회차를 먼저 선택해주세요.");
+    if (selectedRound === "none" || !selectedDateText) {
+      setMessage("회차와 날짜를 먼저 선택해주세요.");
       return;
     }
 
@@ -312,6 +250,26 @@ const UploadDashboard = () => {
     setMessage("");
 
     try {
+      const roundNumber = Number(selectedRound);
+      const roundLabel = `${selectedRound}회차`;
+
+      const duplicateRoundExists = classReports.some(
+        (report) =>
+          (report.testRound === roundLabel || report.testSession === roundNumber) &&
+          report.assignmentStatus === "completed",
+      );
+
+      if (duplicateRoundExists) {
+        const message = "이미 해당 회차의 성적이 등록되어 있습니다";
+        setMessage(message);
+        toast({
+          variant: "destructive",
+          title: "중복 등록 차단",
+          description: message,
+        });
+        return;
+      }
+
       const hashes = await Promise.all(
         files.map(async (file) => ({
           file,
@@ -319,26 +277,6 @@ const UploadDashboard = () => {
           hash: await computeFileHash(file),
         })),
       );
-
-      const duplicateInDb = hashes.find(({ hash }) =>
-        classReports.some(
-          (report) =>
-            report.fileHash === hash &&
-            (report.testSession ?? null) === selectedSession.sessionNumber &&
-            normalizeDateString(report.testDate) === selectedSession.testDate,
-        ),
-      );
-
-      if (duplicateInDb) {
-        const message = "이미 업로드된 회차입니다";
-        setMessage(message);
-        toast({
-          variant: "destructive",
-          title: "중복 업로드 차단",
-          description: message,
-        });
-        return;
-      }
 
       const hashByKey = new Map(hashes.map((item) => [item.key, item.hash]));
       const parsedRows = await prepareUploadCandidates(files, classStudents, students);
@@ -349,20 +287,17 @@ const UploadDashboard = () => {
 
       const mismatchedRow = parsedWithHash.find((row) => {
         const parsedDate = normalizeDateString(row.parsed.writtenAt);
-        return parsedDate !== selectedSession.testDate;
+        return parsedDate && parsedDate !== selectedDateText;
       });
 
       if (mismatchedRow) {
-        const warningMessage =
-          "선택하신 회차의 날짜와 파일 내 작성일이 일치하지 않습니다. 다시 확인해주세요.";
-        window.alert(warningMessage);
-        setMessage(warningMessage);
-        toast({
-          variant: "destructive",
-          title: "날짜 불일치",
-          description: warningMessage,
-        });
-        return;
+        const confirmed = window.confirm(
+          "선택한 날짜와 파일 내 날짜가 다릅니다. 이대로 진행할까요?",
+        );
+        if (!confirmed) {
+          setMessage("날짜 불일치로 업로드를 중단했습니다.");
+          return;
+        }
       }
 
       setRows((prev) => {
@@ -595,12 +530,12 @@ const UploadDashboard = () => {
       return;
     }
 
-    if (!selectedSession) {
-      setMessage("회차를 먼저 선택해주세요.");
+    if (selectedRound === "none" || !selectedDateText) {
+      setMessage("회차와 날짜를 먼저 선택해주세요.");
       toast({
         variant: "destructive",
-        title: "회차 선택 필요",
-        description: "반과 회차를 모두 선택한 뒤 업로드를 진행해주세요.",
+        title: "회차/날짜 선택 필요",
+        description: "반, 회차, 날짜를 모두 선택한 뒤 업로드를 진행해주세요.",
       });
       return;
     }
@@ -630,7 +565,8 @@ const UploadDashboard = () => {
       const result = await publishReportBatch(
         rows,
         selectedClass,
-        selectedSession,
+        Number(selectedRound),
+        selectedDateText,
         students,
         user.uid,
         setProgress,
@@ -1051,19 +987,43 @@ const UploadDashboard = () => {
 
             <div className="space-y-2">
               <p className="text-xs text-muted-foreground">2단계: 회차 선택</p>
-              <Select value={selectedSessionId} onValueChange={setSelectedSessionId}>
+              <Select value={selectedRound} onValueChange={setSelectedRound}>
                 <SelectTrigger>
                   <SelectValue placeholder="회차 선택" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">회차 선택</SelectItem>
-                  {sessions.map((session) => (
-                    <SelectItem key={session.id} value={session.id}>
-                      {formatSessionLabel(session)}
+                  {Array.from({ length: 10 }, (_, index) => index + 1).map((round) => (
+                    <SelectItem key={round} value={String(round)}>
+                      {round}회차
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">2단계: 시험 날짜</p>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full justify-start text-left font-normal"
+                  >
+                    <CalendarIcon className="mr-2 h-4 w-4" />
+                    {selectedDateText || "날짜 선택"}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar
+                    mode="single"
+                    selected={selectedDate}
+                    onSelect={setSelectedDate}
+                    initialFocus
+                  />
+                </PopoverContent>
+              </Popover>
             </div>
 
             <div className="space-y-2 md:col-span-2">
@@ -1071,23 +1031,34 @@ const UploadDashboard = () => {
               <div
                 onDragOver={(event) => {
                   event.preventDefault();
+                  if (!selectedClass || selectedRound === "none" || !selectedDateText) {
+                    return;
+                  }
                   setIsDragging(true);
                 }}
                 onDragLeave={() => setIsDragging(false)}
                 onDrop={handleDrop}
                 className={`flex min-h-28 items-center justify-center rounded-md border-2 border-dashed px-4 text-sm transition-colors ${
-                  isDragging ? "border-primary bg-primary/5" : "border-border"
+                  !selectedClass || selectedRound === "none" || !selectedDateText
+                    ? "cursor-not-allowed border-muted-foreground/20 bg-muted/30 text-muted-foreground"
+                    : isDragging
+                      ? "border-primary bg-primary/5"
+                      : "border-border"
                 }`}
               >
                 <div className="text-center">
-                  <p className="text-card-foreground">PDF 파일을 여기로 끌어오세요</p>
+                  <p className="text-card-foreground">
+                    {!selectedClass || selectedRound === "none" || !selectedDateText
+                      ? "1단계와 2단계를 완료하면 PDF 업로드가 활성화됩니다"
+                      : "PDF 파일을 여기로 끌어오세요"}
+                  </p>
                   <Button
                     type="button"
                     size="sm"
                     variant="outline"
                     className="mt-3"
                     onClick={() => fileInputRef.current?.click()}
-                    disabled={!selectedClass || !selectedSession || loading || uploading}
+                    disabled={!selectedClass || selectedRound === "none" || !selectedDateText || loading || uploading}
                   >
                     PDF 업로드
                   </Button>
@@ -1099,7 +1070,7 @@ const UploadDashboard = () => {
                 accept=".pdf,application/pdf"
                 multiple
                 className="hidden"
-                disabled={!selectedClass || !selectedSession || loading || uploading}
+                disabled={!selectedClass || selectedRound === "none" || !selectedDateText || loading || uploading}
                 onChange={(event) => parseAndAppendFiles(Array.from(event.target.files ?? []))}
               />
             </div>
@@ -1121,9 +1092,9 @@ const UploadDashboard = () => {
               반을 먼저 선택해주세요
             </p>
           )}
-          {selectedClass && !selectedSession && (
+          {selectedClass && (selectedRound === "none" || !selectedDateText) && (
             <p className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-              반과 회차를 모두 선택해야 PDF 업로드를 시작할 수 있습니다.
+              반, 회차, 날짜를 모두 선택해야 PDF 업로드를 시작할 수 있습니다.
             </p>
           )}
 
@@ -1298,7 +1269,8 @@ const UploadDashboard = () => {
                 uploading ||
                 loading ||
                 !selectedClass ||
-                !selectedSession ||
+                selectedRound === "none" ||
+                !selectedDateText ||
                 rows.length === 0 ||
                 hasAnyInvalidRow
               }
