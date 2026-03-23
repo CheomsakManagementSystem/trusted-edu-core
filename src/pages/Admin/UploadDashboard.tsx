@@ -1,4 +1,5 @@
 import { DragEvent, useEffect, useMemo, useRef, useState } from "react";
+import { collection, onSnapshot, query, where } from "firebase/firestore";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import { Input } from "@/components/ui/input";
@@ -31,6 +32,9 @@ import {
   fetchPublishedReports,
   fetchReportsByClassId,
   fetchStudents,
+  formatSessionLabel,
+  getReportSortTimestamp,
+  normalizeDateString,
   prepareUploadCandidates,
   publishReportBatch,
   updatePublishedReport,
@@ -39,7 +43,9 @@ import {
   type ScoreBreakdown,
   type StudentLite,
   type UploadCandidate,
+  type UploadSession,
 } from "@/lib/pdfProcessor";
+import { db } from "@/lib/firebase";
 import {
   enqueueReportNotifications,
   getMasterControls,
@@ -90,6 +96,8 @@ const UploadDashboard = () => {
   const [publishedReports, setPublishedReports] = useState<ReportRecord[]>([]);
   const [pendingReports, setPendingReports] = useState<ReportRecord[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string>("none");
+  const [sessions, setSessions] = useState<UploadSession[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string>("none");
   const [rows, setRows] = useState<UploadCandidate[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -133,11 +141,52 @@ const UploadDashboard = () => {
     () => classes.find((item) => item.id === selectedClassId) ?? null,
     [classes, selectedClassId],
   );
+  const selectedSession = useMemo(
+    () => sessions.find((item) => item.id === selectedSessionId) ?? null,
+    [selectedSessionId, sessions],
+  );
 
   const classStudents = useMemo(
     () => students.filter((student) => student.classId === selectedClassId),
     [selectedClassId, students],
   );
+
+  const buildFileKey = (file: File) => `${file.name}:${file.lastModified}:${file.size}`;
+
+  const computeFileHash = async (file: File) => {
+    const buffer = await file.arrayBuffer();
+    const digest = await window.crypto.subtle.digest("SHA-256", buffer);
+    return Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+  };
+
+  const normalizeSessionDoc = (
+    id: string,
+    data: {
+      sessionNumber?: number;
+      round?: number;
+      session?: number;
+      testDate?: string;
+      date?: string;
+      sessionDate?: string;
+    },
+  ): UploadSession | null => {
+    const sessionNumber = Number(
+      data.sessionNumber ?? data.round ?? data.session ?? 0,
+    );
+    const testDate = normalizeDateString(data.testDate ?? data.date ?? data.sessionDate ?? "");
+
+    if (!Number.isFinite(sessionNumber) || sessionNumber <= 0 || !testDate) {
+      return null;
+    }
+
+    return {
+      id,
+      sessionNumber,
+      testDate,
+    };
+  };
 
   const formatStudentLabel = (student: StudentLite) =>
     formatStudentName(student.name, {
@@ -160,6 +209,50 @@ const UploadDashboard = () => {
 
     run();
   }, []);
+
+  useEffect(() => {
+    if (!selectedClass || selectedClassId === "none") {
+      setSessions([]);
+      setSelectedSessionId("none");
+      return;
+    }
+
+    const sessionsRef = collection(db, "sessions");
+    const sessionsQuery = query(sessionsRef, where("classId", "==", selectedClass.id));
+
+    const unsubscribe = onSnapshot(
+      sessionsQuery,
+      (snapshot) => {
+        const nextSessions = snapshot.docs
+          .map((docSnap) =>
+            normalizeSessionDoc(
+              docSnap.id,
+              docSnap.data() as {
+                sessionNumber?: number;
+                round?: number;
+                session?: number;
+                testDate?: string;
+                date?: string;
+                sessionDate?: string;
+              },
+            ),
+          )
+          .filter((session): session is UploadSession => Boolean(session))
+          .sort((a, b) => a.sessionNumber - b.sessionNumber);
+
+        setSessions(nextSessions);
+        setSelectedSessionId((prev) =>
+          nextSessions.some((session) => session.id === prev) ? prev : "none",
+        );
+      },
+      () => {
+        setSessions([]);
+        setSelectedSessionId("none");
+      },
+    );
+
+    return () => unsubscribe();
+  }, [selectedClass, selectedClassId]);
 
   useEffect(() => {
     const run = async () => {
@@ -198,7 +291,7 @@ const UploadDashboard = () => {
     setPendingSelectedStudent({});
     setManualMatchTargetId(null);
     setMessage("");
-  }, [selectedClassId]);
+  }, [selectedClassId, selectedSessionId]);
 
   const parseAndAppendFiles = async (files: File[]) => {
     if (files.length === 0) {
@@ -210,23 +303,80 @@ const UploadDashboard = () => {
       return;
     }
 
+    if (!selectedSession) {
+      setMessage("회차를 먼저 선택해주세요.");
+      return;
+    }
+
     setLoading(true);
     setMessage("");
 
     try {
+      const hashes = await Promise.all(
+        files.map(async (file) => ({
+          file,
+          key: buildFileKey(file),
+          hash: await computeFileHash(file),
+        })),
+      );
+
+      const duplicateInDb = hashes.find(({ hash }) =>
+        classReports.some(
+          (report) =>
+            report.fileHash === hash &&
+            (report.testSession ?? null) === selectedSession.sessionNumber &&
+            normalizeDateString(report.testDate) === selectedSession.testDate,
+        ),
+      );
+
+      if (duplicateInDb) {
+        const message = "이미 업로드된 회차입니다";
+        setMessage(message);
+        toast({
+          variant: "destructive",
+          title: "중복 업로드 차단",
+          description: message,
+        });
+        return;
+      }
+
+      const hashByKey = new Map(hashes.map((item) => [item.key, item.hash]));
       const parsedRows = await prepareUploadCandidates(files, classStudents, students);
+      const parsedWithHash = parsedRows.map((row) => ({
+        ...row,
+        fileHash: hashByKey.get(buildFileKey(row.file)) ?? null,
+      }));
+
+      const mismatchedRow = parsedWithHash.find((row) => {
+        const parsedDate = normalizeDateString(row.parsed.writtenAt);
+        return parsedDate !== selectedSession.testDate;
+      });
+
+      if (mismatchedRow) {
+        const warningMessage =
+          "선택하신 회차의 날짜와 파일 내 작성일이 일치하지 않습니다. 다시 확인해주세요.";
+        window.alert(warningMessage);
+        setMessage(warningMessage);
+        toast({
+          variant: "destructive",
+          title: "날짜 불일치",
+          description: warningMessage,
+        });
+        return;
+      }
+
       setRows((prev) => {
         const ids = new Set(prev.map((row) => row.id));
-        const deduped = parsedRows.filter((row) => !ids.has(row.id));
+        const deduped = parsedWithHash.filter((row) => !ids.has(row.id));
         return [...prev, ...deduped];
       });
-      const firstDuplicate = parsedRows.find(
+      const firstDuplicate = parsedWithHash.find(
         (row) => row.status === "needs_selection" && row.candidates.length > 1,
       );
       if (firstDuplicate) {
         setManualMatchTargetId(firstDuplicate.id);
       }
-      const parseFailedCount = parsedRows.filter((row) => Boolean(row.parseError)).length;
+      const parseFailedCount = parsedWithHash.filter((row) => Boolean(row.parseError)).length;
       if (parseFailedCount > 0) {
         toast({
           variant: "destructive",
@@ -352,6 +502,10 @@ const UploadDashboard = () => {
     const groups = new Map<string, ReportRecord[]>();
     const map = new Map<string, number>();
     publishedReports.forEach((report) => {
+      if (Number.isFinite(report.testSession)) {
+        map.set(report.id, Number(report.testSession));
+        return;
+      }
       const key = report.studentUid || report.studentName || report.sourceName || report.id;
       const list = groups.get(key) ?? [];
       list.push(report);
@@ -359,7 +513,7 @@ const UploadDashboard = () => {
     });
 
     groups.forEach((list) => {
-      const sorted = [...list].sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0));
+      const sorted = [...list].sort((a, b) => getReportSortTimestamp(b) - getReportSortTimestamp(a));
       sorted.forEach((report, index) => {
         map.set(report.id, sorted.length - index);
       });
@@ -372,7 +526,7 @@ const UploadDashboard = () => {
   );
   const filteredPublishedReports = useMemo(() => {
     return [...publishedReports]
-      .sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0))
+      .sort((a, b) => getReportSortTimestamp(b) - getReportSortTimestamp(a))
       .filter((report) => {
         if (archiveClassFilter !== "all" && report.classId !== archiveClassFilter) {
           return false;
@@ -441,6 +595,16 @@ const UploadDashboard = () => {
       return;
     }
 
+    if (!selectedSession) {
+      setMessage("회차를 먼저 선택해주세요.");
+      toast({
+        variant: "destructive",
+        title: "회차 선택 필요",
+        description: "반과 회차를 모두 선택한 뒤 업로드를 진행해주세요.",
+      });
+      return;
+    }
+
     if (rows.length === 0) {
       setMessage("배포할 파일이 없습니다.");
       return;
@@ -463,7 +627,14 @@ const UploadDashboard = () => {
     setMessage("");
 
     try {
-      const result = await publishReportBatch(rows, selectedClass, students, user.uid, setProgress);
+      const result = await publishReportBatch(
+        rows,
+        selectedClass,
+        selectedSession,
+        students,
+        user.uid,
+        setProgress,
+      );
       const controls = await getMasterControls();
 
       setRows((prev) => {
@@ -860,7 +1031,7 @@ const UploadDashboard = () => {
         </div>
 
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
             <div className="space-y-2">
               <p className="text-xs text-muted-foreground">1단계: 반 선택</p>
               <Select value={selectedClassId} onValueChange={setSelectedClassId}>
@@ -878,8 +1049,25 @@ const UploadDashboard = () => {
               </Select>
             </div>
 
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">2단계: 회차 선택</p>
+              <Select value={selectedSessionId} onValueChange={setSelectedSessionId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="회차 선택" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">회차 선택</SelectItem>
+                  {sessions.map((session) => (
+                    <SelectItem key={session.id} value={session.id}>
+                      {formatSessionLabel(session)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
             <div className="space-y-2 md:col-span-2">
-              <p className="text-xs text-muted-foreground">2단계: 파일 등록</p>
+              <p className="text-xs text-muted-foreground">3단계: 파일 등록</p>
               <div
                 onDragOver={(event) => {
                   event.preventDefault();
@@ -893,14 +1081,16 @@ const UploadDashboard = () => {
               >
                 <div className="text-center">
                   <p className="text-card-foreground">PDF 파일을 여기로 끌어오세요</p>
-                  <button
+                  <Button
                     type="button"
-                    className="mt-2 text-xs text-primary underline"
+                    size="sm"
+                    variant="outline"
+                    className="mt-3"
                     onClick={() => fileInputRef.current?.click()}
-                    disabled={!selectedClass || loading || uploading}
+                    disabled={!selectedClass || !selectedSession || loading || uploading}
                   >
-                    파일 선택 열기
-                  </button>
+                    PDF 업로드
+                  </Button>
                 </div>
               </div>
               <Input
@@ -909,7 +1099,7 @@ const UploadDashboard = () => {
                 accept=".pdf,application/pdf"
                 multiple
                 className="hidden"
-                disabled={!selectedClass || loading || uploading}
+                disabled={!selectedClass || !selectedSession || loading || uploading}
                 onChange={(event) => parseAndAppendFiles(Array.from(event.target.files ?? []))}
               />
             </div>
@@ -929,6 +1119,11 @@ const UploadDashboard = () => {
           {!selectedClass && (
             <p className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
               반을 먼저 선택해주세요
+            </p>
+          )}
+          {selectedClass && !selectedSession && (
+            <p className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              반과 회차를 모두 선택해야 PDF 업로드를 시작할 수 있습니다.
             </p>
           )}
 
@@ -1097,7 +1292,17 @@ const UploadDashboard = () => {
                 입력이 완료된 리포트만 학생 대시보드로 안전하게 전달됩니다.
               </p>
             </div>
-            <Button onClick={handlePublish} disabled={uploading || loading || rows.length === 0 || hasAnyInvalidRow}>
+            <Button
+              onClick={handlePublish}
+              disabled={
+                uploading ||
+                loading ||
+                !selectedClass ||
+                !selectedSession ||
+                rows.length === 0 ||
+                hasAnyInvalidRow
+              }
+            >
               {uploading ? (
                 <span className="inline-flex items-center gap-2">
                   <Loader2 className="h-4 w-4 animate-spin" />

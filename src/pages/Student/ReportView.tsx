@@ -14,6 +14,8 @@ import { useToast } from "@/hooks/use-toast";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   fetchClasses,
+  formatSessionLabel,
+  getReportSortTimestamp,
   submitClassJoinRequest,
   type ClassLite,
   type ReportRecord,
@@ -120,7 +122,7 @@ const ReportView = () => {
           return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
         })
         .filter((row) => row.assignmentStatus !== "duplicate_pending" && row.assignmentStatus !== "unassigned_pending")
-        .sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0));
+        .sort((a, b) => getReportSortTimestamp(b) - getReportSortTimestamp(a));
 
     const reportsRef = collection(db, "reports");
     const primaryQuery = query(reportsRef, where("studentUid", "==", user.uid), orderBy("createdAt", "desc"));
@@ -237,8 +239,13 @@ const ReportView = () => {
 
   const trendData = useMemo(
     () =>
-      [...studentReports].reverse().map((report, index) => ({
-        round: `회차 ${index + 1}`,
+      [...studentReports]
+        .sort((a, b) => getReportSortTimestamp(a) - getReportSortTimestamp(b))
+        .map((report, index) => ({
+        round:
+          Number.isFinite(report.testSession)
+            ? `${report.testSession}회차`
+            : `회차 ${index + 1}`,
         score: report.totalScore,
         reportId: report.id,
       })),
@@ -446,7 +453,14 @@ const ReportView = () => {
                   <SelectContent className="rounded-t-2xl rounded-b-xl md:rounded-md">
                     {studentReports.map((report, index) => (
                       <SelectItem key={report.id} value={report.id}>
-                        회차 {studentReports.length - index} | {report.essayTopic || "기록 없음"}
+                        {report.testSession && report.testDate
+                          ? formatSessionLabel({
+                              id: report.sessionId ?? report.id,
+                              sessionNumber: report.testSession,
+                              testDate: report.testDate,
+                            })
+                          : `회차 ${studentReports.length - index}`}{" "}
+                        | {report.essayTopic || "기록 없음"}
                       </SelectItem>
                     ))}
                   </SelectContent>

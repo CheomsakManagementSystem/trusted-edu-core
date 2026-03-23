@@ -39,6 +39,12 @@ export type ClassLite = {
   name: string;
 };
 
+export type UploadSession = {
+  id: string;
+  sessionNumber: number;
+  testDate: string;
+};
+
 export type ScoreBreakdown = {
   reading: number | null;
   comprehension: number | null;
@@ -65,6 +71,7 @@ export type ParsedPdfData = {
 export type UploadCandidate = {
   id: string;
   file: File;
+  fileHash?: string | null;
   sourcePage: number;
   sourcePageLabel: string;
   parsed: ParsedPdfData;
@@ -82,6 +89,10 @@ export type ReportRecord = {
   uid: string;
   classId: string | null;
   className: string | null;
+  sessionId?: string | null;
+  testSession?: number | null;
+  testDate?: string | null;
+  fileHash?: string | null;
   studentUid: string | null;
   studentId: string | null;
   studentName: string;
@@ -182,6 +193,42 @@ const parseNumber = (value: string | undefined): number | null => {
   const parsed = Number(value.replace(/,/g, "").trim());
   return Number.isFinite(parsed) ? parsed : null;
 };
+
+export const normalizeDateString = (value: string | null | undefined): string | null => {
+  if (!value) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  const direct = trimmed.match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+  if (direct) {
+    const [, year, month, day] = direct;
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  }
+
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  const year = parsed.getFullYear();
+  const month = `${parsed.getMonth() + 1}`.padStart(2, "0");
+  const day = `${parsed.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+export const getReportSortTimestamp = (
+  report: Pick<ReportRecord, "testDate" | "writtenAt" | "createdAt">,
+) => {
+  const normalized = normalizeDateString(report.testDate) ?? normalizeDateString(report.writtenAt);
+  if (normalized) {
+    return new Date(`${normalized}T00:00:00`).getTime();
+  }
+  return report.createdAt?.toMillis() ?? 0;
+};
+
+export const formatSessionLabel = (session: UploadSession) =>
+  `${session.sessionNumber}회차 (${session.testDate})`;
 
 const parseFileNameHint = (fileName: string): { name?: string; total?: number | null } => {
   const base = fileName.replace(/\.pdf$/i, "");
@@ -1148,6 +1195,7 @@ const uploadPdfToStorage = async (
 export const publishReportBatch = async (
   uploadRows: UploadCandidate[],
   selectedClass: ClassLite,
+  selectedSession: UploadSession,
   allStudents: StudentLite[],
   uid: string,
   onOverallProgress?: (progress: number) => void,
@@ -1218,6 +1266,13 @@ export const publishReportBatch = async (
         uid,
         classId: selectedClass.id,
         className: selectedClass.name,
+        sessionId: selectedSession.id,
+        testSession: selectedSession.sessionNumber,
+        testDate: selectedSession.testDate,
+        session_id: selectedSession.id,
+        test_session: selectedSession.sessionNumber,
+        test_date: selectedSession.testDate,
+        fileHash: row.fileHash ?? null,
         studentUid: completedStudent?.uid ?? null,
         studentId: completedStudent?.studentId ?? null,
         studentName: completedStudent?.name ?? (row.parsed.name || ""),
@@ -1442,10 +1497,13 @@ export const fetchReportsByStudentUid = async (studentUid: string): Promise<Repo
   try {
     const snapshot = await getDocs(query(reportsRef, where("studentUid", "==", studentUid), orderBy("createdAt", "desc")));
 
-    return snapshot.docs.map((docSnap) => {
-      const data = docSnap.data() as Omit<ReportRecord, "id">;
-      return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
-    }).filter((row) => row.assignmentStatus !== "duplicate_pending" && row.assignmentStatus !== "unassigned_pending");
+    return snapshot.docs
+      .map((docSnap) => {
+        const data = docSnap.data() as Omit<ReportRecord, "id">;
+        return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
+      })
+      .filter((row) => row.assignmentStatus !== "duplicate_pending" && row.assignmentStatus !== "unassigned_pending")
+      .sort((a, b) => getReportSortTimestamp(b) - getReportSortTimestamp(a));
   } catch {
     const snapshot = await getDocs(query(reportsRef, where("studentUid", "==", studentUid)));
 
@@ -1455,11 +1513,7 @@ export const fetchReportsByStudentUid = async (studentUid: string): Promise<Repo
         return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
       })
       .filter((row) => row.assignmentStatus !== "duplicate_pending" && row.assignmentStatus !== "unassigned_pending")
-      .sort((a, b) => {
-        const aMs = a.createdAt?.toMillis() ?? 0;
-        const bMs = b.createdAt?.toMillis() ?? 0;
-        return bMs - aMs;
-      });
+      .sort((a, b) => getReportSortTimestamp(b) - getReportSortTimestamp(a));
   }
 };
 
@@ -1472,10 +1526,12 @@ export const fetchPendingReports = async (): Promise<ReportRecord[]> => {
       const snapshot = await getDocs(
         query(reportsRef, where("assignmentStatus", "==", status), orderBy("createdAt", "desc")),
       );
-      return snapshot.docs.map((docSnap) => {
-        const data = docSnap.data() as Omit<ReportRecord, "id">;
-        return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
-      });
+      return snapshot.docs
+        .map((docSnap) => {
+          const data = docSnap.data() as Omit<ReportRecord, "id">;
+          return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
+        })
+        .sort((a, b) => getReportSortTimestamp(b) - getReportSortTimestamp(a));
     } catch {
       const snapshot = await getDocs(query(reportsRef, where("assignmentStatus", "==", status)));
       return snapshot.docs.map((docSnap) => {
@@ -1486,7 +1542,7 @@ export const fetchPendingReports = async (): Promise<ReportRecord[]> => {
   };
 
   const rows = (await Promise.all(statuses.map((status) => fetchByStatus(status)))).flat();
-  return rows.sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0));
+  return rows.sort((a, b) => getReportSortTimestamp(b) - getReportSortTimestamp(a));
 };
 
 export const assignPendingReportToStudent = async (
@@ -1511,10 +1567,12 @@ export const fetchReportsByClassId = async (classId: string): Promise<ReportReco
     const snapshot = await getDocs(
       query(reportsRef, where("classId", "==", classId), orderBy("createdAt", "desc")),
     );
-    return snapshot.docs.map((docSnap) => {
-      const data = docSnap.data() as Omit<ReportRecord, "id">;
-      return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
-    });
+    return snapshot.docs
+      .map((docSnap) => {
+        const data = docSnap.data() as Omit<ReportRecord, "id">;
+        return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
+      })
+      .sort((a, b) => getReportSortTimestamp(b) - getReportSortTimestamp(a));
   } catch {
     const snapshot = await getDocs(query(reportsRef, where("classId", "==", classId)));
     return snapshot.docs
@@ -1522,7 +1580,7 @@ export const fetchReportsByClassId = async (classId: string): Promise<ReportReco
         const data = docSnap.data() as Omit<ReportRecord, "id">;
         return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
       })
-      .sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0));
+      .sort((a, b) => getReportSortTimestamp(b) - getReportSortTimestamp(a));
   }
 };
 
@@ -1537,10 +1595,12 @@ export const fetchPublishedReports = async (): Promise<ReportRecord[]> => {
         orderBy("createdAt", "desc"),
       ),
     );
-    return snapshot.docs.map((docSnap) => {
-      const data = docSnap.data() as Omit<ReportRecord, "id">;
-      return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
-    });
+    return snapshot.docs
+      .map((docSnap) => {
+        const data = docSnap.data() as Omit<ReportRecord, "id">;
+        return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
+      })
+      .sort((a, b) => getReportSortTimestamp(b) - getReportSortTimestamp(a));
   } catch {
     const snapshot = await getDocs(
       query(reportsRef, where("assignmentStatus", "==", "completed")),
@@ -1550,7 +1610,7 @@ export const fetchPublishedReports = async (): Promise<ReportRecord[]> => {
         const data = docSnap.data() as Omit<ReportRecord, "id">;
         return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
       })
-      .sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0));
+      .sort((a, b) => getReportSortTimestamp(b) - getReportSortTimestamp(a));
   }
 };
 
