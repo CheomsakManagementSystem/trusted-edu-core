@@ -31,15 +31,23 @@ const AppSidebar = () => {
         collapsed ? "w-16" : "w-56"
       }`}
     >
-      <div className="flex h-20 items-center justify-center border-b border-sidebar-border px-3">
+      <div className="pointer-events-none flex items-center justify-center border-b border-sidebar-border px-3 py-3">
         {!collapsed ? (
-          <BrandLogo compact invertOnDark className="max-w-full text-sidebar-primary-foreground" />
+          <BrandLogo
+            compact
+            invertOnDark
+            className="pointer-events-auto max-w-full text-sidebar-primary-foreground"
+          />
         ) : (
-          <BrandLogo iconOnly invertOnDark className="text-sidebar-primary-foreground" />
+          <BrandLogo
+            iconOnly
+            invertOnDark
+            className="pointer-events-auto text-sidebar-primary-foreground"
+          />
         )}
       </div>
 
-      <nav className="flex-1 space-y-1 px-2 py-4">
+      <nav className="relative z-10 flex-1 space-y-1 px-2 py-4">
         {menuItems.map((item) => {
           const isActive = location.pathname === item.path;
           return (
