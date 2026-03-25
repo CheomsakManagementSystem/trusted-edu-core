@@ -34,7 +34,7 @@ import {
   updateManagedUserRole,
   type ManagedUser,
 } from "@/services/masterAdminService";
-import { formatStudentName } from "@/lib/studentName";
+import { Search } from "lucide-react";
 
 const scoreMetrics: Array<{ key: keyof NonNullable<ReportRecord["scores"]>; label: string }> = [
   { key: "reading", label: "독해력" },
@@ -91,6 +91,9 @@ const formatDate = (report: ReportRecord): string => {
   return formatExamDate(report.examDate);
 };
 
+const navyScrollbarClass =
+  "scrollbar-thin [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-track]:bg-slate-100 [&::-webkit-scrollbar-thumb]:bg-slate-900/65 hover:[&::-webkit-scrollbar-thumb]:bg-slate-900/80";
+
 const MasterAdminPage = () => {
   const { user, signOut } = useAuth();
   const { toast } = useToast();
@@ -109,6 +112,7 @@ const MasterAdminPage = () => {
   const [withdrawError, setWithdrawError] = useState<string | null>(null);
 
   const [analysisStudentUid, setAnalysisStudentUid] = useState("");
+  const [analysisQuery, setAnalysisQuery] = useState("");
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisReports, setAnalysisReports] = useState<ReportRecord[]>([]);
   const [analysisMessages, setAnalysisMessages] = useState<string[]>([]);
@@ -152,6 +156,20 @@ const MasterAdminPage = () => {
     () => users.filter((row) => normalizeRole(row.role) === "STUDENT"),
     [users],
   );
+
+  const filteredStudentCandidates = useMemo(() => {
+    const keyword = analysisQuery.trim().toLowerCase();
+    if (!keyword) {
+      return [];
+    }
+
+    return studentCandidates
+      .filter((row) => {
+        const target = `${row.name} ${row.email} ${row.phoneSuffix ?? ""}`.toLowerCase();
+        return target.includes(keyword);
+      })
+      .slice(0, 12);
+  }, [analysisQuery, studentCandidates]);
 
   const saveControls = async () => {
     if (!user) {
@@ -252,8 +270,8 @@ const MasterAdminPage = () => {
     }
   };
 
-  const runAnalysis = async () => {
-    if (!analysisStudentUid) {
+  const runAnalysis = async (targetStudentUid = analysisStudentUid) => {
+    if (!targetStudentUid) {
       toast({
         variant: "destructive",
         title: "학생 선택 필요",
@@ -267,7 +285,7 @@ const MasterAdminPage = () => {
     setOpenReportIds({});
 
     try {
-      const reports = await fetchReportsByStudentUid(analysisStudentUid);
+      const reports = await fetchReportsByStudentUid(targetStudentUid);
       const sorted = [...reports].sort(compareReportsByExamDateDesc);
       setAnalysisReports(sorted);
 
@@ -323,6 +341,12 @@ const MasterAdminPage = () => {
     } finally {
       setAnalysisLoading(false);
     }
+  };
+
+  const handleSelectAnalysisStudent = (student: ManagedUser) => {
+    setAnalysisStudentUid(student.uid);
+    setAnalysisQuery(`${student.name} ${student.phoneSuffix ?? student.email ?? ""}`.trim());
+    runAnalysis(student.uid);
   };
 
   const toggleReportOpen = (reportId: string) => {
@@ -438,10 +462,10 @@ const MasterAdminPage = () => {
             </div>
           </div>
 
-          <div className="mt-4 overflow-x-auto">
+          <div className={`relative mt-4 max-h-[580px] overflow-auto pr-1 ${navyScrollbarClass}`}>
             <table className="w-full min-w-[760px] divide-y divide-border text-sm">
               <thead>
-                <tr>
+                <tr className="sticky top-0 z-10 bg-card">
                   <th className="px-3 py-2 text-left text-muted-foreground">이름</th>
                   <th className="px-3 py-2 text-left text-muted-foreground">이메일</th>
                   <th className="px-3 py-2 text-left text-muted-foreground">학생ID</th>
@@ -471,7 +495,7 @@ const MasterAdminPage = () => {
                           <SelectTrigger className="h-8 w-40">
                             <SelectValue />
                           </SelectTrigger>
-                          <SelectContent>
+                          <SelectContent className="z-[80]">
                             <SelectItem value="STUDENT">학생</SelectItem>
                             <SelectItem value="INSTRUCTOR">선생님</SelectItem>
                           </SelectContent>
@@ -513,26 +537,52 @@ const MasterAdminPage = () => {
             학생 획득 점수와 강사 총평을 한눈에 확인하세요.
           </p>
 
-          <div className="mt-4 flex flex-col gap-2 md:flex-row md:items-center">
-            <Select value={analysisStudentUid} onValueChange={setAnalysisStudentUid}>
-              <SelectTrigger className="w-full md:w-[360px]">
-                <SelectValue placeholder="분석할 학생 선택" />
-              </SelectTrigger>
-              <SelectContent>
-                {studentCandidates.map((student) => (
-                  <SelectItem key={student.uid} value={student.uid}>
-                    {formatStudentName(student.name, {
-                      phoneSuffix: student.phoneSuffix,
-                      studentId: student.studentId,
-                    })}{" "}
-                    ({student.email || "이메일 없음"})
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button onClick={runAnalysis} disabled={analysisLoading || !analysisStudentUid}>
-              {analysisLoading ? "불러오는 중..." : "상세 조회"}
-            </Button>
+          <div className="sticky top-0 z-20 mt-4 rounded-xl border border-slate-200 bg-white/95 p-3 shadow-sm backdrop-blur">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+              <Input
+                value={analysisQuery}
+                onChange={(event) => setAnalysisQuery(event.target.value)}
+                placeholder="이름, 전화번호 뒤 4자리, 이메일로 학생 검색"
+                className="h-11 rounded-xl border-slate-200 bg-slate-50 pl-9 text-slate-900 placeholder:text-slate-500"
+              />
+            </div>
+            <div className={`mt-3 max-h-[280px] space-y-2 overflow-y-auto pr-1 ${navyScrollbarClass}`}>
+              {analysisQuery.trim().length === 0 && (
+                <p className="rounded-lg border border-dashed border-slate-200 px-3 py-4 text-sm text-slate-500">
+                  이름, 전화번호 뒤 4자리, 이메일 중 하나를 입력하면 학생 목록이 실시간으로 표시됩니다.
+                </p>
+              )}
+              {analysisQuery.trim().length > 0 && filteredStudentCandidates.length === 0 && (
+                <p className="rounded-lg border border-dashed border-slate-200 px-3 py-4 text-sm text-slate-500">
+                  검색 결과가 없습니다.
+                </p>
+              )}
+              {filteredStudentCandidates.map((student) => (
+                <button
+                  key={student.uid}
+                  type="button"
+                  onClick={() => handleSelectAnalysisStudent(student)}
+                  className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition-colors ${
+                    analysisStudentUid === student.uid
+                      ? "border-slate-900 bg-slate-900 text-white"
+                      : "border-slate-200 bg-slate-50 text-slate-900 hover:border-slate-300 hover:bg-white"
+                  }`}
+                >
+                  <span className="text-sm font-semibold">
+                    {student.name} ({student.phoneSuffix || "번호 없음"})
+                  </span>
+                  <span className={`text-xs ${analysisStudentUid === student.uid ? "text-slate-200" : "text-slate-500"}`}>
+                    {student.email || "이메일 없음"}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div className="mt-3 flex justify-end">
+              <Button onClick={() => runAnalysis()} disabled={analysisLoading || !analysisStudentUid}>
+                {analysisLoading ? "불러오는 중..." : "선택 학생 조회"}
+              </Button>
+            </div>
           </div>
 
           {analysisReports.length > 0 ? (
