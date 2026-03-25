@@ -1,8 +1,9 @@
 import { Link } from "react-router-dom";
+import BrandLogo from "@/components/BrandLogo";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { AlertTriangle, Edit, Search, ShieldCheck, User, Users } from "lucide-react";
+import { AlertTriangle, Edit, Search, User } from "lucide-react";
 
 const commonRules = [
   "환경: 반드시 Google Chrome(크롬) 최신 버전 사용을 권장합니다.(컴퓨터 로그인 기준)",
@@ -88,224 +89,212 @@ const faqItems = [
   },
 ];
 
-type ScenePanelProps = {
-  eyebrow: string;
-  title: string;
-  description: string;
-  accent: string;
-};
-
-const ScenePanel = ({ eyebrow, title, description, accent }: ScenePanelProps) => {
+const DataVisual = () => {
   return (
-    <div
-      className="relative overflow-hidden rounded-[28px] border border-white/10 bg-black text-white shadow-[0_24px_60px_rgba(0,0,0,0.45)]"
-      style={{
-        background:
-          "radial-gradient(circle at top left, rgba(212,175,55,0.24), transparent 28%), radial-gradient(circle at bottom right, rgba(255,255,255,0.08), transparent 25%), linear-gradient(135deg, #001529 0%, #000000 58%, #001529 100%)",
-      }}
-    >
-      <div className="absolute inset-0 opacity-25" style={{ backgroundImage: "linear-gradient(rgba(212,175,55,0.18) 1px, transparent 1px), linear-gradient(90deg, rgba(212,175,55,0.18) 1px, transparent 1px)", backgroundSize: "28px 28px" }} />
-      <div
-        className="absolute -right-12 top-10 h-48 w-48 rounded-full blur-3xl"
-        style={{ backgroundColor: accent }}
-      />
-      <div className="relative flex min-h-[360px] flex-col justify-end p-8">
-        <div className="mb-4 inline-flex w-fit rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs tracking-[0.24em] text-[#D4AF37]">
-          {eyebrow}
+    <div className="relative h-full min-h-[320px] overflow-hidden rounded-[24px] border border-[#d9e2ec] bg-white">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(24,144,255,0.18),_transparent_22%),linear-gradient(135deg,_rgba(24,144,255,0.08),_rgba(24,144,255,0)_45%)]" />
+      <div className="absolute inset-0 opacity-70" style={{ backgroundImage: "linear-gradient(rgba(24,144,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(24,144,255,0.12) 1px, transparent 1px)", backgroundSize: "28px 28px" }} />
+      <div className="absolute left-8 top-8 h-24 w-24 rounded-full bg-[#1890FF]/10 blur-2xl" />
+      <div className="absolute bottom-10 right-10 h-32 w-32 rounded-full bg-[#001529]/10 blur-3xl" />
+      <div className="relative flex h-full flex-col justify-between p-8">
+        <div className="space-y-2">
+          <div className="h-2 w-16 rounded-full bg-[#1890FF]/50" />
+          <div className="h-2 w-24 rounded-full bg-[#001529]/20" />
         </div>
-        <h3 className="max-w-xl text-2xl font-semibold leading-snug">{title}</h3>
-        <p className="mt-4 max-w-2xl text-sm leading-relaxed text-slate-200">{description}</p>
+        <div className="grid gap-3">
+          <div className="rounded-2xl border border-[#d9e2ec] bg-white/90 p-4 shadow-sm">
+            <div className="mb-3 flex items-end gap-2">
+              <div className="h-10 w-3 rounded-full bg-[#001529]" />
+              <div className="h-16 w-3 rounded-full bg-[#1890FF]" />
+              <div className="h-8 w-3 rounded-full bg-[#69c0ff]" />
+              <div className="h-20 w-3 rounded-full bg-[#001529]" />
+              <div className="h-12 w-3 rounded-full bg-[#1890FF]" />
+            </div>
+            <div className="h-2 w-28 rounded-full bg-[#001529]/15" />
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="rounded-2xl border border-[#d9e2ec] bg-[#f7fbff] p-4">
+              <div className="h-2 w-10 rounded-full bg-[#1890FF]" />
+              <div className="mt-6 h-8 rounded-xl bg-[#1890FF]/10" />
+            </div>
+            <div className="rounded-2xl border border-[#d9e2ec] bg-[#f7fbff] p-4">
+              <div className="h-2 w-10 rounded-full bg-[#001529]" />
+              <div className="mt-6 h-8 rounded-xl bg-[#001529]/10" />
+            </div>
+            <div className="rounded-2xl border border-[#d9e2ec] bg-[#f7fbff] p-4">
+              <div className="h-2 w-10 rounded-full bg-[#69c0ff]" />
+              <div className="mt-6 h-8 rounded-xl bg-[#69c0ff]/20" />
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
 };
 
-const TextBlock = ({ lines, dark = false }: { lines: string[]; dark?: boolean }) => {
+const DocCard = ({ title, children }: { title: string; children: React.ReactNode }) => {
   return (
-    <div className={`space-y-3 text-base leading-relaxed ${dark ? "text-slate-100" : "text-slate-700"}`}>
-      {lines.map((line) => (
-        <p key={line}>{line}</p>
-      ))}
-    </div>
+    <section className="rounded-[28px] border border-[#d9e2ec] bg-white p-8 shadow-[0_18px_40px_rgba(0,21,41,0.08)]">
+      <h2 className="text-2xl font-bold tracking-tight text-[#001529]">{title}</h2>
+      <div className="mt-6 space-y-3 text-base leading-relaxed text-[#001529]">{children}</div>
+    </section>
   );
 };
 
 const Landing = () => {
   return (
-    <div className="min-h-screen bg-[#000000] text-white">
-      <section className="relative overflow-hidden bg-[#001529]">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(212,175,55,0.16),_transparent_30%),linear-gradient(135deg,_rgba(255,255,255,0.05),_transparent_45%)]" />
-        <div className="relative mx-auto grid max-w-7xl gap-10 px-6 py-16 lg:grid-cols-[1.1fr_0.9fr] lg:px-10">
-          <div className="flex flex-col justify-center">
-            <div className="mb-5 inline-flex w-fit rounded-full border border-[#D4AF37]/40 bg-[#D4AF37]/10 px-4 py-1 text-xs tracking-[0.26em] text-[#D4AF37]">
-              KIM YOON HWAN INSTITUTE
-            </div>
-            <h1 className="max-w-3xl text-4xl font-black leading-tight text-white md:text-6xl">
-              김윤환입시연구소 스마트 첨삭 시스템 [운영 가이드]
-            </h1>
-            <p className="mt-6 max-w-2xl text-lg leading-relaxed text-slate-200">
-              본 지침서는 시스템의 데이터 무결성과 관리 보안을 위해 작성되었습니다. 모든 운영진은 아래 절차를 준수해 주시기 바랍니다.
-            </p>
-            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              <Button
-                asChild
-                className="border border-[#D4AF37] bg-[#D4AF37] px-7 text-[#001529] hover:bg-[#e7c861]"
-                size="lg"
-              >
-                <Link to="/login">데이터 리포트 로그인</Link>
-              </Button>
-              <Button
-                asChild
-                variant="outline"
-                size="lg"
-                className="border-white/20 bg-white/5 px-7 text-white hover:bg-white/10"
-              >
-                <a href="http://pf.kakao.com/_Glxodn/chat" target="_blank" rel="noreferrer">
-                  이용 문의 및 장애 신고
-                </a>
-              </Button>
-            </div>
-          </div>
+    <div className="min-h-screen bg-[#f3f7fb] text-[#001529]">
+      <div className="mx-auto max-w-7xl px-6 py-8 lg:px-10">
+        <header className="mb-8">
+          <BrandLogo compact className="text-[#001529]" />
+        </header>
 
-          <ScenePanel
-            eyebrow="DAECHI DAWN ESSAY LAB"
-            title="대치동 새벽, 불 켜진 강의실에서 논술 답안을 작성하는 수험생들의 모습 위에 미세한 Gold 데이터 그리드가 겹쳐지는 몽환적인 스케치"
-            description="Deep Navy와 Gold 라이트를 겹쳐 입시 연구소의 집중감과 데이터 기반 운영 이미지를 동시에 표현한 메인 비주얼입니다."
-            accent="#D4AF37"
-          />
-        </div>
-      </section>
-
-      <section className="bg-white px-6 py-16 lg:px-10">
-        <div className="mx-auto max-w-6xl">
-          <div className="mb-8 flex items-center gap-3">
-            <div className="rounded-full bg-[#001529] p-3 text-[#D4AF37]">
-              <ShieldCheck className="h-6 w-6" />
-            </div>
-            <div>
-              <p className="text-sm font-semibold tracking-[0.2em] text-[#D4AF37]">ESSENTIAL POLICY</p>
-              <h2 className="text-3xl font-bold text-[#001529]">1. 전 사용자 공통 필수 수칙</h2>
-            </div>
-          </div>
-          <div className="rounded-[28px] border border-[#D4AF37]/30 bg-[linear-gradient(135deg,_rgba(0,21,41,0.04),_rgba(212,175,55,0.08))] p-8 shadow-[0_24px_60px_rgba(0,21,41,0.08)]">
-            <TextBlock lines={commonRules} />
-          </div>
-        </div>
-      </section>
-
-      <section className="bg-[#001529] px-6 py-16 lg:px-10">
-        <div className="mx-auto max-w-6xl">
-          <div className="mb-8">
-            <p className="text-sm font-semibold tracking-[0.2em] text-[#D4AF37]">ROLE GUIDE</p>
-            <h2 className="mt-2 text-3xl font-bold text-white">권한별 가이드</h2>
-          </div>
-
-          <Tabs defaultValue="manager" className="w-full">
-            <TabsList className="h-auto w-full flex-wrap gap-2 rounded-2xl bg-white/10 p-2">
-              <TabsTrigger value="manager" className="rounded-xl px-5 py-3 data-[state=active]:bg-[#D4AF37] data-[state=active]:text-[#001529]">
-                실장님/관리자
-              </TabsTrigger>
-              <TabsTrigger value="teacher" className="rounded-xl px-5 py-3 data-[state=active]:bg-[#D4AF37] data-[state=active]:text-[#001529]">
-                강사
-              </TabsTrigger>
-              <TabsTrigger value="student" className="rounded-xl px-5 py-3 data-[state=active]:bg-[#D4AF37] data-[state=active]:text-[#001529]">
-                학생
-              </TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="manager">
-              <div className="grid gap-8 pt-8 lg:grid-cols-[1.05fr_0.95fr]">
-                <TextBlock lines={managerGuide} dark />
-                <ScenePanel
-                  eyebrow="CONTROL DESK"
-                  title="학원 데스크, 복잡한 시간표 사이로 보안 코드를 입력하고 반 배정을 제어하는 실장님의 손."
-                  description="보안, 반 배정, 사고 수습이 동시에 이뤄지는 운영 허브 이미지를 연구소 톤으로 구성했습니다."
-                  accent="#D4AF37"
-                />
+        <section className="overflow-hidden rounded-[32px] border border-[#d9e2ec] bg-white shadow-[0_24px_60px_rgba(0,21,41,0.10)]">
+          <div className="grid lg:grid-cols-[1.05fr_0.95fr]">
+            <div className="flex flex-col justify-between bg-[#001529] px-8 py-10 text-white md:px-12 md:py-12">
+              <div>
+                <div className="inline-flex rounded-full border border-white/15 bg-white/10 px-4 py-1 text-xs font-semibold tracking-[0.2em] text-[#69c0ff]">
+                  SMART ESSAY REPORT
+                </div>
+                <h1 className="mt-6 text-4xl font-black tracking-tight md:text-6xl">
+                  논술의 주관을 데이터의 객관으로.
+                </h1>
+                <p className="mt-6 text-lg leading-relaxed text-slate-200">
+                  김윤환입시연구소 스마트 첨삭 시스템 [운영 가이드]
+                </p>
+                <p className="mt-4 max-w-2xl text-base leading-relaxed text-slate-300">
+                  본 지침서는 시스템의 데이터 무결성과 관리 보안을 위해 작성되었습니다. 모든 운영진은 아래 절차를 준수해 주시기 바랍니다.
+                </p>
               </div>
-            </TabsContent>
 
-            <TabsContent value="teacher">
-              <div className="grid gap-8 pt-8 lg:grid-cols-[1.05fr_0.95fr]">
-                <TextBlock lines={teacherGuide} dark />
-                <ScenePanel
-                  eyebrow="FEEDBACK WORKFLOW"
-                  title="빨간 펜 첨삭 답안지 뭉치 옆에서 PDF를 생성하고 데이터를 전송하는 강사의 모습."
-                  description="첨삭 완료 후 시스템에 업로드하고 학생에게 전달하는 강사의 실무 동선을 시각적으로 풀어낸 패널입니다."
-                  accent="#b91c1c"
-                />
+              <div className="mt-10 flex flex-col gap-3 sm:flex-row">
+                <Button
+                  asChild
+                  size="lg"
+                  className="bg-[#1890FF] text-white hover:bg-[#1677d9]"
+                >
+                  <Link to="/login">데이터 리포트 로그인</Link>
+                </Button>
+                <Button
+                  asChild
+                  size="lg"
+                  variant="outline"
+                  className="border-white/20 bg-transparent text-white hover:bg-white/10"
+                >
+                  <a href="http://pf.kakao.com/_Glxodn/chat" target="_blank" rel="noreferrer">
+                    이용 문의 및 장애 신고
+                  </a>
+                </Button>
               </div>
-            </TabsContent>
-
-            <TabsContent value="student">
-              <div className="grid gap-8 pt-8 lg:grid-cols-[1.05fr_0.95fr]">
-                <TextBlock lines={studentGuide} dark />
-                <ScenePanel
-                  eyebrow="STUDENT ANALYTICS"
-                  title="독서실 책상, 쌓인 문제집 사이로 태블릿 성적 그래프를 응시하는 진지한 수험생의 옆모습."
-                  description="학생이 자신의 성장 리포트를 확인하는 순간을 데이터 패널과 함께 정제된 스타일로 담아냈습니다."
-                  accent="#1d4ed8"
-                />
-              </div>
-            </TabsContent>
-          </Tabs>
-        </div>
-      </section>
-
-      <section className="bg-white px-6 py-16 lg:px-10">
-        <div className="mx-auto max-w-6xl">
-          <div className="mb-8 flex items-center gap-3">
-            <div className="rounded-full bg-[#001529] p-3 text-[#D4AF37]">
-              <Users className="h-6 w-6" />
             </div>
-            <div>
-              <p className="text-sm font-semibold tracking-[0.2em] text-[#D4AF37]">SHARED OPERATION</p>
-              <h2 className="text-3xl font-bold text-[#001529]">우리 반 아이들 및 학생 배정 관리</h2>
+
+            <div className="bg-white p-6 md:p-8">
+              <DataVisual />
             </div>
           </div>
-          <div className="rounded-[28px] border border-slate-200 bg-slate-50 p-8 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
-            <TextBlock lines={sharedGuide} />
-          </div>
-        </div>
-      </section>
+        </section>
 
-      <section className="bg-[#000000] px-6 py-16 lg:px-10">
-        <div className="mx-auto max-w-6xl">
-          <div className="mb-8">
-            <p className="text-sm font-semibold tracking-[0.2em] text-[#D4AF37]">FAQ</p>
-            <h2 className="mt-2 text-3xl font-bold text-white">❓ 자주 묻는 질문 (FAQ)</h2>
-          </div>
+        <main className="space-y-8 py-16">
+          <DocCard title="1. 전 사용자 공통 필수 수칙">
+            {commonRules.map((line) => (
+              <p key={line}>{line}</p>
+            ))}
+          </DocCard>
 
-          <div className="rounded-[28px] border border-white/10 bg-[#001529] p-6 shadow-[0_28px_70px_rgba(0,0,0,0.4)]">
-            <Accordion type="single" collapsible className="w-full">
+          <section className="rounded-[28px] border border-[#d9e2ec] bg-white p-8 shadow-[0_18px_40px_rgba(0,21,41,0.08)]">
+            <h2 className="text-2xl font-bold tracking-tight text-[#001529]">권한별 가이드</h2>
+            <Tabs defaultValue="manager" className="mt-6 w-full">
+              <TabsList className="h-auto w-full flex-wrap gap-2 rounded-2xl bg-[#f3f7fb] p-2">
+                <TabsTrigger value="manager" className="rounded-xl px-4 py-2 data-[state=active]:bg-[#001529] data-[state=active]:text-white">
+                  실장님/관리자
+                </TabsTrigger>
+                <TabsTrigger value="teacher" className="rounded-xl px-4 py-2 data-[state=active]:bg-[#001529] data-[state=active]:text-white">
+                  강사
+                </TabsTrigger>
+                <TabsTrigger value="student" className="rounded-xl px-4 py-2 data-[state=active]:bg-[#001529] data-[state=active]:text-white">
+                  학생
+                </TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="manager" className="mt-6 space-y-3 text-base leading-relaxed text-[#001529]">
+                {managerGuide.map((line) => (
+                  <p key={line}>{line}</p>
+                ))}
+              </TabsContent>
+              <TabsContent value="teacher" className="mt-6 space-y-3 text-base leading-relaxed text-[#001529]">
+                {teacherGuide.map((line) => (
+                  <p key={line}>{line}</p>
+                ))}
+              </TabsContent>
+              <TabsContent value="student" className="mt-6 space-y-3 text-base leading-relaxed text-[#001529]">
+                {studentGuide.map((line) => (
+                  <p key={line}>{line}</p>
+                ))}
+              </TabsContent>
+            </Tabs>
+          </section>
+
+          <DocCard title="✍️ [강사 / 실장님 공통] 우리 반 아이들 및 학생 배정 관리">
+            {sharedGuide.map((line) => (
+              <p key={line}>{line}</p>
+            ))}
+          </DocCard>
+
+          <section className="rounded-[28px] border border-[#d9e2ec] bg-white p-8 shadow-[0_18px_40px_rgba(0,21,41,0.08)]">
+            <h2 className="text-2xl font-bold tracking-tight text-[#001529]">FAQ</h2>
+            <Accordion type="single" collapsible className="mt-6 w-full">
               {faqItems.map((item) => {
                 const Icon = item.icon;
                 return (
-                  <AccordionItem key={item.question} value={item.question} className="border-white/10">
-                    <AccordionTrigger className="gap-4 text-left text-base text-white hover:no-underline">
+                  <AccordionItem key={item.question} value={item.question} className="border-[#d9e2ec]">
+                    <AccordionTrigger className="gap-4 text-left text-base font-semibold text-[#001529] hover:no-underline">
                       <span className="flex items-center gap-3">
-                        <span className="rounded-full border border-[#D4AF37]/40 bg-[#D4AF37]/10 p-2 text-[#D4AF37]">
+                        <span className="rounded-full border border-[#d9e2ec] bg-[#f3f7fb] p-2 text-[#1890FF]">
                           <Icon className="h-4 w-4" />
                         </span>
                         <span>{item.question}</span>
                       </span>
                     </AccordionTrigger>
-                    <AccordionContent className="pl-14 text-base leading-relaxed text-slate-200">
+                    <AccordionContent className="pl-14 text-base leading-relaxed text-[#4b5b6a]">
                       {item.answer}
                     </AccordionContent>
                   </AccordionItem>
                 );
               })}
             </Accordion>
-          </div>
-        </div>
-      </section>
+          </section>
 
-      <footer className="border-t border-white/10 bg-[#001529] px-6 py-10 lg:px-10">
-        <div className="mx-auto max-w-6xl">
-          <p className="text-center text-sm leading-relaxed text-slate-200">
-            본 시스템은 '시험 날짜'를 기준으로 데이터를 관리하며, 반드시 Chrome 브라우저 최신 버전 사용을 권장합니다.
-          </p>
+          <section className="rounded-[28px] border border-[#d9e2ec] bg-[#001529] px-8 py-10 text-white shadow-[0_18px_40px_rgba(0,21,41,0.12)]">
+            <h2 className="text-2xl font-bold tracking-tight">지원 및 운영 안내</h2>
+            <p className="mt-4 text-base leading-relaxed text-slate-200">
+              Chrome 최신 버전 권장 및 시험 날짜 기반 관리 원칙을 준수해 주세요.
+            </p>
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+              <Button
+                asChild
+                size="lg"
+                className="bg-[#1890FF] text-white hover:bg-[#1677d9]"
+              >
+                <Link to="/login">데이터 리포트 로그인</Link>
+              </Button>
+              <Button
+                asChild
+                size="lg"
+                variant="outline"
+                className="border-white/20 bg-transparent text-white hover:bg-white/10"
+              >
+                <a href="http://pf.kakao.com/_Glxodn/chat" target="_blank" rel="noreferrer">
+                  이용 문의 및 장애 신고
+                </a>
+              </Button>
+            </div>
+          </section>
+        </main>
+      </div>
+
+      <footer className="border-t border-[#d9e2ec] bg-white px-6 py-8 lg:px-10">
+        <div className="mx-auto max-w-7xl text-sm leading-relaxed text-[#4b5b6a]">
+          Chrome 최신 버전 권장 · 시험 날짜 기반 관리
         </div>
       </footer>
     </div>
