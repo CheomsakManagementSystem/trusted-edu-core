@@ -133,6 +133,46 @@ const DataVisual = () => {
   );
 };
 
+const GrowthVisual = () => {
+  return (
+    <div className="relative h-full min-h-[320px] overflow-hidden rounded-[28px] border border-[#d9e2ec] bg-white">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(24,144,255,0.14),_transparent_20%),linear-gradient(180deg,_rgba(24,144,255,0.05),_rgba(255,255,255,0))]" />
+      <div className="absolute left-10 top-10 h-24 w-24 rounded-full bg-[#1890FF]/10 blur-3xl" />
+      <div className="absolute right-10 top-16 h-28 w-28 rounded-full bg-[#001529]/8 blur-3xl" />
+      <div className="relative p-8">
+        <div className="mb-8 grid grid-cols-4 gap-3">
+          {[36, 52, 71, 88].map((height, index) => (
+            <div key={height} className="rounded-2xl border border-[#d9e2ec] bg-[#f8fbff] p-3">
+              <div
+                className="w-full rounded-xl bg-gradient-to-t from-[#001529] via-[#1890FF] to-[#69c0ff]"
+                style={{ height }}
+              />
+              <div className="mt-3 h-2 rounded-full bg-[#001529]/10" />
+            </div>
+          ))}
+        </div>
+        <div className="rounded-[24px] border border-[#d9e2ec] bg-white p-5 shadow-sm">
+          <div className="flex items-end gap-3">
+            <div className="h-14 w-3 rounded-full bg-[#001529]" />
+            <div className="h-20 w-3 rounded-full bg-[#1890FF]" />
+            <div className="h-24 w-3 rounded-full bg-[#69c0ff]" />
+            <div className="h-28 w-3 rounded-full bg-[#1890FF]" />
+            <div className="h-32 w-3 rounded-full bg-[#001529]" />
+            <div className="ml-6 flex-1">
+              <div className="h-20 w-full rounded-[20px] border border-[#d9e2ec] bg-[linear-gradient(180deg,_rgba(24,144,255,0.12),_rgba(24,144,255,0.02))]" />
+            </div>
+          </div>
+          <div className="mt-4 grid grid-cols-3 gap-3">
+            <div className="h-12 rounded-2xl bg-[#1890FF]/10" />
+            <div className="h-12 rounded-2xl bg-[#001529]/8" />
+            <div className="h-12 rounded-2xl bg-[#69c0ff]/18" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const Landing = () => {
   return (
     <div className="min-h-screen bg-[#f4f8fb] text-[#001529]">
@@ -238,35 +278,29 @@ const Landing = () => {
           </div>
         </section>
 
-        <section className="animate-in fade-in-0 slide-in-from-bottom-4 duration-700 mt-8 rounded-[32px] border border-[#d9e2ec] bg-[#001529] p-8 text-white shadow-[0_18px_40px_rgba(0,21,41,0.12)]">
-          <div className="mb-8">
-            <h2 className="text-3xl font-bold tracking-tight">운영 핵심</h2>
-            <p className="mt-3 text-base leading-relaxed text-slate-200">
-              실명 가입 원칙, 비밀번호 분실 시 재가입(팀장 문의), 시험 날짜 기반 관리 원칙을 중심으로 시스템을 운영합니다.
-            </p>
-          </div>
-          <div className="grid gap-6 lg:grid-cols-3">
-            <div className="rounded-[24px] border border-white/10 bg-white/5 p-6">
-              <Chrome className="h-6 w-6 text-[#69c0ff]" />
-              <h3 className="mt-4 text-lg font-bold">크롬 권장</h3>
-              <p className="mt-2 text-sm leading-relaxed text-slate-200">
-                컴퓨터 로그인 기준으로 반드시 Google Chrome 최신 버전 사용을 권장합니다.
-              </p>
+        <section className="animate-in fade-in-0 slide-in-from-bottom-4 duration-700 mt-8 rounded-[32px] border border-[#d9e2ec] bg-white p-8 shadow-[0_18px_40px_rgba(0,21,41,0.08)]">
+          <div className="grid gap-8 lg:grid-cols-[1.05fr_0.95fr] lg:items-center">
+            <div>
+              <div className="inline-flex rounded-full border border-[#d9e2ec] bg-[#f3f7fb] px-4 py-1 text-xs font-semibold tracking-[0.2em] text-[#1890FF]">
+                VALUE INSIGHT
+              </div>
+              <h2 className="mt-5 text-3xl font-bold tracking-tight text-[#001529]">데이터가 증명하는 합격의 변화</h2>
+              <div className="mt-6 space-y-5">
+                <div className="rounded-[24px] border border-[#d9e2ec] bg-[#f9fbfd] p-6">
+                  <h3 className="text-lg font-bold text-[#001529]">성장 추적</h3>
+                  <p className="mt-3 text-base leading-relaxed text-[#4b5b6a]">
+                    단순한 점수 확인을 넘어, 첫 시험부터 지금까지 나의 논리력이 얼마나 성장했는지 그래프로 한눈에 확인합니다.
+                  </p>
+                </div>
+                <div className="rounded-[24px] border border-[#d9e2ec] bg-[#f9fbfd] p-6">
+                  <h3 className="text-lg font-bold text-[#001529]">정밀 진단</h3>
+                  <p className="mt-3 text-base leading-relaxed text-[#4b5b6a]">
+                    선생님의 꼼꼼한 빨간 펜 첨삭과 인공지능의 수치 분석이 만나, 내가 놓친 약점만 정확하게 골라냅니다.
+                  </p>
+                </div>
+              </div>
             </div>
-            <div className="rounded-[24px] border border-white/10 bg-white/5 p-6">
-              <User className="h-6 w-6 text-[#69c0ff]" />
-              <h3 className="mt-4 text-lg font-bold">실명 가입</h3>
-              <p className="mt-2 text-sm leading-relaxed text-slate-200">
-                학생과 강사 모두 학원에 등록된 실명으로 가입해야 데이터 누락을 막을 수 있습니다.
-              </p>
-            </div>
-            <div className="rounded-[24px] border border-white/10 bg-white/5 p-6">
-              <CalendarDays className="h-6 w-6 text-[#69c0ff]" />
-              <h3 className="mt-4 text-lg font-bold">4단계 리포트 등록</h3>
-              <p className="mt-2 text-sm leading-relaxed text-slate-200">
-                반 선택, 파일 등록, 내용 확인, 학생에게 발송 순서로 검수와 전송을 진행합니다.
-              </p>
-            </div>
+            <GrowthVisual />
           </div>
         </section>
 
