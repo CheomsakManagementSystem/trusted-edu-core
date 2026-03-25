@@ -31,7 +31,11 @@ const AppSidebar = () => {
         collapsed ? "w-16" : "w-56"
       }`}
     >
-      <div className="pointer-events-none flex items-center justify-center border-b border-sidebar-border px-3 py-3">
+      <div
+        className={`pointer-events-none border-b border-sidebar-border px-3 py-2 ${
+          collapsed ? "flex items-center justify-center" : "flex items-center justify-start"
+        }`}
+      >
         {!collapsed ? (
           <BrandLogo
             compact
@@ -47,7 +51,7 @@ const AppSidebar = () => {
         )}
       </div>
 
-      <nav className="relative z-10 flex-1 space-y-1 px-2 py-4">
+      <nav className="relative z-10 flex-1 space-y-1 px-2 py-2">
         {menuItems.map((item) => {
           const isActive = location.pathname === item.path;
           return (
