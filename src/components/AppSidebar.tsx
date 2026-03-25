@@ -32,33 +32,31 @@ const AppSidebar = () => {
       }`}
     >
       <div
-        className={`pointer-events-none border-b border-sidebar-border px-3 py-2 ${
-          collapsed ? "flex items-center justify-center" : "flex items-center justify-start"
-        }`}
+        className="pointer-events-none mb-5 flex h-24 items-center justify-center overflow-visible border-b border-sidebar-border px-3 py-0"
       >
         {!collapsed ? (
           <BrandLogo
             compact
             invertOnDark
-            className="pointer-events-auto max-w-full text-sidebar-primary-foreground"
+            className="pointer-events-auto flex items-center justify-center max-w-full text-sidebar-primary-foreground"
           />
         ) : (
           <BrandLogo
             iconOnly
             invertOnDark
-            className="pointer-events-auto text-sidebar-primary-foreground"
+            className="pointer-events-auto flex items-center justify-center text-sidebar-primary-foreground"
           />
         )}
       </div>
 
-      <nav className="relative z-10 flex-1 space-y-1 px-2 py-2">
+      <nav className="relative z-10 flex-1 space-y-1 px-2 pt-0 pb-2">
         {menuItems.map((item) => {
           const isActive = location.pathname === item.path;
           return (
             <Link
               key={`${item.path}-${item.label}`}
               to={item.path}
-              className={`flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition-colors ${
+              className={`flex cursor-pointer items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition-colors ${
                 isActive
                   ? "bg-sidebar-accent text-sidebar-accent-foreground"
                   : "text-sidebar-muted hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
