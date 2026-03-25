@@ -33,9 +33,9 @@ const AppSidebar = () => {
     >
       <div className="flex h-20 items-center justify-center border-b border-sidebar-border px-3">
         {!collapsed ? (
-          <BrandLogo compact className="max-w-full text-sidebar-primary-foreground" />
+          <BrandLogo compact invertOnDark className="max-w-full text-sidebar-primary-foreground" />
         ) : (
-          <BrandLogo iconOnly className="text-sidebar-primary-foreground" />
+          <BrandLogo iconOnly invertOnDark className="text-sidebar-primary-foreground" />
         )}
       </div>
 

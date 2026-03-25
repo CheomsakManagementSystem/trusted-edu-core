@@ -3,12 +3,14 @@ type BrandLogoProps = {
   iconOnly?: boolean;
   className?: string;
   showTagline?: boolean;
+  invertOnDark?: boolean;
 };
 
 const BrandLogo = ({
   compact = false,
   iconOnly = false,
   className = "",
+  invertOnDark = false,
 }: BrandLogoProps) => {
   const sizeClass = iconOnly
     ? "w-10"
@@ -21,7 +23,7 @@ const BrandLogo = ({
       <img
         src="/brand-logo.png"
         alt="김윤환입시연구소"
-        className={`${sizeClass} h-auto shrink-0`}
+        className={`${sizeClass} h-auto shrink-0 ${invertOnDark ? "brightness-0 invert" : ""}`}
         draggable="false"
       />
     </div>
