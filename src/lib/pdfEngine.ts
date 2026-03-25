@@ -39,6 +39,9 @@ export interface ReportRecord {
   studentId: string;
   studentName: string;
   score: number;
+  examDate: string;
+  examLabel?: string | null;
+  testDate?: string | null;
   fileUrl?: string;
   fileName: string;
   createdAt: Timestamp | null;
@@ -77,6 +80,74 @@ export interface UploadBatchResult {
   failureCount: number;
   failures: UploadFailure[];
 }
+
+const normalizeDateString = (value: string | null | undefined): string | null => {
+  if (!value) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  const direct = trimmed.match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+  if (direct) {
+    const [, year, month, day] = direct;
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  }
+
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  const year = parsed.getFullYear();
+  const month = `${parsed.getMonth() + 1}`.padStart(2, "0");
+  const day = `${parsed.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+export const formatExamDateShort = (value: string | null | undefined, fallback = "-"): string => {
+  const normalized = normalizeDateString(value);
+  if (!normalized) {
+    return fallback;
+  }
+
+  const [, month, day] = normalized.split("-");
+  return `${month}.${day}`;
+};
+
+export const formatExamDate = (value: string | null | undefined, fallback = "날짜 정보 없음"): string => {
+  const normalized = normalizeDateString(value);
+  if (!normalized) {
+    return fallback;
+  }
+
+  const [year, month, day] = normalized.split("-");
+  return `${year}.${month}.${day}`;
+};
+
+const getReportSortTimestamp = (report: Pick<ReportRecord, "examDate" | "testDate" | "createdAt" | "writtenAt">) => {
+  const normalized =
+    normalizeDateString(report.examDate) ??
+    normalizeDateString(report.testDate) ??
+    normalizeDateString(report.writtenAt);
+  if (normalized) {
+    return new Date(`${normalized}T00:00:00`).getTime();
+  }
+  return report.createdAt?.toMillis() ?? 0;
+};
+
+const hydrateReportRecord = (
+  id: string,
+  data: Omit<ReportRecord, "id" | "examDate"> & { examDate?: string | null },
+): ReportRecord => ({
+  id,
+  ...data,
+  examDate:
+    normalizeDateString(data.examDate) ??
+    normalizeDateString(data.testDate) ??
+    normalizeDateString(data.writtenAt) ??
+    "",
+  examLabel: data.examLabel?.trim() || null,
+});
 
 export const parseReportFileName = (fileName: string): ParsedPdfMeta | null => {
   const baseName = fileName.replace(/\.pdf$/i, "");
@@ -247,24 +318,16 @@ export const fetchReportsByStudentId = async (
       ),
     );
 
-    return snapshot.docs.map((doc) => {
-      const data = doc.data() as Omit<ReportRecord, "id">;
-      return { id: doc.id, ...data };
-    });
+    return snapshot.docs
+      .map((doc) => hydrateReportRecord(doc.id, doc.data() as Omit<ReportRecord, "id">))
+      .sort((a, b) => getReportSortTimestamp(a) - getReportSortTimestamp(b));
   } catch {
     const snapshot = await getDocs(
       query(reportsRef, where("studentId", "==", studentId)),
     );
 
     return snapshot.docs
-      .map((doc) => {
-        const data = doc.data() as Omit<ReportRecord, "id">;
-        return { id: doc.id, ...data };
-      })
-      .sort((a, b) => {
-        const aMs = a.createdAt?.toMillis() ?? 0;
-        const bMs = b.createdAt?.toMillis() ?? 0;
-        return bMs - aMs;
-      });
+      .map((doc) => hydrateReportRecord(doc.id, doc.data() as Omit<ReportRecord, "id">))
+      .sort((a, b) => getReportSortTimestamp(a) - getReportSortTimestamp(b));
   }
 };

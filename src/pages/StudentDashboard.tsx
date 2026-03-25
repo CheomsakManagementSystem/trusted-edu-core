@@ -4,6 +4,8 @@ import { useAuth } from "@/contexts/AuthContext";
 import { auth } from "@/lib/firebase";
 import {
   fetchReportsByStudentId,
+  formatExamDate,
+  formatExamDateShort,
   type ReportRecord,
 } from "@/lib/pdfEngine";
 import {
@@ -117,19 +119,18 @@ const StudentDashboard = () => {
   const chartData = useMemo(
     () =>
       [...reports]
-        .reverse()
         .map((report) => ({
-          date: report.createdAt
-            ? report.createdAt.toDate().toLocaleDateString("ko-KR")
-            : "-",
-          score: report.score,
+          date: formatExamDateShort(report.examDate),
+          score: report.totalScore ?? report.score,
         })),
     [reports],
   );
 
+  const recentReports = useMemo(() => [...reports].reverse(), [reports]);
+
   const selectedReport = useMemo(
-    () => reports.find((report) => report.id === selectedReportId) ?? reports[0] ?? null,
-    [reports, selectedReportId],
+    () => recentReports.find((report) => report.id === selectedReportId) ?? recentReports[0] ?? null,
+    [recentReports, selectedReportId],
   );
 
   useEffect(() => {
@@ -137,9 +138,9 @@ const StudentDashboard = () => {
       if (reports.some((report) => report.id === prev)) {
         return prev;
       }
-      return reports[0]?.id ?? "";
+      return recentReports[0]?.id ?? "";
     });
-  }, [reports]);
+  }, [recentReports, reports]);
 
   const radarData = useMemo(() => {
     if (!selectedReport) {
@@ -306,13 +307,13 @@ const StudentDashboard = () => {
           </div>
           {chartData.length === 0 && (
             <p className="mt-2 text-sm text-muted-foreground">
-              표시할 데이터가 없습니다.
+              해당 기간에 등록된 리포트가 없습니다.
             </p>
           )}
         </div>
 
         <div className="rounded-lg border border-border bg-card p-3 shadow-card md:p-5">
-          <h3 className="mb-3 text-sm font-semibold text-card-foreground">리포트 회차 선택</h3>
+          <h3 className="mb-3 text-sm font-semibold text-card-foreground">리포트 선택</h3>
 
           {loading && (
             <p className="text-sm text-muted-foreground">리포트를 불러오는 중입니다...</p>
@@ -334,7 +335,7 @@ const StudentDashboard = () => {
 
           {!loading && !error && reports.length > 0 && (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              {reports.map((report) => (
+              {recentReports.map((report) => (
                 <button
                   key={report.id}
                   type="button"
@@ -348,12 +349,10 @@ const StudentDashboard = () => {
                   <div className="flex items-start justify-between gap-1.5 sm:gap-2">
                     <div>
                       <p className="line-clamp-2 break-all text-sm font-semibold text-card-foreground">
-                        {report.essayTopic?.trim() || report.fileName}
+                        [{formatExamDate(report.examDate)}] 논술 성적 리포트
                       </p>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        {report.createdAt
-                          ? report.createdAt.toDate().toLocaleString("ko-KR")
-                          : "날짜 정보 없음"}
+                        {report.examLabel?.trim() || report.essayTopic?.trim() || "시험 정보 없음"}
                       </p>
                     </div>
                     <span className="rounded-full bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">

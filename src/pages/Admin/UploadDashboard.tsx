@@ -32,6 +32,7 @@ import { useToast } from "@/hooks/use-toast";
 import { CheckCircle2, Calendar as CalendarIcon, Circle, Loader2, Pencil, Trash2 } from "lucide-react";
 import {
   assignPendingReportToStudent,
+  compareReportsByExamDateDesc,
   deletePublishedReport,
   deleteReportRecord,
   fetchClasses,
@@ -39,7 +40,8 @@ import {
   fetchPublishedReports,
   fetchReportsByClassId,
   fetchStudents,
-  getReportSortTimestamp,
+  formatExamDate,
+  getReportExamTitle,
   normalizeDateString,
   prepareUploadCandidates,
   publishReportBatch,
@@ -100,8 +102,8 @@ const UploadDashboard = () => {
   const [publishedReports, setPublishedReports] = useState<ReportRecord[]>([]);
   const [pendingReports, setPendingReports] = useState<ReportRecord[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string>("none");
-  const [selectedRound, setSelectedRound] = useState<string>("none");
-  const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(() => new Date());
+  const [selectedExamLabel, setSelectedExamLabel] = useState("");
   const [rows, setRows] = useState<UploadCandidate[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -115,7 +117,6 @@ const UploadDashboard = () => {
   const [manualMatchTargetId, setManualMatchTargetId] = useState<string | null>(null);
   const [archiveClassFilter, setArchiveClassFilter] = useState<string>("all");
   const [archiveStudentFilter, setArchiveStudentFilter] = useState("");
-  const [archiveRoundFilter, setArchiveRoundFilter] = useState<string>("all");
   const [archiveReadFilter, setArchiveReadFilter] = useState<string>("all");
   const [cleanupSearch, setCleanupSearch] = useState("");
   const [pendingMatchTarget, setPendingMatchTarget] = useState<ReportRecord | null>(null);
@@ -229,7 +230,7 @@ const UploadDashboard = () => {
     setPendingSelectedStudent({});
     setManualMatchTargetId(null);
     setMessage("");
-  }, [selectedClassId, selectedRound, selectedDateText]);
+  }, [selectedClassId, selectedDateText, selectedExamLabel]);
 
   const parseAndAppendFiles = async (files: File[]) => {
     if (files.length === 0) {
@@ -241,8 +242,8 @@ const UploadDashboard = () => {
       return;
     }
 
-    if (selectedRound === "none" || !selectedDateText) {
-      setMessage("회차와 날짜를 먼저 선택해주세요.");
+    if (!selectedDateText) {
+      setMessage("시험 날짜를 먼저 선택해주세요.");
       return;
     }
 
@@ -250,17 +251,31 @@ const UploadDashboard = () => {
     setMessage("");
 
     try {
-      const roundNumber = Number(selectedRound);
-      const roundLabel = `${selectedRound}회차`;
-
-      const duplicateRoundExists = classReports.some(
+      const normalizedExamLabel = selectedExamLabel.trim().toLowerCase();
+      const sameDateReports = classReports.filter(
         (report) =>
-          (report.testRound === roundLabel || report.testSession === roundNumber) &&
+          normalizeDateString(report.examDate) === selectedDateText &&
           report.assignmentStatus === "completed",
       );
 
-      if (duplicateRoundExists) {
-        const message = "이미 해당 회차의 성적이 등록되어 있습니다";
+      if (sameDateReports.length > 0 && !normalizedExamLabel) {
+        const message = "같은 날짜의 시험이 이미 있어 오전/오후 또는 시험 명칭을 입력해야 합니다";
+        setMessage(message);
+        toast({
+          variant: "destructive",
+          title: "시험 구분 입력 필요",
+          description: message,
+        });
+        setLoading(false);
+        return;
+      }
+
+      const duplicateExists = sameDateReports.some(
+        (report) => (report.examLabel?.trim().toLowerCase() ?? "") === normalizedExamLabel,
+      );
+
+      if (duplicateExists) {
+        const message = "이미 같은 날짜와 시험 구분의 성적이 등록되어 있습니다";
         setMessage(message);
         toast({
           variant: "destructive",
@@ -426,42 +441,16 @@ const UploadDashboard = () => {
     () =>
       pendingReports
         .filter((report) => !report.studentId && !report.studentUid)
-        .sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0)),
+        .sort(compareReportsByExamDateDesc),
     [pendingReports],
   );
   const manualMatchTarget = useMemo(
     () => rows.find((row) => row.id === manualMatchTargetId) ?? null,
     [manualMatchTargetId, rows],
   );
-  const roundByReportId = useMemo(() => {
-    const groups = new Map<string, ReportRecord[]>();
-    const map = new Map<string, number>();
-    publishedReports.forEach((report) => {
-      if (Number.isFinite(report.testSession)) {
-        map.set(report.id, Number(report.testSession));
-        return;
-      }
-      const key = report.studentUid || report.studentName || report.sourceName || report.id;
-      const list = groups.get(key) ?? [];
-      list.push(report);
-      groups.set(key, list);
-    });
-
-    groups.forEach((list) => {
-      const sorted = [...list].sort((a, b) => getReportSortTimestamp(b) - getReportSortTimestamp(a));
-      sorted.forEach((report, index) => {
-        map.set(report.id, sorted.length - index);
-      });
-    });
-    return map;
-  }, [publishedReports]);
-  const archiveRounds = useMemo(
-    () => Array.from(new Set(Array.from(roundByReportId.values()))).sort((a, b) => a - b),
-    [roundByReportId],
-  );
   const filteredPublishedReports = useMemo(() => {
     return [...publishedReports]
-      .sort((a, b) => getReportSortTimestamp(b) - getReportSortTimestamp(a))
+      .sort(compareReportsByExamDateDesc)
       .filter((report) => {
         if (archiveClassFilter !== "all" && report.classId !== archiveClassFilter) {
           return false;
@@ -473,12 +462,6 @@ const UploadDashboard = () => {
             return false;
           }
         }
-        if (archiveRoundFilter !== "all") {
-          const round = roundByReportId.get(report.id) ?? 0;
-          if (String(round) !== archiveRoundFilter) {
-            return false;
-          }
-        }
         if (archiveReadFilter === "read" && !report.isRead) {
           return false;
         }
@@ -487,7 +470,7 @@ const UploadDashboard = () => {
         }
         return true;
       });
-  }, [archiveClassFilter, archiveReadFilter, archiveRoundFilter, archiveStudentFilter, publishedReports, roundByReportId]);
+  }, [archiveClassFilter, archiveReadFilter, archiveStudentFilter, publishedReports]);
 
   const filteredCleanupPendingReports = useMemo(() => {
     const keyword = cleanupSearch.trim().toLowerCase();
@@ -530,12 +513,12 @@ const UploadDashboard = () => {
       return;
     }
 
-    if (selectedRound === "none" || !selectedDateText) {
-      setMessage("회차와 날짜를 먼저 선택해주세요.");
+    if (!selectedDateText) {
+      setMessage("시험 날짜를 먼저 선택해주세요.");
       toast({
         variant: "destructive",
-        title: "회차/날짜 선택 필요",
-        description: "반, 회차, 날짜를 모두 선택한 뒤 업로드를 진행해주세요.",
+        title: "시험 날짜 선택 필요",
+        description: "반과 시험 날짜를 모두 선택한 뒤 업로드를 진행해주세요.",
       });
       return;
     }
@@ -565,8 +548,8 @@ const UploadDashboard = () => {
       const result = await publishReportBatch(
         rows,
         selectedClass,
-        Number(selectedRound),
         selectedDateText,
+        selectedExamLabel,
         students,
         user.uid,
         setProgress,
@@ -986,23 +969,6 @@ const UploadDashboard = () => {
             </div>
 
             <div className="space-y-2">
-              <p className="text-xs text-muted-foreground">2단계: 회차 선택</p>
-              <Select value={selectedRound} onValueChange={setSelectedRound}>
-                <SelectTrigger>
-                  <SelectValue placeholder="회차 선택" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">회차 선택</SelectItem>
-                  {Array.from({ length: 10 }, (_, index) => index + 1).map((round) => (
-                    <SelectItem key={round} value={String(round)}>
-                      {round}회차
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
               <p className="text-xs text-muted-foreground">2단계: 시험 날짜</p>
               <Popover>
                 <PopoverTrigger asChild>
@@ -1026,12 +992,21 @@ const UploadDashboard = () => {
               </Popover>
             </div>
 
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">2단계: 시험 구분</p>
+              <Input
+                value={selectedExamLabel}
+                onChange={(event) => setSelectedExamLabel(event.target.value)}
+                placeholder="오전 / 오후 / 모의논술 A"
+              />
+            </div>
+
             <div className="space-y-2 md:col-span-2">
               <p className="text-xs text-muted-foreground">3단계: 파일 등록</p>
               <div
                 onDragOver={(event) => {
                   event.preventDefault();
-                  if (!selectedClass || selectedRound === "none" || !selectedDateText) {
+                  if (!selectedClass || !selectedDateText) {
                     return;
                   }
                   setIsDragging(true);
@@ -1039,7 +1014,7 @@ const UploadDashboard = () => {
                 onDragLeave={() => setIsDragging(false)}
                 onDrop={handleDrop}
                 className={`flex min-h-28 items-center justify-center rounded-md border-2 border-dashed px-4 text-sm transition-colors ${
-                  !selectedClass || selectedRound === "none" || !selectedDateText
+                  !selectedClass || !selectedDateText
                     ? "cursor-not-allowed border-muted-foreground/20 bg-muted/30 text-muted-foreground"
                     : isDragging
                       ? "border-primary bg-primary/5"
@@ -1048,8 +1023,8 @@ const UploadDashboard = () => {
               >
                 <div className="text-center">
                   <p className="text-card-foreground">
-                    {!selectedClass || selectedRound === "none" || !selectedDateText
-                      ? "1단계와 2단계를 완료하면 PDF 업로드가 활성화됩니다"
+                    {!selectedClass || !selectedDateText
+                      ? "반과 시험 날짜를 선택하면 PDF 업로드가 활성화됩니다"
                       : "PDF 파일을 여기로 끌어오세요"}
                   </p>
                   <Button
@@ -1058,7 +1033,7 @@ const UploadDashboard = () => {
                     variant="outline"
                     className="mt-3"
                     onClick={() => fileInputRef.current?.click()}
-                    disabled={!selectedClass || selectedRound === "none" || !selectedDateText || loading || uploading}
+                    disabled={!selectedClass || !selectedDateText || loading || uploading}
                   >
                     PDF 업로드
                   </Button>
@@ -1070,7 +1045,7 @@ const UploadDashboard = () => {
                 accept=".pdf,application/pdf"
                 multiple
                 className="hidden"
-                disabled={!selectedClass || selectedRound === "none" || !selectedDateText || loading || uploading}
+                disabled={!selectedClass || !selectedDateText || loading || uploading}
                 onChange={(event) => parseAndAppendFiles(Array.from(event.target.files ?? []))}
               />
             </div>
@@ -1092,9 +1067,9 @@ const UploadDashboard = () => {
               반을 먼저 선택해주세요
             </p>
           )}
-          {selectedClass && (selectedRound === "none" || !selectedDateText) && (
+          {selectedClass && !selectedDateText && (
             <p className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-              반, 회차, 날짜를 모두 선택해야 PDF 업로드를 시작할 수 있습니다.
+              반과 시험 날짜를 모두 선택해야 PDF 업로드를 시작할 수 있습니다.
             </p>
           )}
 
@@ -1269,7 +1244,6 @@ const UploadDashboard = () => {
                 uploading ||
                 loading ||
                 !selectedClass ||
-                selectedRound === "none" ||
                 !selectedDateText ||
                 rows.length === 0 ||
                 hasAnyInvalidRow
@@ -1306,17 +1280,17 @@ const UploadDashboard = () => {
             </div>
           </div>
           <div className="space-y-2">
-            {classReports.slice(0, 20).map((report) => (
+            {[...classReports].sort(compareReportsByExamDateDesc).slice(0, 20).map((report) => (
               <div
                 key={report.id}
                 className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2"
               >
                 <div>
                   <p className="text-sm font-medium text-card-foreground">
-                    {formatReportStudentLabel(report)} | {report.essayTopic || "기록 없음"}
+                    {formatReportStudentLabel(report)} | {getReportExamTitle(report)}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    총점 {report.totalScore} / 등급 {report.grade || "기록 없음"}
+                    총점 {report.totalScore} / 등급 {report.grade || "기록 없음"} / 시험일 {formatExamDate(report.examDate)}
                   </p>
                 </div>
                 <span
@@ -1342,7 +1316,7 @@ const UploadDashboard = () => {
             <p className="text-xs text-muted-foreground">총 {filteredPublishedReports.length}건</p>
           </div>
 
-          <div className="mb-4 grid grid-cols-1 gap-2 md:grid-cols-4">
+          <div className="mb-4 grid grid-cols-1 gap-2 md:grid-cols-3">
             <Select value={archiveClassFilter} onValueChange={setArchiveClassFilter}>
               <SelectTrigger>
                 <SelectValue placeholder="반 필터" />
@@ -1361,19 +1335,6 @@ const UploadDashboard = () => {
               onChange={(event) => setArchiveStudentFilter(event.target.value)}
               placeholder="학생/파일명 검색"
             />
-            <Select value={archiveRoundFilter} onValueChange={setArchiveRoundFilter}>
-              <SelectTrigger>
-                <SelectValue placeholder="회차 필터" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">전체 회차</SelectItem>
-                {archiveRounds.map((round) => (
-                  <SelectItem key={round} value={String(round)}>
-                    회차 {round}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
             <Select value={archiveReadFilter} onValueChange={setArchiveReadFilter}>
               <SelectTrigger>
                 <SelectValue placeholder="읽음 상태" />
@@ -1388,16 +1349,15 @@ const UploadDashboard = () => {
 
           <div className="max-h-[400px] space-y-2 overflow-y-auto pr-1">
             {filteredPublishedReports.map((report) => {
-              const round = roundByReportId.get(report.id) ?? 1;
               return (
                 <div
                   key={report.id}
                   className="grid grid-cols-1 gap-2 rounded-lg border border-border bg-background px-3 py-2.5 md:grid-cols-[1.2fr_1fr_0.7fr_0.7fr_auto]"
                 >
                   <div>
-                    <p className="truncate text-sm font-semibold text-card-foreground">{report.fileName || "기록 없음"}</p>
+                    <p className="truncate text-sm font-semibold text-card-foreground">{getReportExamTitle(report)}</p>
                     <p className="text-xs text-muted-foreground">
-                      학생 {formatReportStudentLabel(report)} | 반 {report.className || "기록 없음"} | 회차 {round}
+                      학생 {formatReportStudentLabel(report)} | 반 {report.className || "기록 없음"} | 시험일 {formatExamDate(report.examDate)}
                     </p>
                   </div>
                   <div className="text-xs text-muted-foreground">
@@ -1413,10 +1373,7 @@ const UploadDashboard = () => {
                     <span>{report.isRead ? "읽음" : "읽지 않음"}</span>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    배포일{" "}
-                    {report.createdAt
-                      ? report.createdAt.toDate().toLocaleDateString("ko-KR")
-                      : "기록 없음"}
+                    {report.examLabel?.trim() ? `시험 구분 ${report.examLabel.trim()}` : "시험 구분 없음"}
                   </p>
                   <div className="flex gap-2">
                     <Button type="button" size="sm" variant="outline" onClick={() => openEditModal(report)}>

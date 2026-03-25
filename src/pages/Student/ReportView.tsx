@@ -13,9 +13,13 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
+  compareReportsByExamDateAsc,
+  compareReportsByExamDateDesc,
   fetchClasses,
-  formatSessionLabel,
-  getReportSortTimestamp,
+  formatExamDate,
+  formatExamDateShort,
+  getReportExamTitle,
+  hydrateReportRecord,
   submitClassJoinRequest,
   type ClassLite,
   type ReportRecord,
@@ -117,12 +121,9 @@ const ReportView = () => {
 
     const toRows = (docs: Array<{ id: string; data: () => unknown }>): ReportRecord[] =>
       docs
-        .map((docSnap) => {
-          const data = docSnap.data() as Omit<ReportRecord, "id">;
-          return { id: docSnap.id, ...data, isRead: Boolean(data.isRead) };
-        })
+        .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
         .filter((row) => row.assignmentStatus !== "duplicate_pending" && row.assignmentStatus !== "unassigned_pending")
-        .sort((a, b) => getReportSortTimestamp(b) - getReportSortTimestamp(a));
+        .sort(compareReportsByExamDateAsc);
 
     const reportsRef = collection(db, "reports");
     const primaryQuery = query(reportsRef, where("studentUid", "==", user.uid), orderBy("createdAt", "desc"));
@@ -137,7 +138,7 @@ const ReportView = () => {
           if (ownRecords.some((report) => report.id === prev)) {
             return prev;
           }
-          return ownRecords[0]?.id ?? "";
+          return [...ownRecords].sort(compareReportsByExamDateDesc)[0]?.id ?? "";
         });
         setLoading(false);
       },
@@ -152,7 +153,7 @@ const ReportView = () => {
               if (ownRecords.some((report) => report.id === prev)) {
                 return prev;
               }
-              return ownRecords[0]?.id ?? "";
+              return [...ownRecords].sort(compareReportsByExamDateDesc)[0]?.id ?? "";
             });
             setLoading(false);
           },
@@ -193,14 +194,19 @@ const ReportView = () => {
   }, [user?.uid]);
 
   const studentReports = useMemo(
-    () => reports.filter((report) => report.studentUid === user?.uid),
+    () => reports.filter((report) => report.studentUid === user?.uid).sort(compareReportsByExamDateAsc),
     [reports, user?.uid],
+  );
+
+  const recentStudentReports = useMemo(
+    () => [...studentReports].sort(compareReportsByExamDateDesc),
+    [studentReports],
   );
 
   const selectedReport = useMemo(
     () =>
-      studentReports.find((report) => report.id === selectedReportId) ?? studentReports[0] ?? null,
-    [studentReports, selectedReportId],
+      recentStudentReports.find((report) => report.id === selectedReportId) ?? recentStudentReports[0] ?? null,
+    [recentStudentReports, selectedReportId],
   );
 
   const radarData = useMemo(() => {
@@ -240,12 +246,9 @@ const ReportView = () => {
   const trendData = useMemo(
     () =>
       [...studentReports]
-        .sort((a, b) => getReportSortTimestamp(a) - getReportSortTimestamp(b))
-        .map((report, index) => ({
-          round:
-            Number.isFinite(report.testSession)
-              ? `${report.testSession}회차`
-              : `회차 ${index + 1}`,
+        .sort(compareReportsByExamDateAsc)
+        .map((report) => ({
+          examDateLabel: formatExamDateShort(report.examDate),
           score: report.totalScore,
           reportId: report.id,
         })),
@@ -445,18 +448,15 @@ const ReportView = () => {
           <div className="space-y-6">
             <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <h3 className="text-base font-semibold text-slate-900 md:text-sm">리포트 회차 선택</h3>
+                <h3 className="text-base font-semibold text-slate-900 md:text-sm">리포트 선택</h3>
                 <Select value={selectedReportId} onValueChange={setSelectedReportId}>
                   <SelectTrigger className="w-full border-slate-200 sm:w-72">
-                    <SelectValue placeholder="회차 선택" />
+                    <SelectValue placeholder="리포트 선택" />
                   </SelectTrigger>
                   <SelectContent className="rounded-t-2xl rounded-b-xl md:rounded-md">
-                    {studentReports.map((report, index) => (
+                    {recentStudentReports.map((report) => (
                       <SelectItem key={report.id} value={report.id}>
-                        {report.testSession && report.testDate
-                          ? formatSessionLabel(report.testSession, report.testDate)
-                          : `회차 ${studentReports.length - index}`}{" "}
-                        | {report.essayTopic || "기록 없음"}
+                        {getReportExamTitle(report)}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -593,13 +593,13 @@ const ReportView = () => {
 
             <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
               <div className="order-1 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:order-2 md:p-5">
-                <h3 className="mb-3 text-lg font-semibold text-slate-900 md:text-base">회차별 점수 변화 그래프</h3>
+                <h3 className="mb-3 text-lg font-semibold text-slate-900 md:text-base">날짜별 점수 변화 그래프</h3>
                 <div className="h-64 sm:h-72">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={trendData}>
                       <CartesianGrid strokeDasharray="3 3" stroke={chartGridColor} />
                       <XAxis
-                        dataKey="round"
+                        dataKey="examDateLabel"
                         tick={{ fontSize: isMobile ? 11 : 12, fill: chartAxisColor }}
                         angle={isMobile ? -18 : 0}
                         textAnchor={isMobile ? "end" : "middle"}
@@ -634,7 +634,7 @@ const ReportView = () => {
               <div className="order-2 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:order-1 md:p-5">
                 <h3 className="mb-3 text-lg font-semibold text-slate-900 md:text-base">리포트 목록</h3>
                 <div className="space-y-3">
-                  {studentReports.map((report, index) => (
+                  {recentStudentReports.map((report) => (
                     <button
                       key={report.id}
                       type="button"
@@ -648,14 +648,15 @@ const ReportView = () => {
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <p className="text-xl font-bold tracking-tight text-slate-900 md:text-lg">
-                            회차 {studentReports.length - index} / {report.essayTopic || "기록 없음"}
+                            {getReportExamTitle(report)}
                           </p>
                           <p className="mt-2 text-sm text-slate-600 md:text-base">
                             총점 {report.totalScore} | 등급 {report.grade || "기록 없음"} | 날짜{" "}
-                            {report.createdAt
-                              ? report.createdAt.toDate().toLocaleDateString("ko-KR")
-                              : "기록 없음"}
+                            {formatExamDate(report.examDate)}
                           </p>
+                          {report.examLabel?.trim() && (
+                            <p className="mt-1 text-xs text-slate-500">구분 {report.examLabel.trim()}</p>
+                          )}
                         </div>
                         <span className="rounded-xl bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700">
                           읽음

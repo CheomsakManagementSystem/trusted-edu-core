@@ -13,7 +13,13 @@ import {
 } from "@/components/ui/select";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import { fetchReportsByStudentUid, type ReportRecord } from "@/lib/pdfProcessor";
+import {
+  compareReportsByExamDateDesc,
+  fetchReportsByStudentUid,
+  formatExamDate,
+  getReportExamTitle,
+  type ReportRecord,
+} from "@/lib/pdfProcessor";
 import { normalizeRole } from "@/lib/authz";
 import {
   clearClientSession,
@@ -74,8 +80,6 @@ const reportTotal = (report: ReportRecord): number | null => {
   return partial.reduce((sum, value) => sum + value, 0);
 };
 
-const getTimestampMs = (report: ReportRecord) => report.createdAt?.toMillis() ?? 0;
-
 const avg = (rows: number[]) => {
   if (!rows.length) {
     return null;
@@ -84,20 +88,7 @@ const avg = (rows: number[]) => {
 };
 
 const formatDate = (report: ReportRecord): string => {
-  const dateMs = getTimestampMs(report);
-  if (dateMs) {
-    const date = new Date(dateMs);
-    const y = date.getFullYear();
-    const m = `${date.getMonth() + 1}`.padStart(2, "0");
-    const d = `${date.getDate()}`.padStart(2, "0");
-    return `${y}.${m}.${d}`;
-  }
-
-  if (report.writtenAt?.trim()) {
-    return report.writtenAt.trim();
-  }
-
-  return "날짜 정보 없음";
+  return formatExamDate(report.examDate);
 };
 
 const MasterAdminPage = () => {
@@ -277,7 +268,7 @@ const MasterAdminPage = () => {
 
     try {
       const reports = await fetchReportsByStudentUid(analysisStudentUid);
-      const sorted = [...reports].sort((a, b) => getTimestampMs(a) - getTimestampMs(b));
+      const sorted = [...reports].sort(compareReportsByExamDateDesc);
       setAnalysisReports(sorted);
 
       const messages: string[] = [];
@@ -294,7 +285,7 @@ const MasterAdminPage = () => {
         }
       }
 
-      const latest = sorted[sorted.length - 1];
+      const latest = sorted[0];
       if (latest?.scores) {
         scoreMetrics.forEach((metric) => {
           const latestScore = safeNumber(latest.scores?.[metric.key]);
@@ -548,17 +539,20 @@ const MasterAdminPage = () => {
             <div className="mt-4 space-y-3">
               {analysisReports.map((report, index) => {
                 const total = reportTotal(report);
-                const round = index + 1;
                 const opened = Boolean(openReportIds[report.id]);
                 return (
                   <div key={report.id} className="rounded-lg border border-border bg-background p-4">
                     <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                       <div className="space-y-1">
                         <p className="text-sm font-semibold text-card-foreground">
-                          {round}회차 - {formatDate(report)}
+                          {getReportExamTitle(report)}
                         </p>
                         <p className="text-sm text-card-foreground">
                           획득 점수: {total !== null ? `${total}점 / 100점` : "점수 정보 없음"}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          시험일: {formatDate(report)}
+                          {report.examLabel?.trim() ? ` / 시험 구분: ${report.examLabel.trim()}` : ""}
                         </p>
                         <p className="text-sm text-card-foreground">
                           강사 총평: {report.feedback?.trim() || "총평 없음"}
