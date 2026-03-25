@@ -83,12 +83,7 @@ export type ReportRecord = {
   uid: string;
   classId: string | null;
   className: string | null;
-  sessionId?: string | null;
-  testSession?: number | null;
-  testRound?: string | null;
-  testDate?: string | null;
   examDate: string;
-  examLabel?: string | null;
   fileHash?: string | null;
   studentUid: string | null;
   studentId: string | null;
@@ -235,11 +230,10 @@ export const formatExamDateShort = (value: string | null | undefined, fallback =
 };
 
 export const getReportSortTimestamp = (
-  report: Pick<ReportRecord, "examDate" | "testDate" | "writtenAt" | "createdAt">,
+  report: Pick<ReportRecord, "examDate" | "writtenAt" | "createdAt">,
 ) => {
   const normalized =
     normalizeDateString(report.examDate) ??
-    normalizeDateString(report.testDate) ??
     normalizeDateString(report.writtenAt);
   if (normalized) {
     return new Date(`${normalized}T00:00:00`).getTime();
@@ -247,24 +241,21 @@ export const getReportSortTimestamp = (
   return report.createdAt?.toMillis() ?? 0;
 };
 
-export const compareReportsByExamDateAsc = (a: ReportRecord, b: ReportRecord) =>
-  getReportSortTimestamp(a) - getReportSortTimestamp(b);
-
 export const compareReportsByExamDateDesc = (a: ReportRecord, b: ReportRecord) =>
   getReportSortTimestamp(b) - getReportSortTimestamp(a);
 
-export const getReportExamTitle = (report: Pick<ReportRecord, "examDate" | "examLabel">) => {
-  const base = `[${formatExamDate(report.examDate)}] 논술 성적 리포트`;
-  return report.examLabel?.trim() ? `${base} (${report.examLabel.trim()})` : base;
-};
+export const getReportExamTitle = (report: Pick<ReportRecord, "examDate">) =>
+  `[${formatExamDate(report.examDate)}] 논술 리포트`;
 
 export const hydrateReportRecord = (
   id: string,
-  data: Omit<ReportRecord, "id" | "examDate"> & { examDate?: string | null },
+  data: Omit<ReportRecord, "id" | "examDate"> & Record<string, unknown> & { examDate?: string | null },
 ): ReportRecord => {
+  const legacyTestDate =
+    typeof data.testDate === "string" || data.testDate === null ? data.testDate : undefined;
   const examDate =
     normalizeDateString(data.examDate) ??
-    normalizeDateString(data.testDate) ??
+    normalizeDateString(legacyTestDate) ??
     normalizeDateString(data.writtenAt) ??
     "";
 
@@ -272,7 +263,6 @@ export const hydrateReportRecord = (
     id,
     ...data,
     examDate,
-    examLabel: data.examLabel?.trim() || null,
     isRead: Boolean(data.isRead),
   };
 };
@@ -1243,7 +1233,6 @@ export const publishReportBatch = async (
   uploadRows: UploadCandidate[],
   selectedClass: ClassLite,
   examDate: string,
-  examLabel: string,
   allStudents: StudentLite[],
   uid: string,
   onOverallProgress?: (progress: number) => void,
@@ -1314,14 +1303,7 @@ export const publishReportBatch = async (
         uid,
         classId: selectedClass.id,
         className: selectedClass.name,
-        sessionId: null,
-        testSession: null,
-        testRound: null,
-        testDate: examDate,
         examDate,
-        examLabel: examLabel.trim() || null,
-        test_session: null,
-        test_date: examDate,
         fileHash: row.fileHash ?? null,
         studentUid: completedStudent?.uid ?? null,
         studentId: completedStudent?.studentId ?? null,
@@ -1550,14 +1532,14 @@ export const fetchReportsByStudentUid = async (studentUid: string): Promise<Repo
     return snapshot.docs
         .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
         .filter((row) => row.assignmentStatus !== "duplicate_pending" && row.assignmentStatus !== "unassigned_pending")
-        .sort(compareReportsByExamDateAsc);
+        .sort(compareReportsByExamDateDesc);
   } catch {
     const snapshot = await getDocs(query(reportsRef, where("studentUid", "==", studentUid)));
 
     return snapshot.docs
       .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
       .filter((row) => row.assignmentStatus !== "duplicate_pending" && row.assignmentStatus !== "unassigned_pending")
-      .sort(compareReportsByExamDateAsc);
+      .sort(compareReportsByExamDateDesc);
   }
 };
 
@@ -1572,17 +1554,17 @@ export const fetchPendingReports = async (): Promise<ReportRecord[]> => {
       );
       return snapshot.docs
         .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-        .sort(compareReportsByExamDateAsc);
+        .sort(compareReportsByExamDateDesc);
     } catch {
       const snapshot = await getDocs(query(reportsRef, where("assignmentStatus", "==", status)));
       return snapshot.docs
         .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-        .sort(compareReportsByExamDateAsc);
+        .sort(compareReportsByExamDateDesc);
     }
   };
 
   const rows = (await Promise.all(statuses.map((status) => fetchByStatus(status)))).flat();
-  return rows.sort(compareReportsByExamDateAsc);
+  return rows.sort(compareReportsByExamDateDesc);
 };
 
 export const assignPendingReportToStudent = async (
@@ -1609,12 +1591,12 @@ export const fetchReportsByClassId = async (classId: string): Promise<ReportReco
     );
     return snapshot.docs
       .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-      .sort(compareReportsByExamDateAsc);
+      .sort(compareReportsByExamDateDesc);
   } catch {
     const snapshot = await getDocs(query(reportsRef, where("classId", "==", classId)));
     return snapshot.docs
       .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-      .sort(compareReportsByExamDateAsc);
+      .sort(compareReportsByExamDateDesc);
   }
 };
 
@@ -1631,14 +1613,14 @@ export const fetchPublishedReports = async (): Promise<ReportRecord[]> => {
     );
     return snapshot.docs
       .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-      .sort(compareReportsByExamDateAsc);
+      .sort(compareReportsByExamDateDesc);
   } catch {
     const snapshot = await getDocs(
       query(reportsRef, where("assignmentStatus", "==", "completed")),
     );
     return snapshot.docs
       .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-      .sort(compareReportsByExamDateAsc);
+      .sort(compareReportsByExamDateDesc);
   }
 };
 

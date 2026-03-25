@@ -12,6 +12,7 @@ import ClassManager from "./pages/Admin/ClassManager";
 import MasterAdminPage from "./pages/Admin/MasterAdminPage";
 import ReportView from "./pages/Student/ReportView";
 import AccountSettings from "./pages/Student/AccountSettings";
+import Guide from "./pages/Guide";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -27,6 +28,7 @@ const App = () => (
             <Route path="/" element={<Navigate to="/login" replace />} />
             <Route path="/login" element={<Login />} />
             <Route path="/signup" element={<Signup />} />
+            <Route path="/guide" element={<Guide />} />
 
             <Route
               path="/dashboard"

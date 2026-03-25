@@ -13,7 +13,6 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
-  compareReportsByExamDateAsc,
   compareReportsByExamDateDesc,
   fetchClasses,
   formatExamDate,
@@ -123,7 +122,7 @@ const ReportView = () => {
       docs
         .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
         .filter((row) => row.assignmentStatus !== "duplicate_pending" && row.assignmentStatus !== "unassigned_pending")
-        .sort(compareReportsByExamDateAsc);
+        .sort(compareReportsByExamDateDesc);
 
     const reportsRef = collection(db, "reports");
     const primaryQuery = query(reportsRef, where("studentUid", "==", user.uid), orderBy("createdAt", "desc"));
@@ -194,19 +193,14 @@ const ReportView = () => {
   }, [user?.uid]);
 
   const studentReports = useMemo(
-    () => reports.filter((report) => report.studentUid === user?.uid).sort(compareReportsByExamDateAsc),
+    () => reports.filter((report) => report.studentUid === user?.uid).sort(compareReportsByExamDateDesc),
     [reports, user?.uid],
-  );
-
-  const recentStudentReports = useMemo(
-    () => [...studentReports].sort(compareReportsByExamDateDesc),
-    [studentReports],
   );
 
   const selectedReport = useMemo(
     () =>
-      recentStudentReports.find((report) => report.id === selectedReportId) ?? recentStudentReports[0] ?? null,
-    [recentStudentReports, selectedReportId],
+      studentReports.find((report) => report.id === selectedReportId) ?? studentReports[0] ?? null,
+    [studentReports, selectedReportId],
   );
 
   const radarData = useMemo(() => {
@@ -246,7 +240,6 @@ const ReportView = () => {
   const trendData = useMemo(
     () =>
       [...studentReports]
-        .sort(compareReportsByExamDateAsc)
         .map((report) => ({
           examDateLabel: formatExamDateShort(report.examDate),
           score: report.totalScore,
@@ -448,13 +441,13 @@ const ReportView = () => {
           <div className="space-y-6">
             <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <h3 className="text-base font-semibold text-slate-900 md:text-sm">리포트 선택</h3>
+                <h3 className="text-base font-semibold text-slate-900 md:text-sm">리포트 날짜를 확인하세요</h3>
                 <Select value={selectedReportId} onValueChange={setSelectedReportId}>
                   <SelectTrigger className="w-full border-slate-200 sm:w-72">
-                    <SelectValue placeholder="리포트 선택" />
+                    <SelectValue placeholder="리포트 날짜를 확인하세요" />
                   </SelectTrigger>
                   <SelectContent className="rounded-t-2xl rounded-b-xl md:rounded-md">
-                    {recentStudentReports.map((report) => (
+                    {studentReports.map((report) => (
                       <SelectItem key={report.id} value={report.id}>
                         {getReportExamTitle(report)}
                       </SelectItem>
@@ -634,7 +627,7 @@ const ReportView = () => {
               <div className="order-2 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:order-1 md:p-5">
                 <h3 className="mb-3 text-lg font-semibold text-slate-900 md:text-base">리포트 목록</h3>
                 <div className="space-y-3">
-                  {recentStudentReports.map((report) => (
+                  {studentReports.map((report) => (
                     <button
                       key={report.id}
                       type="button"
@@ -654,9 +647,6 @@ const ReportView = () => {
                             총점 {report.totalScore} | 등급 {report.grade || "기록 없음"} | 날짜{" "}
                             {formatExamDate(report.examDate)}
                           </p>
-                          {report.examLabel?.trim() && (
-                            <p className="mt-1 text-xs text-slate-500">구분 {report.examLabel.trim()}</p>
-                          )}
                         </div>
                         <span className="rounded-xl bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700">
                           읽음

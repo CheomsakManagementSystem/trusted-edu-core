@@ -552,7 +552,6 @@ const MasterAdminPage = () => {
                         </p>
                         <p className="text-xs text-muted-foreground">
                           시험일: {formatDate(report)}
-                          {report.examLabel?.trim() ? ` / 시험 구분: ${report.examLabel.trim()}` : ""}
                         </p>
                         <p className="text-sm text-card-foreground">
                           강사 총평: {report.feedback?.trim() || "총평 없음"}

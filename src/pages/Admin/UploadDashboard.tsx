@@ -103,7 +103,6 @@ const UploadDashboard = () => {
   const [pendingReports, setPendingReports] = useState<ReportRecord[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string>("none");
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(() => new Date());
-  const [selectedExamLabel, setSelectedExamLabel] = useState("");
   const [rows, setRows] = useState<UploadCandidate[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -230,7 +229,7 @@ const UploadDashboard = () => {
     setPendingSelectedStudent({});
     setManualMatchTargetId(null);
     setMessage("");
-  }, [selectedClassId, selectedDateText, selectedExamLabel]);
+  }, [selectedClassId, selectedDateText]);
 
   const parseAndAppendFiles = async (files: File[]) => {
     if (files.length === 0) {
@@ -251,31 +250,14 @@ const UploadDashboard = () => {
     setMessage("");
 
     try {
-      const normalizedExamLabel = selectedExamLabel.trim().toLowerCase();
-      const sameDateReports = classReports.filter(
+      const duplicateExists = classReports.some(
         (report) =>
           normalizeDateString(report.examDate) === selectedDateText &&
           report.assignmentStatus === "completed",
       );
 
-      if (sameDateReports.length > 0 && !normalizedExamLabel) {
-        const message = "같은 날짜의 시험이 이미 있어 오전/오후 또는 시험 명칭을 입력해야 합니다";
-        setMessage(message);
-        toast({
-          variant: "destructive",
-          title: "시험 구분 입력 필요",
-          description: message,
-        });
-        setLoading(false);
-        return;
-      }
-
-      const duplicateExists = sameDateReports.some(
-        (report) => (report.examLabel?.trim().toLowerCase() ?? "") === normalizedExamLabel,
-      );
-
       if (duplicateExists) {
-        const message = "이미 같은 날짜와 시험 구분의 성적이 등록되어 있습니다";
+        const message = "이미 같은 날짜의 성적이 등록되어 있습니다";
         setMessage(message);
         toast({
           variant: "destructive",
@@ -549,7 +531,6 @@ const UploadDashboard = () => {
         rows,
         selectedClass,
         selectedDateText,
-        selectedExamLabel,
         students,
         user.uid,
         setProgress,
@@ -947,10 +928,13 @@ const UploadDashboard = () => {
           <p className="text-sm text-muted-foreground">
             반별 파일을 등록한 뒤 필요한 항목을 확인하고 학생에게 전달합니다.
           </p>
+          <p className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+            날짜만 선택하면 리포트가 전송됩니다.
+          </p>
         </div>
 
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             <div className="space-y-2">
               <p className="text-xs text-muted-foreground">1단계: 반 선택</p>
               <Select value={selectedClassId} onValueChange={setSelectedClassId}>
@@ -992,17 +976,8 @@ const UploadDashboard = () => {
               </Popover>
             </div>
 
-            <div className="space-y-2">
-              <p className="text-xs text-muted-foreground">2단계: 시험 구분</p>
-              <Input
-                value={selectedExamLabel}
-                onChange={(event) => setSelectedExamLabel(event.target.value)}
-                placeholder="오전 / 오후 / 모의논술 A"
-              />
-            </div>
-
-            <div className="space-y-2 md:col-span-2">
-              <p className="text-xs text-muted-foreground">3단계: 파일 등록</p>
+            <div className="space-y-2 md:col-span-1">
+              <p className="text-xs text-muted-foreground">2단계: 파일 등록</p>
               <div
                 onDragOver={(event) => {
                   event.preventDefault();
@@ -1372,9 +1347,7 @@ const UploadDashboard = () => {
                     )}
                     <span>{report.isRead ? "읽음" : "읽지 않음"}</span>
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    {report.examLabel?.trim() ? `시험 구분 ${report.examLabel.trim()}` : "시험 구분 없음"}
-                  </p>
+                  <p className="text-xs text-muted-foreground">등록일 {formatExamDate(report.examDate)}</p>
                   <div className="flex gap-2">
                     <Button type="button" size="sm" variant="outline" onClick={() => openEditModal(report)}>
                       <Pencil className="mr-1 h-3.5 w-3.5" />

@@ -40,8 +40,6 @@ export interface ReportRecord {
   studentName: string;
   score: number;
   examDate: string;
-  examLabel?: string | null;
-  testDate?: string | null;
   fileUrl?: string;
   fileName: string;
   createdAt: Timestamp | null;
@@ -124,10 +122,9 @@ export const formatExamDate = (value: string | null | undefined, fallback = "날
   return `${year}.${month}.${day}`;
 };
 
-const getReportSortTimestamp = (report: Pick<ReportRecord, "examDate" | "testDate" | "createdAt" | "writtenAt">) => {
+const getReportSortTimestamp = (report: Pick<ReportRecord, "examDate" | "createdAt" | "writtenAt">) => {
   const normalized =
     normalizeDateString(report.examDate) ??
-    normalizeDateString(report.testDate) ??
     normalizeDateString(report.writtenAt);
   if (normalized) {
     return new Date(`${normalized}T00:00:00`).getTime();
@@ -137,17 +134,21 @@ const getReportSortTimestamp = (report: Pick<ReportRecord, "examDate" | "testDat
 
 const hydrateReportRecord = (
   id: string,
-  data: Omit<ReportRecord, "id" | "examDate"> & { examDate?: string | null },
-): ReportRecord => ({
-  id,
-  ...data,
-  examDate:
-    normalizeDateString(data.examDate) ??
-    normalizeDateString(data.testDate) ??
-    normalizeDateString(data.writtenAt) ??
-    "",
-  examLabel: data.examLabel?.trim() || null,
-});
+  data: Omit<ReportRecord, "id" | "examDate"> & Record<string, unknown> & { examDate?: string | null },
+): ReportRecord => {
+  const legacyTestDate =
+    typeof data.testDate === "string" || data.testDate === null ? data.testDate : undefined;
+
+  return {
+    id,
+    ...data,
+    examDate:
+      normalizeDateString(data.examDate) ??
+      normalizeDateString(legacyTestDate) ??
+      normalizeDateString(data.writtenAt) ??
+      "",
+  };
+};
 
 export const parseReportFileName = (fileName: string): ParsedPdfMeta | null => {
   const baseName = fileName.replace(/\.pdf$/i, "");
@@ -320,7 +321,7 @@ export const fetchReportsByStudentId = async (
 
     return snapshot.docs
       .map((doc) => hydrateReportRecord(doc.id, doc.data() as Omit<ReportRecord, "id">))
-      .sort((a, b) => getReportSortTimestamp(a) - getReportSortTimestamp(b));
+      .sort((a, b) => getReportSortTimestamp(b) - getReportSortTimestamp(a));
   } catch {
     const snapshot = await getDocs(
       query(reportsRef, where("studentId", "==", studentId)),
@@ -328,6 +329,6 @@ export const fetchReportsByStudentId = async (
 
     return snapshot.docs
       .map((doc) => hydrateReportRecord(doc.id, doc.data() as Omit<ReportRecord, "id">))
-      .sort((a, b) => getReportSortTimestamp(a) - getReportSortTimestamp(b));
+      .sort((a, b) => getReportSortTimestamp(b) - getReportSortTimestamp(a));
   }
 };

@@ -126,7 +126,7 @@ const StudentDashboard = () => {
     [reports],
   );
 
-  const recentReports = useMemo(() => [...reports].reverse(), [reports]);
+  const recentReports = useMemo(() => [...reports], [reports]);
 
   const selectedReport = useMemo(
     () => recentReports.find((report) => report.id === selectedReportId) ?? recentReports[0] ?? null,
@@ -313,7 +313,7 @@ const StudentDashboard = () => {
         </div>
 
         <div className="rounded-lg border border-border bg-card p-3 shadow-card md:p-5">
-          <h3 className="mb-3 text-sm font-semibold text-card-foreground">리포트 선택</h3>
+          <h3 className="mb-3 text-sm font-semibold text-card-foreground">리포트 날짜를 확인하세요</h3>
 
           {loading && (
             <p className="text-sm text-muted-foreground">리포트를 불러오는 중입니다...</p>
@@ -349,10 +349,10 @@ const StudentDashboard = () => {
                   <div className="flex items-start justify-between gap-1.5 sm:gap-2">
                     <div>
                       <p className="line-clamp-2 break-all text-sm font-semibold text-card-foreground">
-                        [{formatExamDate(report.examDate)}] 논술 성적 리포트
+                        [{formatExamDate(report.examDate)}] 논술 리포트
                       </p>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        {report.examLabel?.trim() || report.essayTopic?.trim() || "시험 정보 없음"}
+                        {report.essayTopic?.trim() || "시험 정보 없음"}
                       </p>
                     </div>
                     <span className="rounded-full bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">
