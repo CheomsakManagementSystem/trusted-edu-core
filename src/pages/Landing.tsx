@@ -140,6 +140,9 @@ const Landing = () => {
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5 lg:px-10">
           <div className="flex items-center gap-4">
             <BrandLogo compact className="text-[#001529]" />
+            <div className="hidden sm:block">
+              <p className="text-xs font-semibold tracking-[0.24em] text-[#1890FF]">SMART REPORT SYSTEM</p>
+            </div>
           </div>
           <div className="flex items-center gap-3">
             <Button asChild variant="ghost" className="text-[#001529] hover:bg-[#f3f7fb]">
@@ -153,7 +156,7 @@ const Landing = () => {
       </header>
 
       <main className="mx-auto max-w-7xl px-6 py-10 lg:px-10">
-        <section className="overflow-hidden rounded-[32px] border border-[#d9e2ec] bg-white shadow-[0_24px_60px_rgba(0,21,41,0.10)]">
+        <section className="animate-in fade-in-0 slide-in-from-bottom-4 duration-700 overflow-hidden rounded-[32px] border border-[#d9e2ec] bg-white shadow-[0_24px_60px_rgba(0,21,41,0.10)]">
           <div className="grid lg:grid-cols-[1.05fr_0.95fr]">
             <div className="flex flex-col justify-between bg-[#001529] px-8 py-10 text-white md:px-12 md:py-12">
               <div>
@@ -161,16 +164,16 @@ const Landing = () => {
                   SMART REPORT SYSTEM
                 </div>
                 <h1 className="mt-6 text-4xl font-black tracking-tight md:text-6xl">
-                  논술의 주관을 데이터의 객관으로.
+                  당신의 통찰, 데이터로 증명되는 합격의 확신.
                 </h1>
                 <p className="mt-6 text-lg leading-relaxed text-slate-200">
-                  기본 원칙: 실명 가입 / 크롬 권장 / 시험 날짜 기반 관리.
+                  깊이 있는 사고의 궤적을 숫자로 기록합니다. 이제 논술의 성장을 시각적으로 확인하세요.
                 </p>
               </div>
 
               <div className="mt-10 flex flex-col gap-3 sm:flex-row">
                 <Button asChild size="lg" className="bg-[#1890FF] text-white hover:bg-[#1677d9]">
-                  <Link to="/login">데이터 리포트 로그인</Link>
+                  <Link to="/login">나의 리포트 로그인</Link>
                 </Button>
                 <Button
                   asChild
@@ -191,7 +194,7 @@ const Landing = () => {
           </div>
         </section>
 
-        <section className="grid gap-6 py-16 lg:grid-cols-3">
+        <section className="animate-in fade-in-0 slide-in-from-bottom-4 duration-700 grid gap-6 py-16 lg:grid-cols-3">
           {quickRules.map((rule) => {
             const Icon = rule.icon;
             return (
@@ -209,7 +212,7 @@ const Landing = () => {
           })}
         </section>
 
-        <section className="rounded-[32px] border border-[#d9e2ec] bg-white p-8 shadow-[0_18px_40px_rgba(0,21,41,0.08)]">
+        <section className="animate-in fade-in-0 slide-in-from-bottom-4 duration-700 rounded-[32px] border border-[#d9e2ec] bg-white p-8 shadow-[0_18px_40px_rgba(0,21,41,0.08)]">
           <h2 className="text-3xl font-bold tracking-tight text-[#001529]">운영 가이드 요약</h2>
           <div className="mt-8 grid gap-6 lg:grid-cols-3">
             {roleGuides.map((guide) => {
@@ -235,7 +238,13 @@ const Landing = () => {
           </div>
         </section>
 
-        <section className="mt-8 rounded-[32px] border border-[#d9e2ec] bg-[#001529] p-8 text-white shadow-[0_18px_40px_rgba(0,21,41,0.12)]">
+        <section className="animate-in fade-in-0 slide-in-from-bottom-4 duration-700 mt-8 rounded-[32px] border border-[#d9e2ec] bg-[#001529] p-8 text-white shadow-[0_18px_40px_rgba(0,21,41,0.12)]">
+          <div className="mb-8">
+            <h2 className="text-3xl font-bold tracking-tight">운영 핵심</h2>
+            <p className="mt-3 text-base leading-relaxed text-slate-200">
+              실명 가입 원칙, 비밀번호 분실 시 재가입(팀장 문의), 시험 날짜 기반 관리 원칙을 중심으로 시스템을 운영합니다.
+            </p>
+          </div>
           <div className="grid gap-6 lg:grid-cols-3">
             <div className="rounded-[24px] border border-white/10 bg-white/5 p-6">
               <Chrome className="h-6 w-6 text-[#69c0ff]" />
@@ -261,7 +270,7 @@ const Landing = () => {
           </div>
         </section>
 
-        <section className="mt-16 rounded-[32px] border border-[#d9e2ec] bg-white p-8 shadow-[0_18px_40px_rgba(0,21,41,0.08)]">
+        <section className="animate-in fade-in-0 slide-in-from-bottom-4 duration-700 mt-16 rounded-[32px] border border-[#d9e2ec] bg-white p-8 shadow-[0_18px_40px_rgba(0,21,41,0.08)]">
           <h2 className="text-3xl font-bold tracking-tight text-[#001529]">❓ 자주 묻는 질문 (FAQ)</h2>
           <Accordion type="single" collapsible className="mt-8 w-full">
             {faqItems.map((item) => {
@@ -284,11 +293,25 @@ const Landing = () => {
             })}
           </Accordion>
         </section>
+
+        <section className="animate-in fade-in-0 slide-in-from-bottom-4 duration-700 mt-8 rounded-[32px] border border-[#d9e2ec] bg-white p-8 shadow-[0_18px_40px_rgba(0,21,41,0.08)]">
+          <h2 className="text-3xl font-bold tracking-tight text-[#001529]">시스템 이용 및 장애 문의</h2>
+          <p className="mt-4 max-w-3xl text-base leading-relaxed text-[#4b5b6a]">
+            시스템 이용 중 에러가 발생하거나 궁금한 점이 있으신가요? 김윤환입시연구소 지원팀이 신속하게 도와드립니다.
+          </p>
+          <div className="mt-6">
+            <Button asChild size="lg" className="bg-[#1890FF] text-white hover:bg-[#1677d9]">
+              <a href="http://pf.kakao.com/_Glxodn/chat" target="_blank" rel="noreferrer">
+                카카오톡 실시간 상담 연결
+              </a>
+            </Button>
+          </div>
+        </section>
       </main>
 
       <footer className="border-t border-[#d9e2ec] bg-white px-6 py-8 lg:px-10">
         <div className="mx-auto max-w-7xl text-sm leading-relaxed text-[#4b5b6a]">
-          Chrome 최신 버전 권장 · 시험 날짜 기반 관리
+          최상의 환경을 위해 Google Chrome 최신 버전 사용을 권장합니다. 모든 데이터는 시험 날짜를 기준으로 관리됩니다.
         </div>
       </footer>
     </div>
