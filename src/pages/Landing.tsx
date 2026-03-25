@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import BrandLogo from "@/components/BrandLogo";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
-import { CheckCircle2, Chrome, CalendarDays, GraduationCap, Search, ShieldCheck, User, Edit, AlertTriangle } from "lucide-react";
+import { CheckCircle2, Chrome, GraduationCap, Search, ShieldCheck, User, Edit, AlertTriangle } from "lucide-react";
 
 const quickRules = [
   {
@@ -85,7 +85,7 @@ const faqItems = [
 
 const DataVisual = () => {
   return (
-    <div className="relative h-full min-h-[320px] overflow-hidden rounded-[28px] border border-[#d9e2ec] bg-white">
+    <div className="relative h-full min-h-[320px] w-full max-w-full overflow-hidden rounded-[28px] border border-[#d9e2ec] bg-white">
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(24,144,255,0.18),_transparent_22%),linear-gradient(180deg,_rgba(24,144,255,0.06),_rgba(255,255,255,0))]" />
       <div
         className="absolute inset-0 opacity-70"
@@ -135,7 +135,7 @@ const DataVisual = () => {
 
 const GrowthVisual = () => {
   return (
-    <div className="relative h-full min-h-[320px] overflow-hidden rounded-[28px] border border-[#d9e2ec] bg-white">
+    <div className="relative h-full min-h-[320px] w-full max-w-full overflow-hidden rounded-[28px] border border-[#d9e2ec] bg-white">
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(24,144,255,0.14),_transparent_20%),linear-gradient(180deg,_rgba(24,144,255,0.05),_rgba(255,255,255,0))]" />
       <div className="absolute left-10 top-10 h-24 w-24 rounded-full bg-[#1890FF]/10 blur-3xl" />
       <div className="absolute right-10 top-16 h-28 w-28 rounded-full bg-[#001529]/8 blur-3xl" />
@@ -177,18 +177,18 @@ const Landing = () => {
   return (
     <div className="min-h-screen bg-[#f4f8fb] text-[#001529]">
       <header className="border-b border-[#d9e2ec] bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5 lg:px-10">
+        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-6 py-5 sm:flex-row sm:items-center sm:justify-between lg:px-10">
           <div className="flex items-center gap-4">
             <BrandLogo compact className="text-[#001529]" />
             <div className="hidden sm:block">
               <p className="text-xs font-semibold tracking-[0.24em] text-[#1890FF]">SMART REPORT SYSTEM</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <Button asChild variant="ghost" className="text-[#001529] hover:bg-[#f3f7fb]">
+          <div className="flex w-full items-center justify-end gap-3 sm:w-auto">
+            <Button asChild variant="ghost" className="h-11 px-4 text-[#001529] hover:bg-[#f3f7fb]">
               <Link to="/login">로그인</Link>
             </Button>
-            <Button asChild className="bg-[#001529] text-white hover:bg-[#00284a]">
+            <Button asChild className="h-11 px-4 bg-[#001529] text-white hover:bg-[#00284a]">
               <Link to="/register">회원가입</Link>
             </Button>
           </div>
@@ -197,7 +197,7 @@ const Landing = () => {
 
       <main className="mx-auto max-w-7xl px-6 py-10 lg:px-10">
         <section className="animate-in fade-in-0 slide-in-from-bottom-4 duration-700 overflow-hidden rounded-[32px] border border-[#d9e2ec] bg-white shadow-[0_24px_60px_rgba(0,21,41,0.10)]">
-          <div className="grid lg:grid-cols-[1.05fr_0.95fr]">
+          <div className="grid grid-cols-1 lg:grid-cols-[1.05fr_0.95fr]">
             <div className="flex flex-col justify-between bg-[#001529] px-8 py-10 text-white md:px-12 md:py-12">
               <div>
                 <div className="inline-flex rounded-full border border-white/15 bg-white/10 px-4 py-1 text-xs font-semibold tracking-[0.2em] text-[#69c0ff]">
@@ -279,7 +279,7 @@ const Landing = () => {
         </section>
 
         <section className="animate-in fade-in-0 slide-in-from-bottom-4 duration-700 mt-8 rounded-[32px] border border-[#d9e2ec] bg-white p-8 shadow-[0_18px_40px_rgba(0,21,41,0.08)]">
-          <div className="grid gap-8 lg:grid-cols-[1.05fr_0.95fr] lg:items-center">
+          <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1.05fr_0.95fr] lg:items-center">
             <div>
               <div className="inline-flex rounded-full border border-[#d9e2ec] bg-[#f3f7fb] px-4 py-1 text-xs font-semibold tracking-[0.2em] text-[#1890FF]">
                 VALUE INSIGHT
@@ -289,13 +289,13 @@ const Landing = () => {
                 <div className="rounded-[24px] border border-[#d9e2ec] bg-[#f9fbfd] p-6">
                   <h3 className="text-lg font-bold text-[#001529]">성장 추적</h3>
                   <p className="mt-3 text-base leading-relaxed text-[#4b5b6a]">
-                    단순한 점수 확인을 넘어, 첫 시험부터 지금까지 나의 논리력이 얼마나 성장했는지 그래프로 한눈에 확인합니다.
+                    첫 시험부터 지금까지 나의 실력이 얼마나 성장했는지 그래프로 한눈에 확인합니다.
                   </p>
                 </div>
                 <div className="rounded-[24px] border border-[#d9e2ec] bg-[#f9fbfd] p-6">
                   <h3 className="text-lg font-bold text-[#001529]">정밀 진단</h3>
                   <p className="mt-3 text-base leading-relaxed text-[#4b5b6a]">
-                    선생님의 꼼꼼한 빨간 펜 첨삭과 인공지능의 수치 분석이 만나, 내가 놓친 약점만 정확하게 골라냅니다.
+                    선생님의 꼼꼼한 빨간 펜 첨삭과 수치 분석이 만나, 내가 놓친 약점만 정확하게 골라냅니다.
                   </p>
                 </div>
               </div>
@@ -311,7 +311,7 @@ const Landing = () => {
               const Icon = item.icon;
               return (
                 <AccordionItem key={item.question} value={item.question} className="border-[#d9e2ec]">
-                  <AccordionTrigger className="gap-4 text-left text-base font-semibold text-[#001529] hover:no-underline">
+                  <AccordionTrigger className="gap-4 py-5 text-left text-base font-semibold text-[#001529] hover:no-underline">
                     <span className="flex items-center gap-3">
                       <span className="rounded-full border border-[#d9e2ec] bg-[#f3f7fb] p-2 text-[#1890FF]">
                         <Icon className="h-4 w-4" />
@@ -319,7 +319,7 @@ const Landing = () => {
                       <span>{item.question}</span>
                     </span>
                   </AccordionTrigger>
-                  <AccordionContent className="pl-14 text-base leading-relaxed text-[#4b5b6a]">
+                  <AccordionContent className="pl-8 pt-1 text-base leading-relaxed text-[#4b5b6a] sm:pl-14">
                     {item.answer}
                   </AccordionContent>
                 </AccordionItem>
@@ -334,7 +334,7 @@ const Landing = () => {
             시스템 이용 중 에러가 발생하거나 궁금한 점이 있으신가요? 김윤환입시연구소 지원팀이 신속하게 도와드립니다.
           </p>
           <div className="mt-6">
-            <Button asChild size="lg" className="bg-[#1890FF] text-white hover:bg-[#1677d9]">
+            <Button asChild size="lg" className="w-full bg-[#1890FF] text-white hover:bg-[#1677d9] sm:w-auto">
               <a href="http://pf.kakao.com/_Glxodn/chat" target="_blank" rel="noreferrer">
                 카카오톡 실시간 상담 연결
               </a>
