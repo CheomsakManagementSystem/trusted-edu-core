@@ -178,6 +178,14 @@ const EMPTY_PARSED: ParsedPdfData = {
   rawText: "",
 };
 
+const createUploadCandidateId = () => {
+  if (typeof globalThis !== "undefined" && globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+
+  return `upload-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+};
+
 const parseNumber = (value: string | undefined): number | null => {
   if (!value) {
     return null;
@@ -1114,8 +1122,7 @@ export const prepareUploadCandidates = async (
     const fileHint = parseFileNameHint(file.name);
     try {
       const chunks = await extractPdfDataByStudent(file);
-      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
-        const chunk = chunks[chunkIndex];
+      for (const chunk of chunks) {
         const merged = {
           ...chunk.parsed,
           name: chunk.parsed.name || fileHint.name || "",
@@ -1126,7 +1133,7 @@ export const prepareUploadCandidates = async (
         };
         const match = resolveMatchStatus(merged.name, classStudents, allStudents);
         candidates.push({
-          id: `${file.name}-${file.lastModified}-${chunk.sourcePage}-${chunkIndex}`,
+          id: createUploadCandidateId(),
           file,
           sourcePage: chunk.sourcePage,
           sourcePageLabel: `${chunk.sourcePage}p`,
@@ -1136,7 +1143,7 @@ export const prepareUploadCandidates = async (
       }
     } catch (error) {
       candidates.push({
-        id: `${file.name}-${file.lastModified}-error`,
+        id: createUploadCandidateId(),
         file,
         sourcePage: 1,
         sourcePageLabel: "1p",

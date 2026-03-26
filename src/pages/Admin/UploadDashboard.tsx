@@ -250,23 +250,6 @@ const UploadDashboard = () => {
     setMessage("");
 
     try {
-      const duplicateExists = classReports.some(
-        (report) =>
-          normalizeDateString(report.examDate) === selectedDateText &&
-          report.assignmentStatus === "completed",
-      );
-
-      if (duplicateExists) {
-        const message = "이미 같은 날짜의 성적이 등록되어 있습니다";
-        setMessage(message);
-        toast({
-          variant: "destructive",
-          title: "중복 등록 차단",
-          description: message,
-        });
-        return;
-      }
-
       const hashes = await Promise.all(
         files.map(async (file) => ({
           file,

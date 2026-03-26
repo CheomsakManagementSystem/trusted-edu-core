@@ -345,7 +345,7 @@ const Landing = () => {
 
       <footer className="border-t border-[#d9e2ec] bg-white px-6 py-8 lg:px-10">
         <div className="mx-auto max-w-7xl text-sm leading-relaxed text-[#4b5b6a]">
-          최상의 환경을 위해 Google Chrome 최신 버전 사용을 권장합니다. 모든 데이터는 시험 날짜를 기준으로 관리됩니다.
+          최상의 환경을 위해 Google Chrome 최신 버전 사용을 권장합니다. 모든 데이터는 시험 날짜를 기준으로 관리됩니다. 시대인재 김윤환논술은 여러분의 합격을 위해 최선을 다합니다.
         </div>
       </footer>
     </div>
