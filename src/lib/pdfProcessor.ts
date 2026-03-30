@@ -51,6 +51,8 @@ export type ScoreBreakdown = {
 export type ParsedPdfData = {
   name: string;
   className: string;
+  studentId: string;
+  phoneSuffix: string;
   writtenAt: string;
   essayTopic: string;
   grade: string;
@@ -72,6 +74,7 @@ export type UploadCandidate = {
   status: MatchStatus;
   candidates: StudentLite[];
   selectedStudentUid: string | null;
+  matchReason?: string;
   parseError?: string;
   sentReportId?: string;
   sent?: boolean;
@@ -94,6 +97,10 @@ export type ReportRecord = {
   sourcePage?: number;
   pageNumber?: number;
   sourceName: string;
+  sourceStudentId?: string | null;
+  sourcePhoneSuffix?: string | null;
+  sourceClassName?: string | null;
+  matchReason?: string | null;
   writtenAt: string;
   reviewer: string;
   essayTopic: string;
@@ -146,6 +153,8 @@ const METRIC_ALIASES: Record<MetricLabel, string[]> = {
 const EMPTY_PARSED: ParsedPdfData = {
   name: "",
   className: "",
+  studentId: "",
+  phoneSuffix: "",
   writtenAt: "",
   essayTopic: "",
   grade: "",
@@ -275,14 +284,20 @@ export const hydrateReportRecord = (
   };
 };
 
-const parseFileNameHint = (fileName: string): { name?: string; total?: number | null } => {
+const parseFileNameHint = (
+  fileName: string,
+): { name?: string; total?: number | null; studentId?: string; phoneSuffix?: string } => {
   const base = fileName.replace(/\.pdf$/i, "");
   const nameMatch = base.match(/([가-힣]{2,5})/);
   const scoreMatch = base.match(/(\d+(?:\.\d+)?)\s*점?/);
+  const phoneSuffixMatch = base.match(/[가-힣]{2,5}\D*(\d{4})(?:\D|$)/);
+  const studentIdMatch = base.match(/(?:학생코드|학번|student[_-\s]?id)\D*([A-Za-z0-9-]{4,})/i);
 
   return {
     name: nameMatch?.[1]?.trim() || undefined,
     total: parseNumber(scoreMatch?.[1]),
+    phoneSuffix: phoneSuffixMatch?.[1]?.trim() || undefined,
+    studentId: studentIdMatch?.[1]?.trim() || undefined,
   };
 };
 
@@ -311,6 +326,17 @@ const normalizeName = (name: string) =>
     .replace(/\s+/g, " ")
     .replace(/(?:학생|귀하|님)\s*$/g, "")
     .trim();
+
+const normalizeIdentifier = (value: string | null | undefined) =>
+  (value ?? "").replace(/\s+/g, "").trim().toLowerCase();
+
+const normalizePhoneSuffix = (value: string | null | undefined) => {
+  const digits = (value ?? "").replace(/\D/g, "");
+  return digits.length >= 4 ? digits.slice(-4) : "";
+};
+
+const normalizeClassToken = (value: string | null | undefined) =>
+  (value ?? "").replace(/\s+/g, "").trim().toLowerCase();
 
 const sanitizeReviewerName = (value: string): string => {
   const compact = value
@@ -416,6 +442,24 @@ const extractField = (text: string, labels: string[]): string => {
   }
 
   return "";
+};
+
+const extractPhoneSuffixField = (text: string): string => {
+  const direct =
+    extractField(text, ["전화번호", "휴대폰", "핸드폰", "연락처", "휴대전화"]) ||
+    text.match(/(?:전화번호|휴대폰|핸드폰|연락처|휴대전화)\s*[:：]?\s*([0-9\-\s]{8,})/i)?.[1] ||
+    "";
+
+  return normalizePhoneSuffix(direct);
+};
+
+const extractStudentIdField = (text: string): string => {
+  const direct =
+    extractField(text, ["학생코드", "학생 코드", "학번", "학생번호", "student id", "student_id"]) ||
+    text.match(/(?:학생코드|학생\s*코드|학번|학생번호|student[_\s-]?id)\s*[:：]?\s*([A-Za-z0-9-]{4,})/i)?.[1] ||
+    "";
+
+  return direct.replace(/\s+/g, "").trim();
 };
 
 const getMetricSegment = (text: string, label: MetricLabel) => {
@@ -559,6 +603,8 @@ const parsePdfText = (rawText: string): ParsedPdfData => {
   return {
     name: extractField(text, ["이름", "성명", "학생명"]),
     className: extractField(text, ["수강반", "반"]),
+    studentId: extractStudentIdField(text),
+    phoneSuffix: extractPhoneSuffixField(text),
     writtenAt: extractField(text, ["작성일", "작성 일자"]),
     essayTopic: extractField(text, ["논제", "주제"]),
     grade: extractField(text, ["등급"]),
@@ -898,6 +944,8 @@ const parsePdfPage = (scope: PageScope): ParsedPdfData => {
   return {
     name,
     className,
+    studentId: extractStudentIdField(text),
+    phoneSuffix: extractPhoneSuffixField(text),
     writtenAt,
     essayTopic,
     grade: gradeByBox,
@@ -1072,42 +1120,117 @@ const byName = (students: StudentLite[], name: string) => {
   return students.filter((student) => student.name.trim() === normalized);
 };
 
+const uniqueStudents = (students: StudentLite[]) => {
+  const seen = new Set<string>();
+  return students.filter((student) => {
+    if (seen.has(student.uid)) {
+      return false;
+    }
+    seen.add(student.uid);
+    return true;
+  });
+};
+
+const matchStudentsByStudentId = (students: StudentLite[], studentId: string) => {
+  const normalized = normalizeIdentifier(studentId);
+  if (!normalized) {
+    return [];
+  }
+
+  return students.filter((student) => normalizeIdentifier(student.studentId) === normalized);
+};
+
+const matchStudentsByPhoneSuffix = (students: StudentLite[], phoneSuffix: string) => {
+  const normalized = normalizePhoneSuffix(phoneSuffix);
+  if (!normalized) {
+    return [];
+  }
+
+  return students.filter((student) => {
+    return (
+      normalizePhoneSuffix(student.phoneSuffix) === normalized ||
+      normalizePhoneSuffix(student.phoneNumber) === normalized ||
+      normalizePhoneSuffix(student.studentId) === normalized
+    );
+  });
+};
+
 export const resolveMatchStatus = (
-  parsedName: string,
+  parsed: Pick<ParsedPdfData, "name" | "className" | "studentId" | "phoneSuffix">,
   classStudents: StudentLite[],
   allStudents: StudentLite[],
-): Pick<UploadCandidate, "status" | "candidates" | "selectedStudentUid"> => {
+): Pick<UploadCandidate, "status" | "candidates" | "selectedStudentUid" | "matchReason"> => {
+  const parsedName = parsed.name.trim();
   const globalMatches = byName(allStudents, parsedName);
-  void classStudents;
+  const classMatches = byName(classStudents, parsedName);
+  const parsedClassMatches = parsed.className.trim()
+    ? globalMatches.filter(
+        (student) => normalizeClassToken(student.className) === normalizeClassToken(parsed.className),
+      )
+    : [];
+  const scopedMatches = uniqueStudents([...classMatches, ...parsedClassMatches]);
 
-  if (globalMatches.length === 1) {
+  const studentIdMatches = matchStudentsByStudentId(scopedMatches.length > 0 ? scopedMatches : globalMatches, parsed.studentId);
+  const phoneMatches = matchStudentsByPhoneSuffix(scopedMatches.length > 0 ? scopedMatches : globalMatches, parsed.phoneSuffix);
+  const resolvedById = studentIdMatches.length === 1 ? studentIdMatches[0] : null;
+  const resolvedByPhone = phoneMatches.length === 1 ? phoneMatches[0] : null;
+
+  if (!parsedName) {
     return {
-      status: "ready",
-      candidates: globalMatches,
-      selectedStudentUid: globalMatches[0].uid,
+      status: "unregistered",
+      candidates: classStudents,
+      selectedStudentUid: null,
+      matchReason: "학생 이름을 확인할 수 없어 자동 매칭을 중단했습니다.",
     };
   }
 
-  if (globalMatches.length > 1) {
+  if (resolvedById) {
+    return {
+      status: "ready",
+      candidates: [resolvedById],
+      selectedStudentUid: resolvedById.uid,
+      matchReason: "이름과 학생 코드가 모두 일치해 자동 매칭했습니다.",
+    };
+  }
+
+  if (resolvedByPhone) {
+    return {
+      status: "ready",
+      candidates: [resolvedByPhone],
+      selectedStudentUid: resolvedByPhone.uid,
+      matchReason: "이름과 전화번호 뒤 4자리가 일치해 자동 매칭했습니다.",
+    };
+  }
+
+  if (studentIdMatches.length > 1 || phoneMatches.length > 1 || scopedMatches.length > 1 || globalMatches.length > 1) {
+    return {
+      status: "needs_selection",
+      candidates: uniqueStudents(scopedMatches.length > 0 ? scopedMatches : globalMatches),
+      selectedStudentUid: null,
+      matchReason:
+        parsed.studentId.trim() || parsed.phoneSuffix.trim()
+          ? "동일한 이름 후보가 여러 명이어서 자동 매칭을 중단했습니다."
+          : "이름만으로는 위험해 자동 매칭하지 않았습니다. 학생 코드나 전화번호 뒤 4자리를 확인해주세요.",
+    };
+  }
+
+  if (globalMatches.length === 1) {
     return {
       status: "needs_selection",
       candidates: globalMatches,
       selectedStudentUid: null,
-    };
-  }
-
-  if (!parsedName.trim()) {
-    return {
-      status: "unregistered",
-      candidates: allStudents,
-      selectedStudentUid: null,
+      matchReason: "이름만 일치하는 상태라 자동 매칭하지 않았습니다. 학생 코드나 전화번호 뒤 4자리를 확인해주세요.",
     };
   }
 
   return {
     status: "unregistered",
-    candidates: byName(allStudents, parsedName),
+    candidates: uniqueStudents(scopedMatches.length > 0 ? scopedMatches : globalMatches),
     selectedStudentUid: null,
+    matchReason:
+      parsed.studentId.trim() || parsed.phoneSuffix.trim()
+        ? "일치하는 가입 학생이 없어 가입 대기/미매칭으로 분류했습니다."
+        : "정확한 식별 정보가 없어 가입 대기/미매칭으로 분류했습니다.",
   };
 };
 
@@ -1126,12 +1249,14 @@ export const prepareUploadCandidates = async (
         const merged = {
           ...chunk.parsed,
           name: chunk.parsed.name || fileHint.name || "",
+          studentId: chunk.parsed.studentId || fileHint.studentId || "",
+          phoneSuffix: chunk.parsed.phoneSuffix || fileHint.phoneSuffix || "",
           scores: {
             ...chunk.parsed.scores,
             total: chunk.parsed.scores.total ?? chunk.parsed.convertedScores.total ?? fileHint.total ?? null,
           },
         };
-        const match = resolveMatchStatus(merged.name, classStudents, allStudents);
+        const match = resolveMatchStatus(merged, classStudents, allStudents);
         candidates.push({
           id: createUploadCandidateId(),
           file,
@@ -1150,6 +1275,8 @@ export const prepareUploadCandidates = async (
         parsed: {
           ...EMPTY_PARSED,
           name: fileHint.name || "",
+          studentId: fileHint.studentId || "",
+          phoneSuffix: fileHint.phoneSuffix || "",
           scores: {
             ...EMPTY_PARSED.scores,
             total: fileHint.total ?? null,
@@ -1282,18 +1409,14 @@ export const publishReportBatch = async (
         throw new Error("파싱 실패: 첨삭 총평이 비어 있습니다.");
       }
 
-      const matched = row.parsed.name.trim()
-        ? allStudents.filter((entry) => entry.name.trim() === row.parsed.name.trim())
-        : [];
-
-      const forcedStudent = row.selectedStudentUid
+      const resolvedStudent = row.selectedStudentUid
         ? allStudents.find((entry) => entry.uid === row.selectedStudentUid) ?? null
         : null;
 
-      const completedStudent = forcedStudent ?? (matched.length === 1 ? matched[0] : null);
+      const completedStudent = resolvedStudent;
       const assignmentStatus: ReportAssignmentStatus = completedStudent
         ? "completed"
-        : matched.length > 1
+        : row.status === "needs_selection"
           ? "duplicate_pending"
           : "unassigned_pending";
 
@@ -1319,6 +1442,10 @@ export const publishReportBatch = async (
         status: completedStudent ? "completed" : "pending",
         assignedAt: completedStudent ? serverTimestamp() : null,
         sourceName: row.parsed.name || "",
+        sourceStudentId: row.parsed.studentId || null,
+        sourcePhoneSuffix: row.parsed.phoneSuffix || null,
+        sourceClassName: row.parsed.className || null,
+        matchReason: row.matchReason ?? null,
         writtenAt: row.parsed.writtenAt || "",
         reviewer: row.parsed.reviewer || "",
         essayTopic: row.parsed.essayTopic || "",
@@ -1348,7 +1475,7 @@ export const publishReportBatch = async (
 
       if (assignmentStatus === "completed") {
         successCount += 1;
-        if (!forcedStudent && matched.length === 1) {
+        if (row.status === "ready" && row.matchReason) {
           autoAssignedNotices.push(`[${completedStudent?.name}] 학생에게 리포트를 전달했습니다`);
         }
       } else {
@@ -1585,6 +1712,7 @@ export const assignPendingReportToStudent = async (
     assignmentStatus: "completed",
     status: "completed",
     assignedAt: serverTimestamp(),
+    matchReason: "관리자가 수동으로 학생을 연결했습니다.",
     updatedAt: serverTimestamp(),
   });
 };
@@ -1674,6 +1802,22 @@ export const updatePublishedReport = async (
   }
 
   await updateDoc(reportRef, updatePayload);
+};
+
+export const movePublishedReportToPending = async (reportId: string): Promise<void> => {
+  const reportRef = doc(db, "reports", reportId);
+  const snap = await getDoc(reportRef);
+  const data = (snap.data() ?? {}) as Partial<ReportRecord>;
+
+  await updateDoc(reportRef, {
+    studentUid: null,
+    studentId: null,
+    studentName: data.sourceName ?? data.studentName ?? "",
+    assignmentStatus: "unassigned_pending",
+    status: "pending",
+    assignedAt: null,
+    updatedAt: serverTimestamp(),
+  });
 };
 
 export const deletePublishedReport = async (reportId: string): Promise<void> => {
