@@ -124,37 +124,47 @@ const ReportView = () => {
         .filter((row) => row.assignmentStatus !== "duplicate_pending" && row.assignmentStatus !== "unassigned_pending")
         .sort(compareReportsByExamDateDesc);
 
+    const mergeReports = (...groups: ReportRecord[][]) =>
+      Array.from(
+        new Map(
+          groups
+            .flat()
+            .map((report) => [report.id, report]),
+        ).values(),
+      ).sort(compareReportsByExamDateDesc);
+
     const reportsRef = collection(db, "reports");
     const primaryQuery = query(reportsRef, where("studentUid", "==", user.uid), orderBy("createdAt", "desc"));
     let fallbackUnsub: (() => void) | null = null;
+    let identityUnsub: (() => void) | null = null;
+    let identityFallbackUnsub: (() => void) | null = null;
+    let uidRows: ReportRecord[] = [];
+    let identityRows: ReportRecord[] = [];
+    const syncRows = () => {
+      const ownRecords = mergeReports(uidRows, identityRows);
+      setReports(ownRecords);
+      setSelectedReportId((prev) => {
+        if (ownRecords.some((report) => report.id === prev)) {
+          return prev;
+        }
+        return ownRecords[0]?.id ?? "";
+      });
+      setLoading(false);
+    };
 
     const primaryUnsub = onSnapshot(
       primaryQuery,
       (snapshot) => {
-        const ownRecords = toRows(snapshot.docs);
-        setReports(ownRecords);
-        setSelectedReportId((prev) => {
-          if (ownRecords.some((report) => report.id === prev)) {
-            return prev;
-          }
-          return [...ownRecords].sort(compareReportsByExamDateDesc)[0]?.id ?? "";
-        });
-        setLoading(false);
+        uidRows = toRows(snapshot.docs);
+        syncRows();
       },
       () => {
         const fallbackQuery = query(reportsRef, where("studentUid", "==", user.uid));
         fallbackUnsub = onSnapshot(
           fallbackQuery,
           (snapshot) => {
-            const ownRecords = toRows(snapshot.docs);
-            setReports(ownRecords);
-            setSelectedReportId((prev) => {
-              if (ownRecords.some((report) => report.id === prev)) {
-                return prev;
-              }
-              return [...ownRecords].sort(compareReportsByExamDateDesc)[0]?.id ?? "";
-            });
-            setLoading(false);
+            uidRows = toRows(snapshot.docs);
+            syncRows();
           },
           (loadError) => {
             setError(
@@ -168,11 +178,46 @@ const ReportView = () => {
       },
     );
 
+    if (user.studentId) {
+      const identityQuery = query(
+        reportsRef,
+        where("studentId", "==", user.studentId),
+        orderBy("createdAt", "desc"),
+      );
+      identityUnsub = onSnapshot(
+        identityQuery,
+        (snapshot) => {
+          identityRows = toRows(snapshot.docs);
+          syncRows();
+        },
+        () => {
+          const fallbackQuery = query(reportsRef, where("studentId", "==", user.studentId));
+          identityFallbackUnsub = onSnapshot(
+            fallbackQuery,
+            (snapshot) => {
+              identityRows = toRows(snapshot.docs);
+              syncRows();
+            },
+            (loadError) => {
+              setError(
+                loadError instanceof Error
+                  ? loadError.message
+                  : "리포트 조회 중 오류가 발생했습니다.",
+              );
+              setLoading(false);
+            },
+          );
+        },
+      );
+    }
+
     return () => {
       primaryUnsub();
       fallbackUnsub?.();
+      identityUnsub?.();
+      identityFallbackUnsub?.();
     };
-  }, [user?.uid]);
+  }, [user?.studentId, user?.uid]);
 
   useEffect(() => {
     const run = async () => {
@@ -193,8 +238,15 @@ const ReportView = () => {
   }, [user?.uid]);
 
   const studentReports = useMemo(
-    () => reports.filter((report) => report.studentUid === user?.uid).sort(compareReportsByExamDateDesc),
-    [reports, user?.uid],
+    () =>
+      reports
+        .filter(
+          (report) =>
+            report.studentUid === user?.uid ||
+            (Boolean(user?.studentId) && report.studentId === user?.studentId),
+        )
+        .sort(compareReportsByExamDateDesc),
+    [reports, user?.studentId, user?.uid],
   );
 
   const selectedReport = useMemo(

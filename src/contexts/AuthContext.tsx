@@ -10,7 +10,7 @@ import {
   onAuthStateChanged,
   signOut as firebaseSignOut,
 } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, onSnapshot } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 import { normalizeRole, type CanonicalRole } from "@/lib/authz";
 
@@ -41,7 +41,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let unsubscribeProfile: (() => void) | null = null;
+
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: User | null) => {
+      unsubscribeProfile?.();
+      unsubscribeProfile = null;
+
       if (!firebaseUser) {
         setUser(null);
         setLoading(false);
@@ -50,54 +55,66 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
       try {
         const userRef = doc(db, "users", firebaseUser.uid);
-        const snap = await getDoc(userRef);
+        unsubscribeProfile = onSnapshot(
+          userRef,
+          (snap) => {
+            if (!snap.exists()) {
+              setUser({
+                uid: firebaseUser.uid,
+                name: firebaseUser.displayName ?? "사용자",
+                email: firebaseUser.email,
+                role: "STUDENT",
+              });
+              setLoading(false);
+              return;
+            }
 
-        if (!snap.exists()) {
-          // Firestore에 문서가 없는 경우, 최소 정보만 구성
-          setUser({
-            uid: firebaseUser.uid,
-            name: firebaseUser.displayName ?? "사용자",
-            email: firebaseUser.email,
-            role: "STUDENT",
-          });
-        } else {
-          const data = snap.data() as {
-            name: string;
-            email: string;
-            role?: string;
-            studentId?: string;
-            studentKey?: string;
-            phoneSuffix?: string;
-            classId?: string | null;
-            className?: string | null;
-          };
+            const data = snap.data() as {
+              name: string;
+              email: string;
+              role?: string;
+              studentId?: string;
+              studentKey?: string;
+              phoneSuffix?: string;
+              classId?: string | null;
+              className?: string | null;
+            };
 
-          const inferredStudentId =
-            data.studentId ??
-            data.phoneSuffix ??
-            data.studentKey?.match(/_(\d{4})$/)?.[1];
+            const inferredStudentId =
+              data.studentId ??
+              data.phoneSuffix ??
+              data.studentKey?.match(/_(\d{4})$/)?.[1];
 
-          setUser({
-            uid: firebaseUser.uid,
-            name: data.name,
-            email: data.email,
-            role: normalizeRole(data.role),
-            studentId: inferredStudentId,
-            studentKey: data.studentKey,
-            phoneSuffix: data.phoneSuffix,
-            classId: data.classId ?? null,
-            className: data.className ?? null,
-          });
-        }
+            setUser({
+              uid: firebaseUser.uid,
+              name: data.name,
+              email: data.email,
+              role: normalizeRole(data.role),
+              studentId: inferredStudentId,
+              studentKey: data.studentKey,
+              phoneSuffix: data.phoneSuffix,
+              classId: data.classId ?? null,
+              className: data.className ?? null,
+            });
+            setLoading(false);
+          },
+          (error) => {
+            console.error("Failed to subscribe user profile", error);
+            setUser(null);
+            setLoading(false);
+          },
+        );
       } catch (error) {
         console.error("Failed to load user profile", error);
         setUser(null);
-      } finally {
         setLoading(false);
       }
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribeProfile?.();
+      unsubscribe();
+    };
   }, []);
 
   const signOut = async () => {

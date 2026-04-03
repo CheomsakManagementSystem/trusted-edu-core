@@ -1,18 +1,74 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { EmailAuthProvider, reauthenticateWithCredential, updatePassword } from "firebase/auth";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { auth } from "@/lib/firebase";
+import { useAuth } from "@/contexts/AuthContext";
+import { fetchClasses, type ClassLite } from "@/lib/pdfProcessor";
+import { updateStudentClassAssignment } from "@/services/classTransferService";
 
 const AccountSettings = () => {
+  const { user } = useAuth();
   const { toast } = useToast();
+  const [classes, setClasses] = useState<ClassLite[]>([]);
+  const [selectedClassId, setSelectedClassId] = useState("none");
+  const [classSaving, setClassSaving] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSaving, setPasswordSaving] = useState(false);
+
+  useEffect(() => {
+    const run = async () => {
+      const classRows = await fetchClasses();
+      setClasses(classRows);
+    };
+    run();
+  }, []);
+
+  useEffect(() => {
+    setSelectedClassId(user?.classId ?? "none");
+  }, [user?.classId]);
+
+  const selectedClass = useMemo(
+    () => classes.find((item) => item.id === selectedClassId) ?? null,
+    [classes, selectedClassId],
+  );
+
+  const hasClassSelectionChanged = (user?.classId ?? "none") !== selectedClassId;
+
+  const handleClassChange = async () => {
+    if (!user?.uid || !hasClassSelectionChanged) {
+      return;
+    }
+
+    setClassSaving(true);
+    try {
+      await updateStudentClassAssignment(user.uid, selectedClass);
+      toast({
+        title: "반 정보가 성공적으로 업데이트되었습니다",
+      });
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "반 변경에 실패했습니다",
+        description: error instanceof Error ? error.message : "잠시 후 다시 시도해주세요.",
+      });
+      setSelectedClassId(user.classId ?? "none");
+    } finally {
+      setClassSaving(false);
+    }
+  };
 
   const handlePasswordChange = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -87,10 +143,43 @@ const AccountSettings = () => {
     <DashboardLayout>
       <div className="space-y-6 pb-20">
         <div>
-          <h2 className="text-xl font-bold text-foreground">계정 관리</h2>
+          <h2 className="text-xl font-bold text-foreground">내 정보 관리</h2>
           <p className="text-sm text-muted-foreground">
-            보안을 위해 현재 비밀번호 확인 후 새 비밀번호로 변경하세요.
+            현재 소속 반을 확인하고 필요한 경우 직접 변경할 수 있습니다.
           </p>
+        </div>
+
+        <div className="rounded-lg border border-border bg-white p-5 shadow-card">
+          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div className="space-y-1.5">
+              <p className="text-sm font-semibold text-card-foreground">현재 소속 반</p>
+              <p className="text-base text-foreground">{user?.className || "미배정"}</p>
+            </div>
+            <div className="w-full max-w-sm space-y-2">
+              <label className="text-sm font-medium text-card-foreground">반 변경하기</label>
+              <Select value={selectedClassId} onValueChange={setSelectedClassId}>
+                <SelectTrigger className="bg-background">
+                  <SelectValue placeholder="이동할 반 선택" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">미배정</SelectItem>
+                  {classes.map((item) => (
+                    <SelectItem key={item.id} value={item.id}>
+                      {item.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                type="button"
+                className="w-full"
+                disabled={classSaving || !hasClassSelectionChanged}
+                onClick={handleClassChange}
+              >
+                {classSaving ? "변경 중..." : "확인"}
+              </Button>
+            </div>
+          </div>
         </div>
 
         <div className="relative block rounded-lg border-2 border-primary/20 bg-primary/5 p-3 shadow-card md:p-5">

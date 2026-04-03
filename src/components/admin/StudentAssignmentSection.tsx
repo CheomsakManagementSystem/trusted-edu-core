@@ -4,8 +4,6 @@ import {
   onSnapshot,
   query,
   orderBy,
-  doc,
-  updateDoc,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import {
@@ -16,8 +14,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { useToast } from "@/hooks/use-toast";
 import { User, GraduationCap } from "lucide-react";
 import { normalizeRole } from "@/lib/authz";
+import {
+  bulkUpdateStudentClassAssignments,
+  updateStudentClassAssignment,
+} from "@/services/classTransferService";
 
 type ClassDoc = {
   id: string;
@@ -34,9 +39,15 @@ type StudentDoc = {
 };
 
 const StudentAssignmentSection = () => {
+  const { toast } = useToast();
   const [classes, setClasses] = useState<ClassDoc[]>([]);
   const [students, setStudents] = useState<StudentDoc[]>([]);
   const [search, setSearch] = useState("");
+  const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  const [selectedBulkClassId, setSelectedBulkClassId] = useState("none");
+  const [pendingClassSelections, setPendingClassSelections] = useState<Record<string, string>>({});
+  const [savingStudentId, setSavingStudentId] = useState<string | null>(null);
+  const [bulkSaving, setBulkSaving] = useState(false);
 
   useEffect(() => {
     const q = query(collection(db, "classes"), orderBy("createdAt", "desc"));
@@ -85,13 +96,72 @@ const StudentAssignmentSection = () => {
     [students, search]
   );
 
-  const handleAssignClass = async (student: StudentDoc, classId: string) => {
-    const ref = doc(db, "users", student.id);
-    const cls = classes.find((c) => c.id === classId);
-    await updateDoc(ref, {
-      classId: classId || null,
-      className: cls?.name ?? null,
+  useEffect(() => {
+    setPendingClassSelections((prev) => {
+      const next: Record<string, string> = {};
+      students.forEach((student) => {
+        next[student.id] = prev[student.id] ?? student.classId ?? "none";
+      });
+      return next;
     });
+  }, [students]);
+
+  useEffect(() => {
+    const ids = new Set(filteredStudents.map((student) => student.id));
+    setSelectedStudentIds((prev) => prev.filter((id) => ids.has(id)));
+  }, [filteredStudents]);
+
+  const handleAssignClass = async (student: StudentDoc) => {
+    const nextClassId = pendingClassSelections[student.id] ?? student.classId ?? "none";
+    const currentClassId = student.classId ?? "none";
+    if (nextClassId === currentClassId) {
+      return;
+    }
+
+    setSavingStudentId(student.id);
+    try {
+      const cls = classes.find((c) => c.id === nextClassId) ?? null;
+      await updateStudentClassAssignment(student.id, cls);
+      toast({
+        title: "반 정보가 성공적으로 업데이트되었습니다",
+      });
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "반 변경 실패",
+        description: error instanceof Error ? error.message : "잠시 후 다시 시도해주세요.",
+      });
+      setPendingClassSelections((prev) => ({
+        ...prev,
+        [student.id]: student.classId ?? "none",
+      }));
+    } finally {
+      setSavingStudentId(null);
+    }
+  };
+
+  const handleBulkAssign = async () => {
+    if (!selectedStudentIds.length) {
+      return;
+    }
+
+    setBulkSaving(true);
+    try {
+      const cls = classes.find((c) => c.id === selectedBulkClassId) ?? null;
+      await bulkUpdateStudentClassAssignments(selectedStudentIds, cls);
+      setSelectedStudentIds([]);
+      toast({
+        title: "반 정보가 성공적으로 업데이트되었습니다",
+      });
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "일괄 변경 실패",
+        description: error instanceof Error ? error.message : "잠시 후 다시 시도해주세요.",
+      });
+    } finally {
+      setBulkSaving(false);
+    }
   };
 
   return (
@@ -125,10 +195,38 @@ const StudentAssignmentSection = () => {
         </div>
       </div>
 
+      <div className="flex flex-col gap-2 rounded-xl border border-slate-800 bg-slate-900/70 p-3 md:flex-row md:items-center">
+        <Select value={selectedBulkClassId} onValueChange={setSelectedBulkClassId}>
+          <SelectTrigger className="h-9 w-full border-slate-700 bg-slate-900 text-xs text-slate-50 md:w-56">
+            <SelectValue placeholder="반 일괄 변경" />
+          </SelectTrigger>
+          <SelectContent className="bg-slate-900 text-slate-50">
+            <SelectItem value="none">미배정</SelectItem>
+            {classes.map((c) => (
+              <SelectItem key={c.id} value={c.id}>
+                {c.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          type="button"
+          onClick={handleBulkAssign}
+          disabled={bulkSaving || selectedStudentIds.length === 0}
+          className="bg-sky-500 text-slate-950 hover:bg-sky-400"
+        >
+          반 일괄 변경
+        </Button>
+        <span className="text-xs text-slate-400">선택 학생 {selectedStudentIds.length}명</span>
+      </div>
+
       <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/70">
         <table className="min-w-full divide-y divide-slate-800 text-sm">
           <thead className="bg-slate-900">
             <tr>
+              <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wide text-slate-400">
+                선택
+              </th>
               <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wide text-slate-400">
                 학생
               </th>
@@ -139,13 +237,26 @@ const StudentAssignmentSection = () => {
                 현재 반
               </th>
               <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wide text-slate-400">
-                배정
+                반 변경
               </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800 bg-slate-900/40">
             {filteredStudents.map((s) => (
               <tr key={s.id}>
+                <td className="px-4 py-2">
+                  <Checkbox
+                    checked={selectedStudentIds.includes(s.id)}
+                    onCheckedChange={(checked) =>
+                      setSelectedStudentIds((prev) =>
+                        checked
+                          ? Array.from(new Set([...prev, s.id]))
+                          : prev.filter((id) => id !== s.id),
+                      )
+                    }
+                    className="border-slate-600 data-[state=checked]:border-sky-500 data-[state=checked]:bg-sky-500"
+                  />
+                </td>
                 <td className="px-4 py-2 text-slate-100">
                   <div className="flex items-center gap-2">
                     <div className="flex h-7 w-7 items-center justify-center rounded-full bg-sky-500/10 text-sky-400">
@@ -163,29 +274,46 @@ const StudentAssignmentSection = () => {
                   )}
                 </td>
                 <td className="px-4 py-2">
-                  <Select
-                    value={s.classId ?? ""}
-                    onValueChange={(v) => handleAssignClass(s, v)}
-                  >
-                    <SelectTrigger className="h-8 w-44 border-slate-700 bg-slate-900 text-xs text-slate-50">
-                      <SelectValue placeholder="반 선택" />
-                    </SelectTrigger>
-                    <SelectContent className="bg-slate-900 text-slate-50">
-                      <SelectItem value="">미배정</SelectItem>
-                      {classes.map((c) => (
-                        <SelectItem key={c.id} value={c.id}>
-                          {c.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <div className="flex items-center gap-2">
+                    <Select
+                      value={pendingClassSelections[s.id] ?? s.classId ?? "none"}
+                      onValueChange={(v) =>
+                        setPendingClassSelections((prev) => ({ ...prev, [s.id]: v }))
+                      }
+                    >
+                      <SelectTrigger className="h-8 w-44 border-slate-700 bg-slate-900 text-xs text-slate-50">
+                        <SelectValue placeholder="반 선택" />
+                      </SelectTrigger>
+                      <SelectContent className="bg-slate-900 text-slate-50">
+                        <SelectItem value="none">미배정</SelectItem>
+                        {classes.map((c) => (
+                          <SelectItem key={c.id} value={c.id}>
+                            {c.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      disabled={
+                        savingStudentId === s.id ||
+                        (pendingClassSelections[s.id] ?? s.classId ?? "none") === (s.classId ?? "none")
+                      }
+                      className="border border-slate-700 bg-slate-800 text-slate-50 hover:bg-slate-700"
+                      onClick={() => handleAssignClass(s)}
+                    >
+                      저장
+                    </Button>
+                  </div>
                 </td>
               </tr>
             ))}
             {filteredStudents.length === 0 && (
               <tr>
                 <td
-                  colSpan={4}
+                  colSpan={5}
                   className="px-4 py-6 text-center text-xs text-slate-500"
                 >
                   조건에 맞는 학생이 없습니다.

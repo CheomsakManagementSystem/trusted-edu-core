@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
 import { db } from "@/lib/firebase";
 import {
   fetchClasses,
@@ -29,6 +30,10 @@ import {
   type StudentLite,
 } from "@/lib/pdfProcessor";
 import { formatStudentName } from "@/lib/studentName";
+import {
+  bulkUpdateStudentClassAssignments,
+  updateStudentClassAssignment,
+} from "@/services/classTransferService";
 
 type ClassFormState = {
   id: string | null;
@@ -36,15 +41,20 @@ type ClassFormState = {
 };
 
 const ClassManager = () => {
+  const { toast } = useToast();
   const [classes, setClasses] = useState<ClassLite[]>([]);
   const [students, setStudents] = useState<StudentLite[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string>("none");
   const [checkedStudentUids, setCheckedStudentUids] = useState<string[]>([]);
+  const [checkedManagedStudentUids, setCheckedManagedStudentUids] = useState<string[]>([]);
   const [search, setSearch] = useState("");
   const [classForm, setClassForm] = useState<ClassFormState>({ id: null, name: "" });
   const [message, setMessage] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [expandedClassId, setExpandedClassId] = useState<string | null>(null);
+  const [adminSearch, setAdminSearch] = useState("");
+  const [selectedBulkClassId, setSelectedBulkClassId] = useState("none");
+  const [pendingClassSelections, setPendingClassSelections] = useState<Record<string, string>>({});
 
   const loadData = async () => {
     const [classDocs, studentDocs] = await Promise.all([fetchClasses(), fetchStudents()]);
@@ -87,6 +97,20 @@ const ClassManager = () => {
     });
   }, [search, students]);
 
+  const filteredManageableStudents = useMemo(() => {
+    const keyword = adminSearch.trim().toLowerCase();
+    return students.filter((student) => {
+      if (!keyword) {
+        return true;
+      }
+      return (
+        student.name.toLowerCase().includes(keyword) ||
+        student.email.toLowerCase().includes(keyword) ||
+        (student.className ?? "").toLowerCase().includes(keyword)
+      );
+    });
+  }, [adminSearch, students]);
+
   const studentsByClassId = useMemo(() => {
     const map = new Map<string, StudentLite[]>();
     classes.forEach((item) => {
@@ -112,6 +136,21 @@ const ClassManager = () => {
     setCheckedStudentUids((prev) => prev.filter((uid) => assignableUids.has(uid)));
   }, [filteredStudents]);
 
+  useEffect(() => {
+    const manageableUids = new Set(filteredManageableStudents.map((student) => student.uid));
+    setCheckedManagedStudentUids((prev) => prev.filter((uid) => manageableUids.has(uid)));
+  }, [filteredManageableStudents]);
+
+  useEffect(() => {
+    setPendingClassSelections((prev) => {
+      const next: Record<string, string> = {};
+      students.forEach((student) => {
+        next[student.uid] = prev[student.uid] ?? student.classId ?? "none";
+      });
+      return next;
+    });
+  }, [students]);
+
   const toggleChecked = (uid: string, checked: boolean) => {
     setCheckedStudentUids((prev) => {
       if (checked) {
@@ -119,6 +158,27 @@ const ClassManager = () => {
       }
       return prev.filter((item) => item !== uid);
     });
+  };
+
+  const toggleManagedChecked = (uid: string, checked: boolean) => {
+    setCheckedManagedStudentUids((prev) => {
+      if (checked) {
+        return Array.from(new Set([...prev, uid]));
+      }
+      return prev.filter((item) => item !== uid);
+    });
+  };
+
+  const areAllManageableStudentsChecked =
+    filteredManageableStudents.length > 0 &&
+    filteredManageableStudents.every((student) => checkedManagedStudentUids.includes(student.uid));
+
+  const handleToggleAllManagedStudents = (checked: boolean) => {
+    if (checked) {
+      setCheckedManagedStudentUids(filteredManageableStudents.map((student) => student.uid));
+      return;
+    }
+    setCheckedManagedStudentUids([]);
   };
 
   const handleCreateOrUpdateClass = async (event: FormEvent<HTMLFormElement>) => {
@@ -246,8 +306,87 @@ const ClassManager = () => {
       );
       setCheckedStudentUids([]);
       setMessage(`${assignedUids.length}명의 학생을 '${selectedClass.name}'에 배정했습니다.`);
+      toast({
+        title: "반 정보가 성공적으로 업데이트되었습니다",
+      });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "학생 배정에 실패했습니다.");
+      await loadData();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStudentClassSave = async (student: StudentLite) => {
+    const nextClassId = pendingClassSelections[student.uid] ?? student.classId ?? "none";
+    const currentClassId = student.classId ?? "none";
+    if (nextClassId === currentClassId) {
+      return;
+    }
+
+    const targetClass = classes.find((item) => item.id === nextClassId) ?? null;
+
+    setLoading(true);
+    setMessage("");
+    try {
+      await updateStudentClassAssignment(student.uid, targetClass);
+      setStudents((prev) =>
+        prev.map((item) =>
+          item.uid === student.uid
+            ? { ...item, classId: targetClass?.id ?? null, className: targetClass?.name ?? null }
+            : item,
+        ),
+      );
+      setPendingClassSelections((prev) => ({
+        ...prev,
+        [student.uid]: targetClass?.id ?? "none",
+      }));
+      toast({
+        title: "반 정보가 성공적으로 업데이트되었습니다",
+      });
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "반 변경에 실패했습니다.");
+      setPendingClassSelections((prev) => ({
+        ...prev,
+        [student.uid]: student.classId ?? "none",
+      }));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleBulkTransfer = async () => {
+    if (checkedManagedStudentUids.length === 0) {
+      setMessage("반을 일괄 변경할 학생을 선택해주세요.");
+      return;
+    }
+
+    const targetClass = classes.find((item) => item.id === selectedBulkClassId) ?? null;
+
+    setLoading(true);
+    setMessage("");
+    try {
+      await bulkUpdateStudentClassAssignments(checkedManagedStudentUids, targetClass);
+      setStudents((prev) =>
+        prev.map((student) =>
+          checkedManagedStudentUids.includes(student.uid)
+            ? { ...student, classId: targetClass?.id ?? null, className: targetClass?.name ?? null }
+            : student,
+        ),
+      );
+      setPendingClassSelections((prev) => {
+        const next = { ...prev };
+        checkedManagedStudentUids.forEach((uid) => {
+          next[uid] = targetClass?.id ?? "none";
+        });
+        return next;
+      });
+      setCheckedManagedStudentUids([]);
+      toast({
+        title: "반 정보가 성공적으로 업데이트되었습니다",
+      });
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "반 일괄 변경에 실패했습니다.");
       await loadData();
     } finally {
       setLoading(false);
@@ -285,7 +424,7 @@ const ClassManager = () => {
         <div>
           <h2 className="text-xl font-bold text-foreground">반 관리</h2>
           <p className="text-sm text-muted-foreground">
-            반 배정이 필요한 학생만 표시됩니다.
+            반 개설, 학생 배정, 반 이동을 한 곳에서 관리합니다.
           </p>
         </div>
 
@@ -463,6 +602,123 @@ const ClassManager = () => {
             {filteredStudents.length === 0 && (
               <p className="text-sm text-muted-foreground">표시할 학생이 없습니다.</p>
             )}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-card p-5 shadow-card">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-card-foreground">학생 목록</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                각 학생의 현재 반을 수정하거나 여러 학생을 한 번에 이동할 수 있습니다.
+              </p>
+            </div>
+            <Input
+              value={adminSearch}
+              onChange={(event) => setAdminSearch(event.target.value)}
+              placeholder="학생 이름/이메일/반 검색"
+              className="sm:w-72"
+            />
+          </div>
+
+          <div className="mt-4 overflow-hidden rounded-lg border border-border bg-background">
+            <div className="max-h-[680px] overflow-y-auto overscroll-contain pr-2 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-border/70 hover:scrollbar-thumb-border [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/70 hover:[&::-webkit-scrollbar-thumb]:bg-border">
+              <div className="sticky top-0 z-20 border-b border-border bg-background/95 px-3 py-3 backdrop-blur">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div className="flex items-center gap-3">
+                    <label className="flex items-center gap-2 text-sm text-card-foreground">
+                      <Checkbox
+                        checked={areAllManageableStudentsChecked}
+                        onCheckedChange={(value) => handleToggleAllManagedStudents(Boolean(value))}
+                      />
+                      <span>전체 선택</span>
+                    </label>
+                    <p className="text-xs text-muted-foreground">
+                      선택 학생 {checkedManagedStudentUids.length}명
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-2 md:flex-row md:items-center">
+                    <Select value={selectedBulkClassId} onValueChange={setSelectedBulkClassId}>
+                      <SelectTrigger className="md:w-64">
+                        <SelectValue placeholder="반 일괄 변경" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">미배정</SelectItem>
+                        {classes.map((item) => (
+                          <SelectItem key={item.id} value={item.id}>
+                            {item.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      type="button"
+                      onClick={handleBulkTransfer}
+                      disabled={loading || checkedManagedStudentUids.length === 0}
+                    >
+                      반 일괄 변경
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2 p-3">
+                {filteredManageableStudents.map((student) => {
+                  const checked = checkedManagedStudentUids.includes(student.uid);
+                  const selectedManageClassId = pendingClassSelections[student.uid] ?? student.classId ?? "none";
+                  const currentClassId = student.classId ?? "none";
+                  return (
+                    <div
+                      key={`manage-${student.uid}`}
+                      className="grid gap-3 rounded-md border border-border bg-background px-3 py-3 md:grid-cols-[auto_minmax(0,1.2fr)_minmax(0,0.8fr)_220px_auto]"
+                    >
+                      <div className="flex items-center">
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(value) => toggleManagedChecked(student.uid, Boolean(value))}
+                        />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-card-foreground">{formatStudentLabel(student)}</p>
+                        <p className="truncate text-xs text-muted-foreground">{student.email}</p>
+                      </div>
+                      <div className="flex items-center text-sm text-card-foreground">
+                        {student.className || "미배정"}
+                      </div>
+                      <Select
+                        value={selectedManageClassId}
+                        onValueChange={(value) =>
+                          setPendingClassSelections((prev) => ({ ...prev, [student.uid]: value }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="반 선택" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">미배정</SelectItem>
+                          {classes.map((item) => (
+                            <SelectItem key={item.id} value={item.id}>
+                              {item.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={loading || selectedManageClassId === currentClassId}
+                        onClick={() => handleStudentClassSave(student)}
+                      >
+                        저장
+                      </Button>
+                    </div>
+                  );
+                })}
+                {filteredManageableStudents.length === 0 && (
+                  <p className="py-6 text-sm text-muted-foreground">표시할 학생이 없습니다.</p>
+                )}
+              </div>
+            </div>
           </div>
         </div>
 
