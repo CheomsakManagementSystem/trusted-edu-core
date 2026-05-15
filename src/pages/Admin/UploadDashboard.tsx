@@ -1,4 +1,4 @@
-import { DragEvent, useEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import { Input } from "@/components/ui/input";
@@ -41,6 +41,7 @@ import {
   fetchReportsByClassId,
   fetchStudents,
   formatExamDate,
+  fixAndAssignPendingReport,
   getReportExamTitle,
   movePublishedReportToPending,
   normalizeDateString,
@@ -48,6 +49,7 @@ import {
   publishReportBatch,
   resolveMatchStatus,
   subscribeOpenReportClaims,
+  subscribePendingReports,
   updatePublishedReport,
   type ClassLite,
   type ReportClaimTriageRecord,
@@ -61,6 +63,7 @@ import {
   getMasterControls,
 } from "@/services/masterAdminService";
 import { formatStudentName } from "@/lib/studentName";
+import { isStaffRole } from "@/lib/authz";
 
 const scoreFields: Array<{ key: keyof ScoreBreakdown; label: string }> = [
   { key: "reading", label: "독해력" },
@@ -84,6 +87,10 @@ const statusLabel = {
   unregistered: "가입 대기/미매칭",
 } as const;
 
+type SearchableStudent = StudentLite & {
+  searchText: string;
+};
+
 const toFriendlyMessage = (input: string): string =>
   input
     .replace(/studentId/gi, "학생 정보")
@@ -99,6 +106,8 @@ const UploadDashboard = () => {
   const { user } = useAuth();
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const toastRef = useRef(toast);
+  const canManageReports = isStaffRole(user?.role);
 
   const [classes, setClasses] = useState<ClassLite[]>([]);
   const [students, setStudents] = useState<StudentLite[]>([]);
@@ -125,6 +134,10 @@ const UploadDashboard = () => {
   const [pendingMatchTarget, setPendingMatchTarget] = useState<ReportRecord | null>(null);
   const [pendingMatchSearch, setPendingMatchSearch] = useState("");
   const [pendingMatchStudentUid, setPendingMatchStudentUid] = useState<string>("");
+  const [fixTarget, setFixTarget] = useState<ReportRecord | null>(null);
+  const [fixSearch, setFixSearch] = useState("");
+  const [fixStudentUid, setFixStudentUid] = useState("");
+  const [savingFix, setSavingFix] = useState(false);
   const [openClaims, setOpenClaims] = useState<ReportClaimTriageRecord[]>([]);
   const [editingReport, setEditingReport] = useState<ReportRecord | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
@@ -145,6 +158,16 @@ const UploadDashboard = () => {
       total: null,
     },
   });
+  const [fixForm, setFixForm] = useState({
+    sourceName: "",
+    sourceStudentId: "",
+    sourcePhoneSuffix: "",
+    examDate: "",
+  });
+
+  useEffect(() => {
+    toastRef.current = toast;
+  }, [toast]);
 
   const selectedClass = useMemo(
     () => classes.find((item) => item.id === selectedClassId) ?? null,
@@ -163,6 +186,16 @@ const UploadDashboard = () => {
   const classStudents = useMemo(
     () => students.filter((student) => student.classId === selectedClassId),
     [selectedClassId, students],
+  );
+  const searchableStudents = useMemo<SearchableStudent[]>(
+    () =>
+      [...students]
+        .sort((a, b) => a.name.localeCompare(b.name, "ko"))
+        .map((student) => ({
+          ...student,
+          searchText: `${student.name} ${student.email} ${student.studentId ?? ""} ${student.phoneSuffix ?? ""} ${student.phoneNumber ?? ""} ${student.className ?? ""}`.toLowerCase(),
+        })),
+    [students],
   );
 
   const buildFileKey = (file: File) => `${file.name}:${file.lastModified}:${file.size}`;
@@ -205,6 +238,17 @@ const UploadDashboard = () => {
     return student ? formatStudentLabel(student) : claim.report?.studentName || "기록 없음";
   };
 
+  const filterStudents = useCallback(
+    (keyword: string) => {
+      const normalized = keyword.trim().toLowerCase();
+      if (!normalized) {
+        return [];
+      }
+      return searchableStudents.filter((student) => student.searchText.includes(normalized)).slice(0, 50);
+    },
+    [searchableStudents],
+  );
+
   useEffect(() => {
     const run = async () => {
       const [classDocs, studentDocs] = await Promise.all([fetchClasses(), fetchStudents()]);
@@ -216,12 +260,18 @@ const UploadDashboard = () => {
   }, []);
 
   useEffect(() => {
-    const run = async () => {
-      const pending = await fetchPendingReports();
-      setPendingReports(pending);
-    };
+    const unsubscribe = subscribePendingReports(
+      setPendingReports,
+      (pendingError) => {
+        toastRef.current({
+          variant: "destructive",
+          title: "미연결 자료 조회 실패",
+          description: pendingError.message,
+        });
+      },
+    );
 
-    run();
+    return unsubscribe;
   }, []);
 
   useEffect(() => {
@@ -236,7 +286,7 @@ const UploadDashboard = () => {
     const unsubscribe = subscribeOpenReportClaims(
       setOpenClaims,
       (claimError) => {
-        toast({
+        toastRef.current({
           variant: "destructive",
           title: "오배송 신고 조회 실패",
           description: claimError.message,
@@ -245,7 +295,7 @@ const UploadDashboard = () => {
     );
 
     return unsubscribe;
-  }, [toast]);
+  }, []);
 
   useEffect(() => {
     const run = async () => {
@@ -269,13 +319,25 @@ const UploadDashboard = () => {
     setMessage("");
   }, [selectedClassId, selectedDateText]);
 
+  const applyMatchResolution = useCallback((row: UploadCandidate): UploadCandidate => {
+    const nextMatch = resolveMatchStatus(row.parsed, classStudents, students);
+    const keepManualSelection =
+      row.selectedStudentUid && nextMatch.candidates.some((student) => student.uid === row.selectedStudentUid);
+
+    return {
+      ...row,
+      ...nextMatch,
+      selectedStudentUid: keepManualSelection ? row.selectedStudentUid : nextMatch.selectedStudentUid,
+    };
+  }, [classStudents, students]);
+
   useEffect(() => {
     if (rows.length === 0) {
       return;
     }
 
     setRows((prev) => prev.map((row) => applyMatchResolution(row)));
-  }, [selectedClassId, students]);
+  }, [applyMatchResolution, rows.length]);
 
   const parseAndAppendFiles = async (files: File[]) => {
     if (files.length === 0) {
@@ -382,18 +444,6 @@ const UploadDashboard = () => {
     );
   };
 
-  const applyMatchResolution = (row: UploadCandidate): UploadCandidate => {
-    const nextMatch = resolveMatchStatus(row.parsed, classStudents, students);
-    const keepManualSelection =
-      row.selectedStudentUid && nextMatch.candidates.some((student) => student.uid === row.selectedStudentUid);
-
-    return {
-      ...row,
-      ...nextMatch,
-      selectedStudentUid: keepManualSelection ? row.selectedStudentUid : nextMatch.selectedStudentUid,
-    };
-  };
-
   const handleNameEdit = (id: string, name: string) => {
     updateRow(id, (row) => applyMatchResolution({ ...row, parsed: { ...row.parsed, name } }));
   };
@@ -434,24 +484,7 @@ const UploadDashboard = () => {
   };
 
   const getSearchableCandidates = (row: UploadCandidate) => {
-    if (!selectedClass) {
-      return [];
-    }
-
-    const base =
-      row.status === "needs_selection"
-        ? row.candidates
-        : classStudents;
-    const keyword = (studentSearch[row.id] ?? "").trim().toLowerCase();
-
-    if (!keyword) {
-      return base;
-    }
-
-    return base.filter((student) => {
-      const target = `${student.name} ${student.email} ${student.studentId ?? ""} ${student.className ?? ""}`;
-      return target.toLowerCase().includes(keyword);
-    });
+    return filterStudents(studentSearch[row.id] ?? "");
   };
 
   const hasAnyInvalidRow = useMemo(
@@ -509,6 +542,11 @@ const UploadDashboard = () => {
       });
   }, [archiveClassFilter, archiveReadFilter, archiveStudentFilter, publishedReports]);
 
+  const recentClassReports = useMemo(
+    () => [...classReports].sort(compareReportsByExamDateDesc).slice(0, 20),
+    [classReports],
+  );
+
   const filteredCleanupPendingReports = useMemo(() => {
     const keyword = cleanupSearch.trim().toLowerCase();
     if (!keyword) {
@@ -522,24 +560,14 @@ const UploadDashboard = () => {
   }, [cleanupPendingReports, cleanupSearch]);
 
   const pendingMatchCandidates = useMemo(() => {
-    const keyword = pendingMatchSearch.trim().toLowerCase();
-    const base = [...students]
-      .filter((student) => {
-        if (!pendingMatchTarget?.classId) {
-          return true;
-        }
-        return student.classId === pendingMatchTarget.classId;
-      })
-      .sort((a, b) => a.name.localeCompare(b.name, "ko"));
-    if (!keyword) {
-      return base;
-    }
+    const keyword = pendingMatchSearch.trim();
+    return keyword ? filterStudents(keyword) : searchableStudents.slice(0, 50);
+  }, [filterStudents, pendingMatchSearch, searchableStudents]);
 
-    return base.filter((student) => {
-      const target = `${student.name} ${student.email} ${student.studentId ?? ""} ${student.className ?? ""}`.toLowerCase();
-      return target.includes(keyword);
-    });
-  }, [pendingMatchSearch, pendingMatchTarget, students]);
+  const fixCandidates = useMemo(() => {
+    const keyword = fixSearch.trim();
+    return keyword ? filterStudents(keyword) : searchableStudents.slice(0, 50);
+  }, [filterStudents, fixSearch, searchableStudents]);
 
   const handlePublish = async () => {
     if (!user) {
@@ -692,39 +720,7 @@ const UploadDashboard = () => {
   };
 
   const getPendingCandidates = (report: ReportRecord) => {
-    const scopedStudents = report.classId
-      ? students.filter((student) => student.classId === report.classId)
-      : students;
-    const keyword = (pendingSearch[report.id] ?? "").trim().toLowerCase();
-    const exactStudentIdMatches = report.sourceStudentId?.trim()
-      ? scopedStudents.filter((student) => student.studentId?.trim() === report.sourceStudentId?.trim())
-      : [];
-    const exactPhoneMatches = report.sourcePhoneSuffix?.trim()
-      ? scopedStudents.filter((student) => {
-          const phoneSuffix = (student.phoneSuffix ?? student.phoneNumber ?? student.studentId ?? "").replace(/\D/g, "").slice(-4);
-          return phoneSuffix === report.sourcePhoneSuffix?.replace(/\D/g, "").slice(-4);
-        })
-      : [];
-    const exactNameMatches = report.sourceName?.trim()
-      ? scopedStudents.filter((student) => student.name.trim() === report.sourceName.trim())
-      : [];
-    const base =
-      exactStudentIdMatches.length > 0
-        ? exactStudentIdMatches
-        : exactPhoneMatches.length > 0
-          ? exactPhoneMatches
-          : exactNameMatches.length > 0
-            ? exactNameMatches
-            : scopedStudents;
-
-    if (!keyword) {
-      return base;
-    }
-
-    return base.filter((student) => {
-      const target = `${student.name} ${student.email} ${student.studentId ?? ""} ${student.className ?? ""}`;
-      return target.toLowerCase().includes(keyword);
-    });
+    return filterStudents(pendingSearch[report.id] ?? "");
   };
 
   const handleAssignPending = async (report: ReportRecord) => {
@@ -784,6 +780,69 @@ const UploadDashboard = () => {
       `${report.sourceName || ""} ${report.sourceStudentId || report.sourcePhoneSuffix || ""}`.trim(),
     );
     setPendingMatchStudentUid("");
+  };
+
+  const handleOpenFixModal = (report: ReportRecord) => {
+    setFixTarget(report);
+    setFixForm({
+      sourceName: report.sourceName || report.studentName || "",
+      sourceStudentId: report.sourceStudentId || report.studentId || "",
+      sourcePhoneSuffix: report.sourcePhoneSuffix || "",
+      examDate: report.examDate || report.writtenAt || "",
+    });
+    setFixSearch(`${report.sourceName || report.studentName || ""} ${report.sourceStudentId || report.sourcePhoneSuffix || ""}`.trim());
+    setFixStudentUid("");
+  };
+
+  const closeFixModal = () => {
+    setFixTarget(null);
+    setFixSearch("");
+    setFixStudentUid("");
+  };
+
+  const handleApplyFix = async () => {
+    if (!fixTarget || !fixStudentUid) {
+      toast({
+        variant: "destructive",
+        title: "수정 및 배정 실패",
+        description: "배송할 학생을 선택해주세요.",
+      });
+      return;
+    }
+
+    const student = students.find((item) => item.uid === fixStudentUid);
+    if (!student) {
+      toast({
+        variant: "destructive",
+        title: "수정 및 배정 실패",
+        description: "선택한 학생 정보를 찾을 수 없습니다.",
+      });
+      return;
+    }
+
+    setSavingFix(true);
+    try {
+      await fixAndAssignPendingReport(fixTarget.id, student, fixForm, user?.role, user?.uid);
+      const [classRows, publishedRows] = await Promise.all([
+        selectedClass ? fetchReportsByClassId(selectedClass.id) : Promise.resolve(classReports),
+        fetchPublishedReports(),
+      ]);
+      setClassReports(classRows);
+      setPublishedReports(publishedRows);
+      closeFixModal();
+      toast({
+        title: "수정 및 배정 완료",
+        description: `${formatStudentLabel(student)} 학생에게 리포트를 배송했습니다.`,
+      });
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "수정 및 배정 실패",
+        description: error instanceof Error ? error.message : "리포트 수정에 실패했습니다.",
+      });
+    } finally {
+      setSavingFix(false);
+    }
   };
 
   const handleApplyPendingMatch = async () => {
@@ -1248,6 +1307,11 @@ const UploadDashboard = () => {
                             {formatStudentLabel(student)} ({student.className || "미배정"})
                           </SelectItem>
                         ))}
+                        {options.length === 0 && (
+                          <SelectItem value="no-results" disabled>
+                            검색어를 입력하세요
+                          </SelectItem>
+                        )}
                       </SelectContent>
                     </Select>
                     {row.selectedStudentUid && (
@@ -1255,12 +1319,13 @@ const UploadDashboard = () => {
                         선택된 학생으로만 배포됩니다. 자동 재매칭은 수행되지 않습니다.
                       </p>
                     )}
-                    {row.status !== "ready" && row.candidates.length > 0 && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => setManualMatchTargetId(row.id)}
-                      >
+                    {row.status !== "ready" && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={!canManageReports}
+                      onClick={() => setManualMatchTargetId(row.id)}
+                    >
                         수동 학생 매칭
                       </Button>
                     )}
@@ -1355,7 +1420,8 @@ const UploadDashboard = () => {
                 !selectedClass ||
                 !selectedDateText ||
                 rows.length === 0 ||
-                hasAnyInvalidRow
+                hasAnyInvalidRow ||
+                !canManageReports
               }
             >
               {uploading ? (
@@ -1389,7 +1455,7 @@ const UploadDashboard = () => {
             </div>
           </div>
           <div className="space-y-2">
-            {[...classReports].sort(compareReportsByExamDateDesc).slice(0, 20).map((report) => (
+            {recentClassReports.map((report) => (
               <div
                 key={report.id}
                 className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2"
@@ -1465,7 +1531,7 @@ const UploadDashboard = () => {
                           type="button"
                           size="sm"
                           variant="secondary"
-                          disabled={!claim.report}
+                          disabled={!claim.report || !canManageReports}
                           onClick={() => claim.report && handleOpenPendingMatch(claim.report)}
                         >
                           학생 변경
@@ -1546,13 +1612,13 @@ const UploadDashboard = () => {
                   </div>
                   <p className="text-xs text-muted-foreground">등록일 {formatExamDate(report.examDate)}</p>
                   <div className="flex gap-2">
-                    <Button type="button" size="sm" variant="secondary" onClick={() => handleOpenPendingMatch(report)}>
+                    <Button type="button" size="sm" variant="secondary" disabled={!canManageReports} onClick={() => handleOpenPendingMatch(report)}>
                       학생 변경
                     </Button>
-                    <Button type="button" size="sm" variant="secondary" onClick={() => handleMovePublishedReportToPending(report)}>
+                    <Button type="button" size="sm" variant="secondary" disabled={!canManageReports} onClick={() => handleMovePublishedReportToPending(report)}>
                       연결 해제
                     </Button>
-                    <Button type="button" size="sm" variant="outline" onClick={() => openEditModal(report)}>
+                    <Button type="button" size="sm" variant="outline" disabled={!canManageReports} onClick={() => openEditModal(report)}>
                       <Pencil className="mr-1 h-3.5 w-3.5" />
                       수정
                     </Button>
@@ -1560,7 +1626,7 @@ const UploadDashboard = () => {
                       type="button"
                       size="sm"
                       variant="destructive"
-                      disabled={deletingReportId === report.id}
+                      disabled={deletingReportId === report.id || !canManageReports}
                       onClick={() => handleDeletePublishedReport(report.id)}
                     >
                       <Trash2 className="mr-1 h-3.5 w-3.5" />
@@ -1612,6 +1678,7 @@ const UploadDashboard = () => {
                       type="button"
                       size="sm"
                       variant="secondary"
+                      disabled={!canManageReports}
                       onClick={() => handleOpenPendingMatch(report)}
                     >
                       학생 매칭
@@ -1619,9 +1686,19 @@ const UploadDashboard = () => {
                     <Button
                       type="button"
                       size="sm"
+                      variant="secondary"
+                      disabled={!canManageReports}
+                      onClick={() => handleOpenFixModal(report)}
+                    >
+                      수정 및 배정
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
                       variant="outline"
                       className="ml-auto"
                       title="이 미배정 리포트만 삭제"
+                      disabled={!canManageReports}
                       onClick={() => handleDeletePendingReport(report)}
                     >
                       <Trash2 className="h-4 w-4" />
@@ -1663,11 +1740,16 @@ const UploadDashboard = () => {
                             {formatStudentLabel(student)} ({student.email || "이메일 없음"})
                           </SelectItem>
                         ))}
+                        {options.length === 0 && (
+                          <SelectItem value="no-results" disabled>
+                            검색어를 입력하세요
+                          </SelectItem>
+                        )}
                       </SelectContent>
                     </Select>
                     <Button
                       onClick={() => handleAssignPending(report)}
-                      disabled={resolvingPendingId === report.id}
+                      disabled={resolvingPendingId === report.id || !canManageReports}
                     >
                       {resolvingPendingId === report.id ? "연결 중..." : "학생 연결"}
                     </Button>
@@ -1731,6 +1813,83 @@ const UploadDashboard = () => {
           </DialogContent>
         </Dialog>
 
+        <Dialog
+          open={Boolean(fixTarget)}
+          onOpenChange={(open) => {
+            if (!open) {
+              closeFixModal();
+            }
+          }}
+        >
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>미연결 리포트 수정 및 배정</DialogTitle>
+              <DialogDescription>
+                원본 정보를 수정하고 가입된 학생을 선택해 배송하세요.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                <Input
+                  value={fixForm.sourceName}
+                  onChange={(event) => setFixForm((prev) => ({ ...prev, sourceName: event.target.value }))}
+                  placeholder="원본 이름"
+                />
+                <Input
+                  value={fixForm.sourceStudentId}
+                  onChange={(event) => setFixForm((prev) => ({ ...prev, sourceStudentId: event.target.value }))}
+                  placeholder="원본 학생 코드"
+                />
+                <Input
+                  value={fixForm.sourcePhoneSuffix}
+                  onChange={(event) => setFixForm((prev) => ({ ...prev, sourcePhoneSuffix: event.target.value }))}
+                  placeholder="원본 번호 뒤 4자리"
+                />
+                <Input
+                  value={fixForm.examDate}
+                  onChange={(event) => setFixForm((prev) => ({ ...prev, examDate: event.target.value }))}
+                  placeholder="시험일 YYYY-MM-DD"
+                />
+              </div>
+              <Input
+                value={fixSearch}
+                onChange={(event) => setFixSearch(event.target.value)}
+                placeholder="학생 이름, 번호, 반 검색"
+              />
+              <div className="max-h-[300px] space-y-2 overflow-y-auto pr-1">
+                {fixCandidates.map((student) => (
+                  <button
+                    key={student.uid}
+                    type="button"
+                    onClick={() => setFixStudentUid(student.uid)}
+                    className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${
+                      fixStudentUid === student.uid
+                        ? "border-primary bg-primary/5"
+                        : "border-border bg-background hover:border-primary/30 hover:bg-muted/40"
+                    }`}
+                  >
+                    <p className="text-sm font-semibold text-card-foreground">{formatStudentLabel(student)}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {student.email || "이메일 없음"} | {student.className || "반 정보 없음"}
+                    </p>
+                  </button>
+                ))}
+                {fixCandidates.length === 0 && (
+                  <p className="text-sm text-muted-foreground">검색 결과가 없습니다</p>
+                )}
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={closeFixModal} disabled={savingFix}>
+                취소
+              </Button>
+              <Button onClick={handleApplyFix} disabled={!fixStudentUid || savingFix || !canManageReports}>
+                {savingFix ? "저장 중..." : "확인"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         <Dialog open={Boolean(manualMatchTarget)} onOpenChange={(open) => !open && setManualMatchTargetId(null)}>
           <DialogContent>
             <DialogHeader>
@@ -1746,8 +1905,17 @@ const UploadDashboard = () => {
               <p className="text-xs text-muted-foreground">
                 원본 식별값: {manualMatchTarget?.parsed.studentId || manualMatchTarget?.parsed.phoneSuffix || "보조키 없음"} / 반 {manualMatchTarget?.parsed.className || "기록 없음"}
               </p>
+              {manualMatchTarget && (
+                <Input
+                  value={studentSearch[manualMatchTarget.id] ?? ""}
+                  onChange={(event) =>
+                    setStudentSearch((prev) => ({ ...prev, [manualMatchTarget.id]: event.target.value }))
+                  }
+                  placeholder="학생 이름, 번호, 반 검색"
+                />
+              )}
               <div className="max-h-72 space-y-2 overflow-y-auto rounded-md border border-border p-2">
-                {(manualMatchTarget?.candidates ?? []).map((candidate) => (
+                {(manualMatchTarget ? getSearchableCandidates(manualMatchTarget) : []).map((candidate) => (
                   <button
                     key={candidate.uid}
                     type="button"
@@ -1836,7 +2004,7 @@ const UploadDashboard = () => {
               >
                 취소
               </Button>
-              <Button onClick={handleApplyPendingMatch} disabled={!pendingMatchStudentUid || Boolean(resolvingPendingId)}>
+              <Button onClick={handleApplyPendingMatch} disabled={!pendingMatchStudentUid || Boolean(resolvingPendingId) || !canManageReports}>
                 {resolvingPendingId ? "처리 중..." : "선택 학생으로 배송"}
               </Button>
             </DialogFooter>

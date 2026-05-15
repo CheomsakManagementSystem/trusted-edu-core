@@ -1710,14 +1710,37 @@ export const fetchPendingReports = async (): Promise<ReportRecord[]> => {
   return rows.sort(compareReportsByExamDateDesc);
 };
 
+export const subscribePendingReports = (
+  onChange: (reports: ReportRecord[]) => void,
+  onError?: (error: Error) => void,
+) => {
+  const reportsRef = collection(db, "reports");
+  const statuses: ReportAssignmentStatus[] = ["duplicate_pending", "unassigned_pending"];
+  const pendingQuery = query(reportsRef, where("assignmentStatus", "in", statuses));
+
+  return onSnapshot(
+    pendingQuery,
+    (snapshot) => {
+      onChange(
+        snapshot.docs
+          .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
+          .sort(compareReportsByExamDateDesc),
+      );
+    },
+    (error) => onError?.(error),
+  );
+};
+
 export const assignPendingReportToStudent = async (
   reportId: string,
-  student: Pick<StudentLite, "uid" | "name" | "studentId">,
+  student: Pick<StudentLite, "uid" | "name" | "studentId" | "classId" | "className">,
 ): Promise<void> => {
   await updateDoc(doc(db, "reports", reportId), {
     studentUid: student.uid,
     studentId: student.studentId ?? null,
     studentName: student.name,
+    classId: student.classId ?? null,
+    className: student.className ?? null,
     assignmentStatus: "completed",
     status: "completed",
     assignedAt: serverTimestamp(),
@@ -1728,7 +1751,7 @@ export const assignPendingReportToStudent = async (
 
 export const assignReportToStudentOverride = async (
   reportId: string,
-  student: Pick<StudentLite, "uid" | "name" | "studentId">,
+  student: Pick<StudentLite, "uid" | "name" | "studentId" | "classId" | "className">,
   actorRole?: string | null,
   actorUid?: string | null,
 ): Promise<void> => {
@@ -1747,6 +1770,8 @@ export const assignReportToStudentOverride = async (
     studentUid: student.uid,
     studentName: student.name,
     studentId: student.studentId ?? null,
+    classId: student.classId ?? null,
+    className: student.className ?? null,
     assignmentStatus: "completed",
     status: "completed",
     matchMethod: "admin_manual_override",
@@ -1763,6 +1788,61 @@ export const assignReportToStudentOverride = async (
       updatedAt: serverTimestamp(),
     });
   }
+
+  await batch.commit();
+};
+
+export const fixAndAssignPendingReport = async (
+  reportId: string,
+  student: Pick<StudentLite, "uid" | "name" | "studentId" | "classId" | "className">,
+  source: {
+    sourceName: string;
+    sourceStudentId: string;
+    sourcePhoneSuffix: string;
+    examDate: string;
+  },
+  actorRole?: string | null,
+  actorUid?: string | null,
+): Promise<void> => {
+  if (!isStaffRole(actorRole)) {
+    throw new Error("리포트 수정 및 배정 권한이 없습니다.");
+  }
+
+  const reportRef = doc(db, "reports", reportId);
+  const snap = await getDoc(reportRef);
+  const prev = (snap.data() ?? {}) as Partial<ReportRecord>;
+  const parsedJson = prev.parsedJson
+    ? {
+        ...prev.parsedJson,
+        name: source.sourceName.trim(),
+        studentId: source.sourceStudentId.trim(),
+        phoneSuffix: source.sourcePhoneSuffix.trim(),
+        writtenAt: source.examDate.trim(),
+      }
+    : undefined;
+  const batch = writeBatch(db);
+
+  batch.update(reportRef, {
+    studentUid: student.uid,
+    studentName: student.name,
+    studentId: student.studentId ?? null,
+    classId: student.classId ?? null,
+    className: student.className ?? null,
+    sourceName: source.sourceName.trim(),
+    sourceStudentId: source.sourceStudentId.trim() || null,
+    sourcePhoneSuffix: source.sourcePhoneSuffix.trim() || null,
+    examDate: source.examDate.trim(),
+    writtenAt: source.examDate.trim(),
+    assignmentStatus: "completed",
+    status: "completed",
+    matchMethod: "admin_manual_fix",
+    matchReason: "관리자가 원본 정보를 수정하고 학생을 배정했습니다.",
+    assignedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    fixedBy: actorUid ?? null,
+    fixedAt: serverTimestamp(),
+    ...(parsedJson ? { parsedJson } : {}),
+  });
 
   await batch.commit();
 };
