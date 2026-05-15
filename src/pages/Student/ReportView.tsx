@@ -25,7 +25,7 @@ import {
 } from "@/lib/pdfProcessor";
 import { formatStudentName } from "@/lib/studentName";
 import { db } from "@/lib/firebase";
-import { collection, onSnapshot, orderBy, query, where } from "firebase/firestore";
+import { collection, doc, onSnapshot, orderBy, query, serverTimestamp, setDoc, where } from "firebase/firestore";
 import {
   clearClientSession,
   deleteCurrentUserAccount,
@@ -107,6 +107,7 @@ const ReportView = () => {
   const [withdrawPassword, setWithdrawPassword] = useState("");
   const [withdrawError, setWithdrawError] = useState<string | null>(null);
   const [feedbackExpanded, setFeedbackExpanded] = useState(false);
+  const [claimingReportId, setClaimingReportId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user?.uid) {
@@ -332,6 +333,48 @@ const ReportView = () => {
   useEffect(() => {
     setFeedbackExpanded(false);
   }, [selectedReportId]);
+
+  const handleReportClaim = async () => {
+    if (!user?.uid || !selectedReport || selectedReport.studentUid !== user.uid) {
+      toast({
+        variant: "destructive",
+        title: "신고 실패",
+        description: "본인에게 배송된 리포트만 신고할 수 있습니다.",
+      });
+      return;
+    }
+
+    if (!window.confirm("이 리포트를 오배송으로 신고하시겠습니까?")) {
+      return;
+    }
+
+    setClaimingReportId(selectedReport.id);
+    try {
+      await setDoc(
+        doc(db, "report_claims", `${selectedReport.id}_${user.uid}`),
+        {
+          reportId: selectedReport.id,
+          studentUid: user.uid,
+          status: "open",
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+      toast({
+        title: "신고 접수",
+        description: "관리자에게 오배송 신고가 전달되었습니다.",
+      });
+    } catch (claimError) {
+      toast({
+        variant: "destructive",
+        title: "신고 실패",
+        description: claimError instanceof Error ? claimError.message : "신고를 접수하지 못했습니다.",
+      });
+    } finally {
+      setClaimingReportId(null);
+    }
+  };
 
   const summaryPreview = useMemo(() => {
     const text = feedbackMeta.summary || "첨삭 총평이 없습니다.";
@@ -633,6 +676,17 @@ const ReportView = () => {
                     {feedbackMeta.nextTask || "향후 과제가 명시되지 않았습니다."}
                   </p>
                 </div>
+                {selectedReport.studentUid === user?.uid && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="mt-3 w-full border-red-200 text-red-700 hover:bg-red-50"
+                    disabled={claimingReportId === selectedReport.id}
+                    onClick={handleReportClaim}
+                  >
+                    {claimingReportId === selectedReport.id ? "신고 중..." : "내 리포트가 아니에요"}
+                  </Button>
+                )}
               </div>
             </div>
 

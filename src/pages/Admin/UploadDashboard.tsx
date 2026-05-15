@@ -31,7 +31,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { CheckCircle2, Calendar as CalendarIcon, Circle, Loader2, Pencil, Trash2 } from "lucide-react";
 import {
-  assignPendingReportToStudent,
+  assignReportToStudentOverride,
   compareReportsByExamDateDesc,
   deletePublishedReport,
   deleteReportRecord,
@@ -47,8 +47,10 @@ import {
   prepareUploadCandidates,
   publishReportBatch,
   resolveMatchStatus,
+  subscribeOpenReportClaims,
   updatePublishedReport,
   type ClassLite,
+  type ReportClaimTriageRecord,
   type ReportRecord,
   type ScoreBreakdown,
   type StudentLite,
@@ -123,6 +125,7 @@ const UploadDashboard = () => {
   const [pendingMatchTarget, setPendingMatchTarget] = useState<ReportRecord | null>(null);
   const [pendingMatchSearch, setPendingMatchSearch] = useState("");
   const [pendingMatchStudentUid, setPendingMatchStudentUid] = useState<string>("");
+  const [openClaims, setOpenClaims] = useState<ReportClaimTriageRecord[]>([]);
   const [editingReport, setEditingReport] = useState<ReportRecord | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
   const [deletingReportId, setDeletingReportId] = useState<string | null>(null);
@@ -184,6 +187,24 @@ const UploadDashboard = () => {
       studentId: report.studentId,
     });
 
+  const formatClaimDate = (claim: ReportClaimTriageRecord) => {
+    if (!claim.createdAt) {
+      return "기록 없음";
+    }
+    return claim.createdAt.toDate().toLocaleString("ko-KR", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  const getClaimStudentLabel = (claim: ReportClaimTriageRecord) => {
+    const student = students.find((item) => item.uid === claim.studentUid);
+    return student ? formatStudentLabel(student) : claim.report?.studentName || "기록 없음";
+  };
+
   useEffect(() => {
     const run = async () => {
       const [classDocs, studentDocs] = await Promise.all([fetchClasses(), fetchStudents()]);
@@ -210,6 +231,21 @@ const UploadDashboard = () => {
     };
     run();
   }, []);
+
+  useEffect(() => {
+    const unsubscribe = subscribeOpenReportClaims(
+      setOpenClaims,
+      (claimError) => {
+        toast({
+          variant: "destructive",
+          title: "오배송 신고 조회 실패",
+          description: claimError.message,
+        });
+      },
+    );
+
+    return unsubscribe;
+  }, [toast]);
 
   useEffect(() => {
     const run = async () => {
@@ -714,7 +750,10 @@ const UploadDashboard = () => {
 
     setResolvingPendingId(report.id);
     try {
-      await assignPendingReportToStudent(report.id, target);
+      if (!window.confirm(`${formatStudentLabel(target)} 학생에게 이 리포트를 배송하시겠습니까?`)) {
+        return;
+      }
+      await assignReportToStudentOverride(report.id, target, user?.role, user?.uid);
       const [pendingRows, classRows, publishedRows] = await Promise.all([
         fetchPendingReports(),
         selectedClass ? fetchReportsByClassId(selectedClass.id) : Promise.resolve(classReports),
@@ -769,7 +808,10 @@ const UploadDashboard = () => {
 
     setResolvingPendingId(pendingMatchTarget.id);
     try {
-      await assignPendingReportToStudent(pendingMatchTarget.id, student);
+      if (!window.confirm(`${formatStudentLabel(student)} 학생에게 이 리포트를 배송하시겠습니까?`)) {
+        return;
+      }
+      await assignReportToStudentOverride(pendingMatchTarget.id, student, user?.role, user?.uid);
       const [pendingRows, classRows, publishedRows] = await Promise.all([
         fetchPendingReports(),
         selectedClass ? fetchReportsByClassId(selectedClass.id) : Promise.resolve(classReports),
@@ -1378,6 +1420,66 @@ const UploadDashboard = () => {
         </div>
 
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">
+          <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-card-foreground">오배송 신고 관리</h3>
+              <p className="text-xs text-muted-foreground">학생이 신고한 리포트를 확인하고 즉시 재배송하세요.</p>
+            </div>
+            <p className="text-xs font-medium text-muted-foreground">접수 {openClaims.length}건</p>
+          </div>
+
+          {openClaims.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border bg-muted/20 px-4 py-6 text-center text-sm text-muted-foreground">
+              현재 접수된 오배송 신고가 없습니다.
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-md border border-border">
+              <table className="min-w-full divide-y divide-border text-sm">
+                <thead className="bg-muted/40">
+                  <tr className="text-left text-xs font-medium text-muted-foreground">
+                    <th className="px-3 py-2">신고 학생</th>
+                    <th className="px-3 py-2">신고 일시</th>
+                    <th className="px-3 py-2">리포트</th>
+                    <th className="px-3 py-2">매칭 방식</th>
+                    <th className="px-3 py-2 text-right">처리</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border bg-background">
+                  {openClaims.map((claim) => (
+                    <tr key={claim.id}>
+                      <td className="px-3 py-2 text-card-foreground">{getClaimStudentLabel(claim)}</td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground">{formatClaimDate(claim)}</td>
+                      <td className="px-3 py-2">
+                        <p className="font-medium text-card-foreground">
+                          {claim.report ? getReportExamTitle(claim.report) : "삭제되었거나 찾을 수 없는 리포트"}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {claim.report?.fileName || claim.reportId || "파일 정보 없음"}
+                        </p>
+                      </td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground">
+                        {claim.report?.matchMethod || claim.report?.matchReason || "기록 없음"}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          disabled={!claim.report}
+                          onClick={() => claim.report && handleOpenPendingMatch(claim.report)}
+                        >
+                          학생 변경
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-lg border border-border bg-card p-5 shadow-card">
           <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <h3 className="text-sm font-semibold text-card-foreground">배포된 리포트 보관함</h3>
             <p className="text-xs text-muted-foreground">총 {filteredPublishedReports.length}건</p>
@@ -1444,6 +1546,9 @@ const UploadDashboard = () => {
                   </div>
                   <p className="text-xs text-muted-foreground">등록일 {formatExamDate(report.examDate)}</p>
                   <div className="flex gap-2">
+                    <Button type="button" size="sm" variant="secondary" onClick={() => handleOpenPendingMatch(report)}>
+                      학생 변경
+                    </Button>
                     <Button type="button" size="sm" variant="secondary" onClick={() => handleMovePublishedReportToPending(report)}>
                       연결 해제
                     </Button>
@@ -1677,9 +1782,11 @@ const UploadDashboard = () => {
         >
           <DialogContent className="max-w-2xl">
             <DialogHeader>
-              <DialogTitle>미연결 자료 학생 매칭</DialogTitle>
+              <DialogTitle>
+                {pendingMatchTarget?.assignmentStatus === "completed" ? "배포 리포트 학생 변경" : "미연결 자료 학생 매칭"}
+              </DialogTitle>
               <DialogDescription>
-                가입된 전체 학생을 검색해 이 자료를 바로 연결하세요.
+                가입된 학생을 검색해 이 리포트의 배송 대상을 지정하세요.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-3">
@@ -1730,7 +1837,7 @@ const UploadDashboard = () => {
                 취소
               </Button>
               <Button onClick={handleApplyPendingMatch} disabled={!pendingMatchStudentUid || Boolean(resolvingPendingId)}>
-                {resolvingPendingId ? "연결 중..." : "선택 학생으로 연결"}
+                {resolvingPendingId ? "처리 중..." : "선택 학생으로 배송"}
               </Button>
             </DialogFooter>
           </DialogContent>

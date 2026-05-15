@@ -6,6 +6,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  onSnapshot,
   orderBy,
   writeBatch,
   query,
@@ -15,6 +16,7 @@ import {
 } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 import { db, storage } from "@/lib/firebase";
+import { isStaffRole } from "@/lib/authz";
 
 const STORAGE_UPLOAD_TIMEOUT_MS = 60_000;
 const PDFJS_VERSION = "4.10.38";
@@ -100,6 +102,7 @@ export type ReportRecord = {
   sourceStudentId?: string | null;
   sourcePhoneSuffix?: string | null;
   sourceClassName?: string | null;
+  matchMethod?: string | null;
   matchReason?: string | null;
   writtenAt: string;
   reviewer: string;
@@ -128,6 +131,18 @@ export type ClassJoinRequestRecord = {
   createdAt: Timestamp | null;
   approvedAt?: Timestamp | null;
   approvedBy?: string | null;
+};
+
+export type ReportClaimTriageRecord = {
+  id: string;
+  reportId: string;
+  studentUid: string;
+  status: "open" | "resolved";
+  createdAt: Timestamp | null;
+  updatedAt?: Timestamp | null;
+  resolvedAt?: Timestamp | null;
+  resolvedBy?: string | null;
+  report: ReportRecord | null;
 };
 
 const METRIC_LABELS = ["독해력", "내용 이해력", "문제 이해력", "구성력", "표현력"] as const;
@@ -326,6 +341,9 @@ const normalizeName = (name: string) =>
     .replace(/\s+/g, " ")
     .replace(/(?:학생|귀하|님)\s*$/g, "")
     .trim();
+
+const normalizeMatchName = (name: string | null | undefined) =>
+  (name ?? "").replace(/\s+/g, "").trim();
 
 const normalizeIdentifier = (value: string | null | undefined) =>
   (value ?? "").replace(/\s+/g, "").trim().toLowerCase();
@@ -1113,11 +1131,11 @@ const extractPdfDataByStudent = async (
 };
 
 const byName = (students: StudentLite[], name: string) => {
-  const normalized = name.trim();
+  const normalized = normalizeMatchName(name);
   if (!normalized) {
     return [];
   }
-  return students.filter((student) => student.name.trim() === normalized);
+  return students.filter((student) => normalizeMatchName(student.name) === normalized);
 };
 
 const uniqueStudents = (students: StudentLite[]) => {
@@ -1160,20 +1178,7 @@ export const resolveMatchStatus = (
   classStudents: StudentLite[],
   allStudents: StudentLite[],
 ): Pick<UploadCandidate, "status" | "candidates" | "selectedStudentUid" | "matchReason"> => {
-  const parsedName = parsed.name.trim();
-  const globalMatches = byName(allStudents, parsedName);
-  const classMatches = byName(classStudents, parsedName);
-  const parsedClassMatches = parsed.className.trim()
-    ? globalMatches.filter(
-        (student) => normalizeClassToken(student.className) === normalizeClassToken(parsed.className),
-      )
-    : [];
-  const scopedMatches = uniqueStudents([...classMatches, ...parsedClassMatches]);
-
-  const studentIdMatches = matchStudentsByStudentId(scopedMatches.length > 0 ? scopedMatches : globalMatches, parsed.studentId);
-  const phoneMatches = matchStudentsByPhoneSuffix(scopedMatches.length > 0 ? scopedMatches : globalMatches, parsed.phoneSuffix);
-  const resolvedById = studentIdMatches.length === 1 ? studentIdMatches[0] : null;
-  const resolvedByPhone = phoneMatches.length === 1 ? phoneMatches[0] : null;
+  const parsedName = normalizeMatchName(parsed.name);
 
   if (!parsedName) {
     return {
@@ -1184,53 +1189,57 @@ export const resolveMatchStatus = (
     };
   }
 
-  if (resolvedById) {
+  const classNameMatches = byName(classStudents, parsed.name);
+
+  if (classNameMatches.length === 1) {
+    const resolved = classNameMatches[0];
     return {
       status: "ready",
-      candidates: [resolvedById],
-      selectedStudentUid: resolvedById.uid,
-      matchReason: "이름과 학생 코드가 모두 일치해 자동 매칭했습니다.",
+      candidates: [resolved],
+      selectedStudentUid: resolved.uid,
+      matchReason: "선택한 반 안에서 이름이 단일 일치해 자동 매칭했습니다.",
     };
   }
 
-  if (resolvedByPhone) {
-    return {
-      status: "ready",
-      candidates: [resolvedByPhone],
-      selectedStudentUid: resolvedByPhone.uid,
-      matchReason: "이름과 전화번호 뒤 4자리가 일치해 자동 매칭했습니다.",
-    };
-  }
+  if (classNameMatches.length > 1) {
+    const phoneMatches = matchStudentsByPhoneSuffix(classNameMatches, parsed.phoneSuffix || parsed.studentId);
+    if (phoneMatches.length === 1) {
+      const resolved = phoneMatches[0];
+      return {
+        status: "ready",
+        candidates: [resolved],
+        selectedStudentUid: resolved.uid,
+        matchReason: "선택한 반 안의 동명이인 중 전화번호 뒤 4자리가 단일 일치해 자동 매칭했습니다.",
+      };
+    }
 
-  if (studentIdMatches.length > 1 || phoneMatches.length > 1 || scopedMatches.length > 1 || globalMatches.length > 1) {
     return {
       status: "needs_selection",
-      candidates: uniqueStudents(scopedMatches.length > 0 ? scopedMatches : globalMatches),
+      candidates: classNameMatches,
       selectedStudentUid: null,
       matchReason:
-        parsed.studentId.trim() || parsed.phoneSuffix.trim()
-          ? "동일한 이름 후보가 여러 명이어서 자동 매칭을 중단했습니다."
-          : "이름만으로는 위험해 자동 매칭하지 않았습니다. 학생 코드나 전화번호 뒤 4자리를 확인해주세요.",
+        phoneMatches.length > 1
+          ? "선택한 반 안의 동명이인 중 같은 번호 후보가 여러 명이어서 수동 매칭이 필요합니다."
+          : "선택한 반 안에 동명이인이 있어 수동 매칭이 필요합니다.",
     };
   }
 
-  if (globalMatches.length === 1) {
+  const globalNameMatches = byName(allStudents, parsed.name);
+
+  if (globalNameMatches.length > 0) {
     return {
-      status: "needs_selection",
-      candidates: globalMatches,
+      status: "unregistered",
+      candidates: [],
       selectedStudentUid: null,
-      matchReason: "이름만 일치하는 상태라 자동 매칭하지 않았습니다. 학생 코드나 전화번호 뒤 4자리를 확인해주세요.",
+      matchReason: "선택한 반 밖에만 이름이 일치하는 학생이 있어 자동 매칭하지 않았습니다.",
     };
   }
 
   return {
     status: "unregistered",
-    candidates: uniqueStudents(scopedMatches.length > 0 ? scopedMatches : globalMatches),
+    candidates: [],
     selectedStudentUid: null,
-    matchReason:
-      parsed.studentId.trim() || parsed.phoneSuffix.trim()
-        ? "일치하는 가입 학생이 없어 가입 대기/미매칭으로 분류했습니다."
-        : "정확한 식별 정보가 없어 가입 대기/미매칭으로 분류했습니다.",
+    matchReason: "선택한 반 안에 이름이 일치하는 가입 학생이 없습니다.",
   };
 };
 
@@ -1715,6 +1724,95 @@ export const assignPendingReportToStudent = async (
     matchReason: "관리자가 수동으로 학생을 연결했습니다.",
     updatedAt: serverTimestamp(),
   });
+};
+
+export const assignReportToStudentOverride = async (
+  reportId: string,
+  student: Pick<StudentLite, "uid" | "name" | "studentId">,
+  actorRole?: string | null,
+  actorUid?: string | null,
+): Promise<void> => {
+  if (!isStaffRole(actorRole)) {
+    throw new Error("리포트 학생 변경 권한이 없습니다.");
+  }
+
+  const reportRef = doc(db, "reports", reportId);
+  const reportSnap = await getDoc(reportRef);
+  const previous = (reportSnap.data() ?? {}) as Partial<ReportRecord>;
+  const claimRef = previous.studentUid ? doc(db, "report_claims", `${reportId}_${previous.studentUid}`) : null;
+  const claimSnap = claimRef ? await getDoc(claimRef) : null;
+  const batch = writeBatch(db);
+
+  batch.update(reportRef, {
+    studentUid: student.uid,
+    studentName: student.name,
+    studentId: student.studentId ?? null,
+    assignmentStatus: "completed",
+    status: "completed",
+    matchMethod: "admin_manual_override",
+    matchReason: "관리자가 수동으로 학생을 변경했습니다.",
+    assignedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  if (claimRef && claimSnap?.exists()) {
+    batch.update(claimRef, {
+      status: "resolved",
+      resolvedBy: actorUid ?? null,
+      resolvedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  await batch.commit();
+};
+
+export const subscribeOpenReportClaims = (
+  onChange: (claims: ReportClaimTriageRecord[]) => void,
+  onError?: (error: Error) => void,
+) => {
+  const claimsQuery = query(collection(db, "report_claims"), where("status", "==", "open"));
+
+  return onSnapshot(
+    claimsQuery,
+    async (snapshot) => {
+      const claims = await Promise.all(
+        snapshot.docs.map(async (claimDoc) => {
+          const data = claimDoc.data() as {
+            reportId?: string;
+            studentUid?: string;
+            status?: "open" | "resolved";
+            createdAt?: Timestamp | null;
+            updatedAt?: Timestamp | null;
+            resolvedAt?: Timestamp | null;
+            resolvedBy?: string | null;
+          };
+          const reportId = data.reportId ?? "";
+          const reportSnap = reportId ? await getDoc(doc(db, "reports", reportId)) : null;
+          const report = reportSnap?.exists()
+            ? hydrateReportRecord(reportSnap.id, reportSnap.data() as Omit<ReportRecord, "id">)
+            : null;
+
+          return {
+            id: claimDoc.id,
+            reportId,
+            studentUid: data.studentUid ?? "",
+            status: data.status ?? "open",
+            createdAt: data.createdAt ?? null,
+            updatedAt: data.updatedAt ?? null,
+            resolvedAt: data.resolvedAt ?? null,
+            resolvedBy: data.resolvedBy ?? null,
+            report,
+          };
+        }),
+      );
+
+      onChange(
+        claims.sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0)),
+      );
+    },
+    (error) => onError?.(error),
+  );
 };
 
 export const fetchReportsByClassId = async (classId: string): Promise<ReportRecord[]> => {
