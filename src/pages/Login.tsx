@@ -1,12 +1,20 @@
 import { useState } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
-import { signInWithEmailAndPassword, type AuthError } from "firebase/auth";
+import { sendPasswordResetEmail, signInWithEmailAndPassword, type AuthError } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { Loader2 } from "lucide-react";
 import { auth, db } from "@/lib/firebase";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { toast } from "@/components/ui/sonner";
 import { normalizeRole } from "@/lib/authz";
 
@@ -17,6 +25,12 @@ const Login = () => {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [resetLoading, setResetLoading] = useState(false);
+
+  const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 
   const getLoginErrorMessage = (code?: string) => {
     switch (code) {
@@ -67,6 +81,47 @@ const Login = () => {
     }
   };
 
+  const getResetErrorMessage = (code?: string) => {
+    switch (code) {
+      case "auth/user-not-found":
+        return "가입된 정보가 없습니다.";
+      case "auth/invalid-email":
+        return "유효한 이메일 주소를 입력해주세요.";
+      default:
+        return "재설정 메일 발송 중 오류가 발생했습니다. 다시 시도해 주세요.";
+    }
+  };
+
+  const openResetDialog = () => {
+    setResetEmail(email);
+    setResetError(null);
+    setResetOpen(true);
+  };
+
+  const handlePasswordReset = async () => {
+    const targetEmail = resetEmail.trim();
+    setResetError(null);
+
+    if (!isValidEmail(targetEmail)) {
+      setResetError("유효한 이메일 주소를 입력해주세요.");
+      return;
+    }
+
+    setResetLoading(true);
+    try {
+      auth.languageCode = "ko";
+      await sendPasswordResetEmail(auth, targetEmail);
+      toast.success("이메일함에서 재설정 링크를 확인해주세요.");
+      setResetOpen(false);
+    } catch (err) {
+      const message = getResetErrorMessage((err as AuthError).code);
+      setResetError(message);
+      toast.error(message);
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="flex h-full items-center justify-center">
@@ -111,6 +166,14 @@ const Login = () => {
             </Button>
           </form>
 
+          <button
+            type="button"
+            onClick={openResetDialog}
+            className="mt-3 w-full text-center text-xs font-medium text-primary hover:underline"
+          >
+            비밀번호를 잊으셨나요?
+          </button>
+
           <p className="mt-4 text-center text-xs text-muted-foreground">
             아직 계정이 없나요?{" "}
             <Link to="/signup" className="font-medium text-primary hover:underline">
@@ -119,6 +182,39 @@ const Login = () => {
           </p>
         </div>
       </div>
+
+      <Dialog open={resetOpen} onOpenChange={setResetOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>비밀번호 재설정</DialogTitle>
+            <DialogDescription>
+              가입한 이메일 주소로 비밀번호 재설정 링크를 보내드립니다.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-card-foreground">이메일</label>
+            <Input
+              type="email"
+              value={resetEmail}
+              onChange={(event) => {
+                setResetEmail(event.target.value);
+                setResetError(null);
+              }}
+              placeholder="you@example.com"
+            />
+            {resetError && <p className="text-sm text-destructive">{resetError}</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setResetOpen(false)} disabled={resetLoading}>
+              취소
+            </Button>
+            <Button onClick={handlePasswordReset} disabled={resetLoading}>
+              {resetLoading && <Loader2 className="h-4 w-4 animate-spin" />}
+              {resetLoading ? "발송 중..." : "재설정 링크 발송"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   );
 };
