@@ -27,6 +27,7 @@ import {
   getAccountDeletionErrorMessage,
 } from "@/services/accountDeletionService";
 import {
+  cascadeUpdateStudentId,
   deleteManagedUserCompletely,
   fetchManagedUsers,
   getMasterControls,
@@ -110,6 +111,10 @@ const MasterAdminPage = () => {
   const [withdrawDialogOpen, setWithdrawDialogOpen] = useState(false);
   const [withdrawPassword, setWithdrawPassword] = useState("");
   const [withdrawError, setWithdrawError] = useState<string | null>(null);
+
+  const [editingPhoneUid, setEditingPhoneUid] = useState<string | null>(null);
+  const [editingPhoneValue, setEditingPhoneValue] = useState("");
+  const [savingPhoneUid, setSavingPhoneUid] = useState<string | null>(null);
 
   const [analysisStudentUid, setAnalysisStudentUid] = useState("");
   const [analysisQuery, setAnalysisQuery] = useState("");
@@ -343,6 +348,41 @@ const MasterAdminPage = () => {
     }
   };
 
+  const handleSavePhone = async (uid: string) => {
+    const target = users.find((row) => row.uid === uid);
+    if (!target) return;
+
+    const oldStudentId = target.studentId ?? target.phoneSuffix ?? "";
+    const newStudentId = editingPhoneValue.trim();
+
+    setSavingPhoneUid(uid);
+    try {
+      const updatedCount = await cascadeUpdateStudentId(uid, oldStudentId, newStudentId);
+      const normalized = newStudentId || null;
+      setUsers((prev) =>
+        prev.map((row) =>
+          row.uid === uid ? { ...row, phoneSuffix: normalized, studentId: normalized } : row,
+        ),
+      );
+      toast({
+        title: "전화번호 수정 완료",
+        description:
+          updatedCount > 0
+            ? `저장되었습니다. 연동된 리포트 ${updatedCount}개도 함께 업데이트했습니다.`
+            : "변경 사항이 저장되었습니다.",
+      });
+      setEditingPhoneUid(null);
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "수정 실패",
+        description: error instanceof Error ? error.message : "저장하지 못했습니다.",
+      });
+    } finally {
+      setSavingPhoneUid(null);
+    }
+  };
+
   const handleSelectAnalysisStudent = (student: ManagedUser) => {
     setAnalysisStudentUid(student.uid);
     setAnalysisQuery(`${student.name} ${student.phoneSuffix ?? student.email ?? ""}`.trim());
@@ -469,6 +509,7 @@ const MasterAdminPage = () => {
                   <th className="px-3 py-2 text-left text-muted-foreground">이름</th>
                   <th className="px-3 py-2 text-left text-muted-foreground">이메일</th>
                   <th className="px-3 py-2 text-left text-muted-foreground">학생ID</th>
+                  <th className="px-3 py-2 text-left text-muted-foreground">전화번호 뒷자리</th>
                   <th className="px-3 py-2 text-left text-muted-foreground">권한</th>
                   <th className="px-3 py-2 text-left text-muted-foreground">관리</th>
                 </tr>
@@ -478,7 +519,56 @@ const MasterAdminPage = () => {
                   <tr key={row.uid}>
                     <td className="px-3 py-2 text-card-foreground">{row.name}</td>
                     <td className="px-3 py-2 text-card-foreground">{row.email || "-"}</td>
-                    <td className="px-3 py-2 text-card-foreground">{row.studentId || row.phoneSuffix || "-"}</td>
+                    <td className="px-3 py-2 text-card-foreground">{row.studentId || "-"}</td>
+                    <td className="px-3 py-2">
+                      {editingPhoneUid === row.uid ? (
+                        <div className="flex items-center gap-1">
+                          <Input
+                            value={editingPhoneValue}
+                            onChange={(e) => setEditingPhoneValue(e.target.value)}
+                            placeholder="뒷자리 4자리"
+                            className="h-7 w-24 text-xs"
+                            maxLength={8}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") handleSavePhone(row.uid);
+                              if (e.key === "Escape") setEditingPhoneUid(null);
+                            }}
+                            autoFocus
+                          />
+                          <Button
+                            size="sm"
+                            className="h-7 px-2 text-xs"
+                            disabled={savingPhoneUid === row.uid}
+                            onClick={() => handleSavePhone(row.uid)}
+                          >
+                            저장
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => setEditingPhoneUid(null)}
+                          >
+                            취소
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1">
+                          <span className="text-card-foreground">{row.phoneSuffix || "-"}</span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 px-1 text-xs text-muted-foreground"
+                            onClick={() => {
+                              setEditingPhoneUid(row.uid);
+                              setEditingPhoneValue(row.phoneSuffix ?? "");
+                            }}
+                          >
+                            수정
+                          </Button>
+                        </div>
+                      )}
+                    </td>
                     <td className="px-3 py-2">
                       {normalizeRole(row.role) === "ADMIN" ? (
                         <span className="rounded-md bg-primary/15 px-2 py-1 text-xs font-semibold text-primary">
@@ -517,7 +607,7 @@ const MasterAdminPage = () => {
 
                 {!filteredUsers.length && (
                   <tr>
-                    <td colSpan={5} className="px-3 py-5 text-center text-muted-foreground">
+                    <td colSpan={6} className="px-3 py-5 text-center text-muted-foreground">
                       검색 결과가 없습니다.
                     </td>
                   </tr>

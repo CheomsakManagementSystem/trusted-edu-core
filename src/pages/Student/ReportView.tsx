@@ -25,7 +25,7 @@ import {
 } from "@/lib/pdfProcessor";
 import { formatStudentName } from "@/lib/studentName";
 import { db } from "@/lib/firebase";
-import { collection, doc, onSnapshot, orderBy, query, serverTimestamp, setDoc, where } from "firebase/firestore";
+import { collection, doc, onSnapshot, orderBy, query, serverTimestamp, where, writeBatch } from "firebase/firestore";
 import {
   clearClientSession,
   deleteCurrentUserAccount,
@@ -108,6 +108,7 @@ const ReportView = () => {
   const [withdrawError, setWithdrawError] = useState<string | null>(null);
   const [feedbackExpanded, setFeedbackExpanded] = useState(false);
   const [claimingReportId, setClaimingReportId] = useState<string | null>(null);
+  const [claimedReportIds, setClaimedReportIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!user?.uid) {
@@ -243,11 +244,12 @@ const ReportView = () => {
       reports
         .filter(
           (report) =>
-            report.studentUid === user?.uid ||
-            (Boolean(user?.studentId) && report.studentId === user?.studentId),
+            !claimedReportIds.has(report.id) &&
+            (report.studentUid === user?.uid ||
+              (Boolean(user?.studentId) && report.studentId === user?.studentId)),
         )
         .sort(compareReportsByExamDateDesc),
-    [reports, user?.studentId, user?.uid],
+    [reports, user?.studentId, user?.uid, claimedReportIds],
   );
 
   const selectedReport = useMemo(
@@ -335,35 +337,47 @@ const ReportView = () => {
   }, [selectedReportId]);
 
   const handleReportClaim = async () => {
-    if (!user?.uid || !selectedReport || selectedReport.studentUid !== user.uid) {
-      toast({
-        variant: "destructive",
-        title: "신고 실패",
-        description: "본인에게 배송된 리포트만 신고할 수 있습니다.",
-      });
+    if (!user?.uid || !selectedReport) {
       return;
     }
 
-    if (!window.confirm("이 리포트를 오배송으로 신고하시겠습니까?")) {
+    if (!window.confirm("이 리포트가 내 것이 아님을 신고하시겠습니까?\n관리자가 확인 후 처리해드립니다.")) {
       return;
     }
 
-    setClaimingReportId(selectedReport.id);
+    const reportId = selectedReport.id;
+    setClaimingReportId(reportId);
     try {
-      await setDoc(
-        doc(db, "report_claims", `${selectedReport.id}_${user.uid}`),
-        {
-          reportId: selectedReport.id,
-          studentUid: user.uid,
-          status: "open",
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true },
-      );
+      const batch = writeBatch(db);
+
+      batch.set(doc(db, "report_claims", `${reportId}_${user.uid}`), {
+        reportId,
+        reportedBy: user.uid,
+        studentUid: user.uid,
+        wrongStudentName: selectedReport.studentName ?? null,
+        status: "open",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      batch.update(doc(db, "reports", reportId), {
+        studentId: null,
+        studentName: null,
+        assignmentStatus: "unassigned",
+        status: "pending",
+        isReported: true,
+      });
+
+      await batch.commit();
+
+      // onSnapshot이 null로 바뀐 studentUid/studentId를 감지하여 자동으로 목록에서 제거하지만
+      // 커밋 직후 즉각 사라지도록 로컬 상태에서도 선제 제거
+      setReports((prev) => prev.filter((r) => r.id !== reportId));
+      setClaimedReportIds((prev) => new Set([...prev, reportId]));
+
       toast({
         title: "신고 접수",
-        description: "관리자에게 오배송 신고가 전달되었습니다.",
+        description: "관리자에게 오배송 신고가 전달되었습니다. 해당 리포트가 숨김 처리되었습니다.",
       });
     } catch (claimError) {
       toast({
@@ -676,17 +690,15 @@ const ReportView = () => {
                     {feedbackMeta.nextTask || "향후 과제가 명시되지 않았습니다."}
                   </p>
                 </div>
-                {selectedReport.studentUid === user?.uid && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="mt-3 w-full border-red-200 text-red-700 hover:bg-red-50"
-                    disabled={claimingReportId === selectedReport.id}
-                    onClick={handleReportClaim}
-                  >
-                    {claimingReportId === selectedReport.id ? "신고 중..." : "내 리포트가 아니에요"}
-                  </Button>
-                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="mt-3 w-full border-red-200 text-red-700 hover:bg-red-50"
+                  disabled={claimingReportId === selectedReport.id}
+                  onClick={handleReportClaim}
+                >
+                  {claimingReportId === selectedReport.id ? "신고 중..." : "⚠️ 내 리포트가 아닙니다"}
+                </Button>
               </div>
             </div>
 

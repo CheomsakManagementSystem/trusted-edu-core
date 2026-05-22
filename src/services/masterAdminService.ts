@@ -11,6 +11,7 @@ import {
   setDoc,
   updateDoc,
   where,
+  writeBatch,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { normalizeRole, type CanonicalRole } from "@/lib/authz";
@@ -146,6 +147,46 @@ export const updateManagedUserRole = async (
     role,
     updatedAt: serverTimestamp(),
   });
+};
+
+export const updateManagedUserPhoneSuffix = async (
+  uid: string,
+  phoneSuffix: string,
+): Promise<void> => {
+  await updateDoc(doc(db, "users", uid), {
+    phoneSuffix: phoneSuffix.trim() || null,
+    updatedAt: serverTimestamp(),
+  });
+};
+
+/** 학생 식별 ID 강제 수정 + 연동 리포트 일괄 cascade update (단일 writeBatch) */
+export const cascadeUpdateStudentId = async (
+  uid: string,
+  oldStudentId: string,
+  newStudentId: string,
+): Promise<number> => {
+  const batch = writeBatch(db);
+  const normalized = newStudentId.trim() || null;
+
+  batch.update(doc(db, "users", uid), {
+    phoneSuffix: normalized,
+    studentId: normalized,
+    updatedAt: serverTimestamp(),
+  });
+
+  let updatedCount = 0;
+  if (oldStudentId) {
+    const snap = await getDocs(
+      query(collection(db, "reports"), where("studentId", "==", oldStudentId)),
+    );
+    snap.docs.forEach((docSnap) => {
+      batch.update(docSnap.ref, { studentId: normalized });
+    });
+    updatedCount = snap.docs.length;
+  }
+
+  await batch.commit();
+  return updatedCount;
 };
 
 export const enqueueReportNotifications = async (
