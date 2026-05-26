@@ -309,13 +309,25 @@ const parseFileNameHint = (
   const nameMatch = base.match(/([가-힣]{2,5})/);
   const scoreMatch = base.match(/(\d+(?:\.\d+)?)\s*점?/);
   const phoneSuffixMatch = base.match(/[가-힣]{2,5}\D*(\d{4})(?:\D|$)/);
-  const studentIdMatch = base.match(/(?:학생코드|학번|student[_-\s]?id)\D*([A-Za-z0-9-]{4,})/i);
+
+  // 명시적 레이블(학생코드/학번/student_id) 우선
+  const explicitIdMatch = base.match(
+    /(?:학생코드|학번|student[_-\s]?id)\D*([A-Za-z0-9-]{4,})/i,
+  );
+  // 레이블 없이 단독으로 등장하는 6~8자 소문자+숫자 customId (예: 홍길동_dohyun17.pdf)
+  // 순수 숫자(점수/날짜)와 한글 인접 문자는 제외
+  const standaloneIdMatch = !explicitIdMatch
+    ? base.match(/(?:^|[_\-\s])([a-z][a-z0-9]{5,7})(?:[_\-\s]|$)/i)
+    : null;
+
+  const studentId =
+    (explicitIdMatch?.[1] ?? standaloneIdMatch?.[1])?.replace(/\s+/g, "").toLowerCase() || undefined;
 
   return {
     name: nameMatch?.[1]?.trim() || undefined,
     total: parseNumber(scoreMatch?.[1]),
     phoneSuffix: phoneSuffixMatch?.[1]?.trim() || undefined,
-    studentId: studentIdMatch?.[1]?.trim() || undefined,
+    studentId,
   };
 };
 
@@ -1157,9 +1169,15 @@ const matchStudentsByStudentId = (students: StudentLite[], studentId: string) =>
   if (!normalized) {
     return [];
   }
-
-  return students.filter((student) => normalizeIdentifier(student.studentId) === normalized);
+  // null/undefined student.studentId 방어: normalizeIdentifier 내부에서 ?? "" 처리됨
+  return students.filter(
+    (student) => normalizeIdentifier(student.studentId ?? "") === normalized,
+  );
 };
+
+/** 6~8자 alphanumeric 패턴 → 신형 customId 여부 판별 */
+const isCustomIdFormat = (value: string) =>
+  /^[a-z0-9]{6,8}$/.test(normalizeIdentifier(value));
 
 const matchStudentsByPhoneSuffix = (students: StudentLite[], phoneSuffix: string) => {
   const normalized = normalizePhoneSuffix(phoneSuffix);
@@ -1171,7 +1189,9 @@ const matchStudentsByPhoneSuffix = (students: StudentLite[], phoneSuffix: string
     return (
       normalizePhoneSuffix(student.phoneSuffix) === normalized ||
       normalizePhoneSuffix(student.phoneNumber) === normalized ||
-      normalizePhoneSuffix(student.studentId) === normalized
+      // 레거시 유저의 studentId = phoneSuffix (4자리) → 정합 허용
+      // 신형 customId(6~8자)는 normalizePhoneSuffix 결과가 ""이므로 오매칭 없음
+      normalizePhoneSuffix(student.studentId ?? "") === normalized
     );
   });
 };
@@ -1181,6 +1201,44 @@ export const resolveMatchStatus = (
   classStudents: StudentLite[],
   allStudents: StudentLite[],
 ): Pick<UploadCandidate, "status" | "candidates" | "selectedStudentUid" | "matchReason"> => {
+  // ─── [Stage 0] customId 직접 매칭 (6~8자 신형 ID 체계) ──────────────────────
+  // parsed.studentId가 customId 형식이면 phoneSuffix/이름 매칭보다 우선 시도.
+  // 레거시 phoneSuffix(4자리)는 isCustomIdFormat() === false → 이 블록을 건너뜀.
+  const parsedCustomId = (parsed.studentId ?? "").replace(/\s+/g, "").toLowerCase();
+  if (isCustomIdFormat(parsedCustomId)) {
+    // 반 내에서 먼저 검색
+    const inClassIdMatches = uniqueStudents(matchStudentsByStudentId(classStudents, parsedCustomId));
+    if (inClassIdMatches.length === 1) {
+      const resolved = inClassIdMatches[0];
+      return {
+        status: "ready",
+        candidates: [resolved],
+        selectedStudentUid: resolved.uid,
+        matchReason: `학생 고유 ID(${parsedCustomId})가 반 내 단일 일치 → 자동 매칭.`,
+      };
+    }
+    // 반 밖 전체에서 검색 (반 미배정 학생 포함)
+    const globalIdMatches = uniqueStudents(matchStudentsByStudentId(allStudents, parsedCustomId));
+    if (globalIdMatches.length === 1) {
+      const resolved = globalIdMatches[0];
+      return {
+        status: "ready",
+        candidates: [resolved],
+        selectedStudentUid: resolved.uid,
+        matchReason: `학생 고유 ID(${parsedCustomId}) 전체 단일 일치 → 자동 매칭.`,
+      };
+    }
+    if (globalIdMatches.length > 1) {
+      return {
+        status: "needs_selection",
+        candidates: globalIdMatches,
+        selectedStudentUid: null,
+        matchReason: `학생 고유 ID(${parsedCustomId})가 여러 문서에 중복 존재 → 수동 선택 필요.`,
+      };
+    }
+  }
+
+  // ─── [Stage 1] 이름 기반 반 내 매칭 ───────────────────────────────────────
   const parsedName = normalizeMatchName(parsed.name);
 
   if (!parsedName) {
@@ -1205,7 +1263,25 @@ export const resolveMatchStatus = (
   }
 
   if (classNameMatches.length > 1) {
-    const phoneMatches = matchStudentsByPhoneSuffix(classNameMatches, parsed.phoneSuffix || parsed.studentId);
+    // ─── [Stage 2-A] 동명이인 → 신형 customId로 타이브레이크 ──────────────
+    if (isCustomIdFormat(parsedCustomId)) {
+      const idTieBreak = uniqueStudents(matchStudentsByStudentId(classNameMatches, parsedCustomId));
+      if (idTieBreak.length === 1) {
+        const resolved = idTieBreak[0];
+        return {
+          status: "ready",
+          candidates: [resolved],
+          selectedStudentUid: resolved.uid,
+          matchReason: "동명이인 중 학생 고유 ID가 단일 일치해 자동 매칭했습니다.",
+        };
+      }
+    }
+
+    // ─── [Stage 2-B] 동명이인 → 레거시 phoneSuffix 타이브레이크 (하위 호환) ─
+    const phoneMatches = matchStudentsByPhoneSuffix(
+      classNameMatches,
+      parsed.phoneSuffix || (isCustomIdFormat(parsedCustomId) ? "" : parsedCustomId),
+    );
     if (phoneMatches.length === 1) {
       const resolved = phoneMatches[0];
       return {
@@ -1448,8 +1524,10 @@ export const publishReportBatch = async (
         examDate,
         fileHash: row.fileHash ?? null,
         studentUid: completedStudent?.uid ?? null,
-        studentId: completedStudent?.studentId ?? null,
-        studentName: completedStudent?.name ?? (row.parsed.name || ""),
+        // studentId: customId(6~8자) 우선. 레거시 유저는 phoneSuffix(4자리)가 들어옴.
+        // null/undefined/빈문자열 방어 → null 저장 (ReportView where 쿼리 정합성 유지)
+        studentId: (completedStudent?.studentId ?? "").trim() || null,
+        studentName: (completedStudent?.name ?? row.parsed.name ?? "").trim(),
         assignmentStatus,
         status: completedStudent ? "completed" : "pending",
         assignedAt: completedStudent ? serverTimestamp() : null,
@@ -1747,10 +1825,12 @@ export const assignPendingReportToStudent = async (
   reportId: string,
   student: Pick<StudentLite, "uid" | "name" | "studentId" | "classId" | "className">,
 ): Promise<void> => {
+  // studentId: customId(6~8자) 우선. 없으면 null → ReportView where("studentId") 쿼리와 정합
+  const resolvedStudentId = (student.studentId ?? "").trim() || null;
   await updateDoc(doc(db, "reports", reportId), {
     studentUid: student.uid,
-    studentId: student.studentId ?? null,
-    studentName: student.name,
+    studentId: resolvedStudentId,
+    studentName: student.name ?? "",
     classId: student.classId ?? null,
     className: student.className ?? null,
     assignmentStatus: "completed",
@@ -1780,8 +1860,8 @@ export const assignReportToStudentOverride = async (
 
   batch.update(reportRef, {
     studentUid: student.uid,
-    studentName: student.name,
-    studentId: student.studentId ?? null,
+    studentName: student.name ?? "",
+    studentId: (student.studentId ?? "").trim() || null,
     classId: student.classId ?? null,
     className: student.className ?? null,
     assignmentStatus: "completed",
@@ -1836,8 +1916,8 @@ export const fixAndAssignPendingReport = async (
 
   batch.update(reportRef, {
     studentUid: student.uid,
-    studentName: student.name,
-    studentId: student.studentId ?? null,
+    studentName: student.name ?? "",
+    studentId: (student.studentId ?? "").trim() || null,
     classId: student.classId ?? null,
     className: student.className ?? null,
     sourceName: source.sourceName.trim(),

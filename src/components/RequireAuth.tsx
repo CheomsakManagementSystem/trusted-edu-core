@@ -2,6 +2,7 @@ import { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { isAdminRole, isStaffRole } from "@/lib/authz";
+import MigrationModal from "@/components/MigrationModal";
 
 export const RequireAuth = ({ children }: { children: ReactNode }) => {
   const { user, loading } = useAuth();
@@ -17,6 +18,11 @@ export const RequireAuth = ({ children }: { children: ReactNode }) => {
 
   if (!user) {
     return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+
+  // 레거시 학생 → 마이그레이션 모달이 대시보드를 덮음 (진입 자체는 허용, 모달로 차단)
+  if (user.needsMigration) {
+    return <MigrationModal />;
   }
 
   return <>{children}</>;
