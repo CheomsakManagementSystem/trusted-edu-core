@@ -29,7 +29,10 @@ export type StudentLite = {
   uid: string;
   name: string;
   email: string;
+  /** @deprecated 하위 호환용. 신규 로직은 classIds 사용 */
   classId?: string | null;
+  /** 다중 반 소속 배열. 기존 classId 없는 유저는 [] 로 정규화됨 */
+  classIds: string[];
   className?: string | null;
   studentId?: string | null;
   phoneNumber?: string | null;
@@ -1518,6 +1521,7 @@ export const fetchStudents = async (): Promise<StudentLite[]> => {
         name?: string;
         email?: string;
         classId?: string;
+        classIds?: unknown;
         className?: string;
         studentId?: string;
         phoneNumber?: string;
@@ -1526,11 +1530,19 @@ export const fetchStudents = async (): Promise<StudentLite[]> => {
       const phoneDigits = (data.phoneNumber ?? "").replace(/\D/g, "");
       const phoneLast4 = phoneDigits.length >= 4 ? phoneDigits.slice(-4) : null;
       const studentId = data.studentId ?? data.phoneSuffix ?? phoneLast4 ?? null;
+      // classIds 정규화: 배열이면 그대로, 없으면 classId 폴백, 그것도 없으면 []
+      const rawClassIds = Array.isArray(data.classIds) ? (data.classIds as string[]) : null;
+      const classIds: string[] = rawClassIds
+        ? rawClassIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+        : data.classId
+          ? [data.classId]
+          : [];
       return {
         uid: data.uid ?? docSnap.id,
         name: data.name ?? "이름없음",
         email: data.email ?? "",
         classId: data.classId ?? null,
+        classIds,
         className: data.className ?? null,
         studentId,
         phoneNumber: data.phoneNumber ?? null,

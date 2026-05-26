@@ -31,8 +31,10 @@ import {
 } from "@/lib/pdfProcessor";
 import { formatStudentName } from "@/lib/studentName";
 import {
-  bulkUpdateStudentClassAssignments,
-  updateStudentClassAssignment,
+  bulkAddClassIdToStudents,
+  bulkUpdateStudentClassIds,
+  removeClassIdFromStudent,
+  updateStudentClassIds,
 } from "@/services/classTransferService";
 
 type ClassFormState = {
@@ -54,7 +56,8 @@ const ClassManager = () => {
   const [expandedClassId, setExpandedClassId] = useState<string | null>(null);
   const [adminSearch, setAdminSearch] = useState("");
   const [selectedBulkClassId, setSelectedBulkClassId] = useState("none");
-  const [pendingClassSelections, setPendingClassSelections] = useState<Record<string, string>>({});
+  /** uid → 선택된 classId 배열 (다중 반 지원). 저장 전 로컬 펜딩 상태 */
+  const [pendingClassSelections, setPendingClassSelections] = useState<Record<string, string[]>>({});
 
   const loadData = async () => {
     const [classDocs, studentDocs] = await Promise.all([fetchClasses(), fetchStudents()]);
@@ -71,8 +74,11 @@ const ClassManager = () => {
     [classes, selectedClassId],
   );
 
-  const hasAssignedClass = (student: StudentLite) =>
-    Boolean(student.classId) || Boolean(student.className && student.className !== "미배정");
+  const hasAssignedClass = (student: StudentLite) => {
+    // classIds 배열 우선, 없으면 구버전 classId 폴백
+    if (Array.isArray(student.classIds) && student.classIds.length > 0) return true;
+    return Boolean(student.classId) || Boolean(student.className && student.className !== "미배정");
+  };
 
   const formatStudentLabel = (student: StudentLite) =>
     formatStudentName(student.name, {
@@ -118,14 +124,22 @@ const ClassManager = () => {
     });
 
     students.forEach((student) => {
-      if (!student.classId) {
-        return;
-      }
-      const list = map.get(student.classId);
-      if (!list) {
-        return;
-      }
-      list.push(student);
+      // classIds 배열 우선, 없으면 classId 폴백
+      const rawIds: string[] =
+        Array.isArray(student.classIds) && student.classIds.length > 0
+          ? student.classIds
+          : student.classId
+            ? [student.classId]
+            : [];
+
+      // classIds 내 중복 제거 → 동일 반에 같은 학생이 두 번 추가되는 것 방지
+      const uniqueIds = Array.from(new Set(rawIds));
+      uniqueIds.forEach((cid) => {
+        const list = map.get(cid);
+        if (list) {
+          list.push(student); // 다중 반이면 각 반 목록에 독립적으로 추가됨
+        }
+      });
     });
 
     return map;
@@ -143,9 +157,20 @@ const ClassManager = () => {
 
   useEffect(() => {
     setPendingClassSelections((prev) => {
-      const next: Record<string, string> = {};
+      const next: Record<string, string[]> = {};
       students.forEach((student) => {
-        next[student.uid] = prev[student.uid] ?? student.classId ?? "none";
+        // 기존 펜딩이 있으면 유지, 없으면 classIds 정규화값으로 초기화
+        if (prev[student.uid] !== undefined) {
+          next[student.uid] = prev[student.uid];
+        } else {
+          const ids =
+            Array.isArray(student.classIds) && student.classIds.length > 0
+              ? student.classIds
+              : student.classId
+                ? [student.classId]
+                : [];
+          next[student.uid] = ids;
+        }
       });
       return next;
     });
@@ -243,15 +268,19 @@ const ClassManager = () => {
       );
 
       await Promise.all(
-        studentsInClass.docs.map((studentDoc) =>
-          updateDoc(studentDoc.ref, {
-            classId: null,
-            className: null,
-            isEnrolled: false,
-            enrollmentStatus: null,
+        studentsInClass.docs.map((studentDoc) => {
+          const data = studentDoc.data() as { classIds?: unknown };
+          const prevIds = Array.isArray(data.classIds) ? (data.classIds as string[]) : [];
+          const nextIds = prevIds.filter((id) => id !== classDoc.id);
+          return updateDoc(studentDoc.ref, {
+            classIds: nextIds,
+            classId: nextIds.length > 0 ? nextIds[0] : null,
+            className: nextIds.length > 0 ? null : null, // className은 loadData 후 재조회
+            isEnrolled: nextIds.length > 0,
+            enrollmentStatus: nextIds.length > 0 ? "active" : null,
             updatedAt: serverTimestamp(),
-          }),
-        ),
+          });
+        }),
       );
 
       await deleteDoc(doc(db, "classes", classDoc.id));
@@ -285,30 +314,25 @@ const ClassManager = () => {
     setMessage("");
 
     try {
-      await Promise.all(
-        assignedUids.map((uid) =>
-          updateDoc(doc(db, "users", uid), {
-            classId: selectedClass.id,
-            className: selectedClass.name,
-            isEnrolled: true,
-            enrollmentStatus: "active",
-            updatedAt: serverTimestamp(),
-          }),
-        ),
-      );
+      // classIds 배열에 원자적 추가 (arrayUnion → 중복 방지)
+      await bulkAddClassIdToStudents(assignedUids, selectedClass.id);
 
       setStudents((prev) =>
-        prev.map((student) =>
-          assignedUids.includes(student.uid)
-            ? { ...student, classId: selectedClass.id, className: selectedClass.name }
-            : student,
-        ),
+        prev.map((student) => {
+          if (!assignedUids.includes(student.uid)) return student;
+          const prevIds = Array.isArray(student.classIds) ? student.classIds : student.classId ? [student.classId] : [];
+          const nextIds = Array.from(new Set([...prevIds, selectedClass.id]));
+          return {
+            ...student,
+            classId: selectedClass.id,
+            classIds: nextIds,
+            className: student.className || selectedClass.name,
+          };
+        }),
       );
       setCheckedStudentUids([]);
       setMessage(`${assignedUids.length}명의 학생을 '${selectedClass.name}'에 배정했습니다.`);
-      toast({
-        title: "반 정보가 성공적으로 업데이트되었습니다",
-      });
+      toast({ title: "반 정보가 성공적으로 업데이트되었습니다" });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "학생 배정에 실패했습니다.");
       await loadData();
@@ -318,38 +342,41 @@ const ClassManager = () => {
   };
 
   const handleStudentClassSave = async (student: StudentLite) => {
-    const nextClassId = pendingClassSelections[student.uid] ?? student.classId ?? "none";
-    const currentClassId = student.classId ?? "none";
-    if (nextClassId === currentClassId) {
+    const nextIds = pendingClassSelections[student.uid] ?? [];
+    const currentIds = Array.isArray(student.classIds)
+      ? [...student.classIds].sort()
+      : student.classId
+        ? [student.classId]
+        : [];
+    const deduped = Array.from(new Set(nextIds)).sort();
+
+    if (JSON.stringify(deduped) === JSON.stringify(currentIds)) {
       return;
     }
-
-    const targetClass = classes.find((item) => item.id === nextClassId) ?? null;
 
     setLoading(true);
     setMessage("");
     try {
-      await updateStudentClassAssignment(student.uid, targetClass);
+      await updateStudentClassIds(student.uid, deduped);
+      const firstClass = classes.find((c) => c.id === deduped[0]) ?? null;
       setStudents((prev) =>
         prev.map((item) =>
           item.uid === student.uid
-            ? { ...item, classId: targetClass?.id ?? null, className: targetClass?.name ?? null }
+            ? {
+                ...item,
+                classIds: deduped,
+                classId: firstClass?.id ?? null,
+                className: firstClass?.name ?? null,
+              }
             : item,
         ),
       );
-      setPendingClassSelections((prev) => ({
-        ...prev,
-        [student.uid]: targetClass?.id ?? "none",
-      }));
-      toast({
-        title: "반 정보가 성공적으로 업데이트되었습니다",
-      });
+      setPendingClassSelections((prev) => ({ ...prev, [student.uid]: deduped }));
+      toast({ title: "반 정보가 성공적으로 업데이트되었습니다" });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "반 변경에 실패했습니다.");
-      setPendingClassSelections((prev) => ({
-        ...prev,
-        [student.uid]: student.classId ?? "none",
-      }));
+      // 롤백
+      setPendingClassSelections((prev) => ({ ...prev, [student.uid]: currentIds }));
     } finally {
       setLoading(false);
     }
@@ -361,30 +388,35 @@ const ClassManager = () => {
       return;
     }
 
-    const targetClass = classes.find((item) => item.id === selectedBulkClassId) ?? null;
+    const targetIds =
+      selectedBulkClassId !== "none" ? [selectedBulkClassId] : [];
+    const firstClass = classes.find((c) => c.id === selectedBulkClassId) ?? null;
 
     setLoading(true);
     setMessage("");
     try {
-      await bulkUpdateStudentClassAssignments(checkedManagedStudentUids, targetClass);
+      await bulkUpdateStudentClassIds(checkedManagedStudentUids, targetIds);
       setStudents((prev) =>
         prev.map((student) =>
           checkedManagedStudentUids.includes(student.uid)
-            ? { ...student, classId: targetClass?.id ?? null, className: targetClass?.name ?? null }
+            ? {
+                ...student,
+                classIds: targetIds,
+                classId: firstClass?.id ?? null,
+                className: firstClass?.name ?? null,
+              }
             : student,
         ),
       );
       setPendingClassSelections((prev) => {
         const next = { ...prev };
         checkedManagedStudentUids.forEach((uid) => {
-          next[uid] = targetClass?.id ?? "none";
+          next[uid] = targetIds;
         });
         return next;
       });
       setCheckedManagedStudentUids([]);
-      toast({
-        title: "반 정보가 성공적으로 업데이트되었습니다",
-      });
+      toast({ title: "반 정보가 성공적으로 업데이트되었습니다" });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "반 일괄 변경에 실패했습니다.");
       await loadData();
@@ -393,26 +425,44 @@ const ClassManager = () => {
     }
   };
 
-  const handleRemoveStudentFromClass = async (student: StudentLite) => {
-    if (!window.confirm(`${formatStudentLabel(student)} 학생을 현재 반에서 내보내시겠습니까?`)) {
+  /**
+   * expandedClassId 컨텍스트에서 호출됨.
+   * 해당 classId 만 제거하고, 다른 반 소속은 유지.
+   */
+  const handleRemoveStudentFromClass = async (student: StudentLite, targetClassId: string) => {
+    if (!window.confirm(`${formatStudentLabel(student)} 학생을 이 반에서 내보내시겠습니까?`)) {
       return;
     }
+
+    const currentIds = Array.isArray(student.classIds)
+      ? student.classIds
+      : student.classId
+        ? [student.classId]
+        : [];
+    const remaining = currentIds.filter((id) => id !== targetClassId).length;
 
     setLoading(true);
     setMessage("");
 
     try {
-      await updateDoc(doc(db, "users", student.uid), {
-        classId: null,
-        className: null,
-        isEnrolled: false,
-        enrollmentStatus: null,
-        updatedAt: serverTimestamp(),
-      });
+      await removeClassIdFromStudent(student.uid, targetClassId, remaining);
+      const nextIds = currentIds.filter((id) => id !== targetClassId);
+      setStudents((prev) =>
+        prev.map((s) => {
+          if (s.uid !== student.uid) return s;
+          const firstClass = classes.find((c) => c.id === nextIds[0]) ?? null;
+          return {
+            ...s,
+            classIds: nextIds,
+            classId: firstClass?.id ?? null,
+            className: firstClass?.name ?? null,
+          };
+        }),
+      );
       setMessage(`${formatStudentLabel(student)} 학생의 반 배정을 취소했습니다.`);
-      await loadData();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "학생 배정 취소에 실패했습니다.");
+      await loadData();
     } finally {
       setLoading(false);
     }
@@ -527,7 +577,7 @@ const ClassManager = () => {
                               type="button"
                               size="sm"
                               variant="destructive"
-                              onClick={() => handleRemoveStudentFromClass(student)}
+                              onClick={() => handleRemoveStudentFromClass(student, expandedClassId)}
                               disabled={loading}
                             >
                               배정 취소/강퇴
@@ -665,52 +715,71 @@ const ClassManager = () => {
               <div className="space-y-2 p-3">
                 {filteredManageableStudents.map((student) => {
                   const checked = checkedManagedStudentUids.includes(student.uid);
-                  const selectedManageClassId = pendingClassSelections[student.uid] ?? student.classId ?? "none";
-                  const currentClassId = student.classId ?? "none";
+                  const currentIds = Array.isArray(student.classIds)
+                    ? [...student.classIds].sort()
+                    : student.classId ? [student.classId] : [];
+                  const pendingIds: string[] =
+                    pendingClassSelections[student.uid] ?? currentIds;
+                  const isDirty =
+                    JSON.stringify(Array.from(new Set(pendingIds)).sort()) !==
+                    JSON.stringify(currentIds);
+
+                  const togglePendingClass = (classId: string, on: boolean) => {
+                    setPendingClassSelections((prev) => {
+                      const base = prev[student.uid] ?? currentIds;
+                      const next = on
+                        ? Array.from(new Set([...base, classId]))
+                        : base.filter((id) => id !== classId);
+                      return { ...prev, [student.uid]: next };
+                    });
+                  };
+
                   return (
                     <div
                       key={`manage-${student.uid}`}
-                      className="grid gap-3 rounded-md border border-border bg-background px-3 py-3 md:grid-cols-[auto_minmax(0,1.2fr)_minmax(0,0.8fr)_220px_auto]"
+                      className="rounded-md border border-border bg-background px-3 py-3 space-y-2"
                     >
-                      <div className="flex items-center">
-                        <Checkbox
-                          checked={checked}
-                          onCheckedChange={(value) => toggleManagedChecked(student.uid, Boolean(value))}
-                        />
+                      <div className="flex items-start gap-3">
+                        <div className="flex items-center pt-0.5">
+                          <Checkbox
+                            checked={checked}
+                            onCheckedChange={(value) => toggleManagedChecked(student.uid, Boolean(value))}
+                          />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium text-card-foreground">{formatStudentLabel(student)}</p>
+                          <p className="truncate text-xs text-muted-foreground">{student.email}</p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          disabled={loading || !isDirty}
+                          onClick={() => handleStudentClassSave(student)}
+                        >
+                          저장
+                        </Button>
                       </div>
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-card-foreground">{formatStudentLabel(student)}</p>
-                        <p className="truncate text-xs text-muted-foreground">{student.email}</p>
+                      {/* 다중 반 선택 체크박스 그룹 (중복 방지: Set 기반) */}
+                      <div className="ml-7 flex flex-wrap gap-x-4 gap-y-1">
+                        {classes.map((cls) => (
+                          <label
+                            key={`${student.uid}-${cls.id}`}
+                            className="flex items-center gap-1.5 cursor-pointer text-xs text-card-foreground"
+                          >
+                            <Checkbox
+                              checked={pendingIds.includes(cls.id)}
+                              onCheckedChange={(value) =>
+                                togglePendingClass(cls.id, Boolean(value))
+                              }
+                            />
+                            {cls.name}
+                          </label>
+                        ))}
+                        {classes.length === 0 && (
+                          <span className="text-xs text-muted-foreground">등록된 반 없음</span>
+                        )}
                       </div>
-                      <div className="flex items-center text-sm text-card-foreground">
-                        {student.className || "미배정"}
-                      </div>
-                      <Select
-                        value={selectedManageClassId}
-                        onValueChange={(value) =>
-                          setPendingClassSelections((prev) => ({ ...prev, [student.uid]: value }))
-                        }
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="반 선택" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">미배정</SelectItem>
-                          {classes.map((item) => (
-                            <SelectItem key={item.id} value={item.id}>
-                              {item.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        disabled={loading || selectedManageClassId === currentClassId}
-                        onClick={() => handleStudentClassSave(student)}
-                      >
-                        저장
-                      </Button>
                     </div>
                   );
                 })}
