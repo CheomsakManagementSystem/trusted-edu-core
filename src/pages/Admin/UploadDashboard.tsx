@@ -184,7 +184,9 @@ const UploadDashboard = () => {
   }, [selectedDate]);
 
   const classStudents = useMemo(
-    () => students.filter((student) => student.classId === selectedClassId),
+    () => students.filter((student) =>
+      student.classId === selectedClassId || student.classIds.includes(selectedClassId)
+    ),
     [selectedClassId, students],
   );
   const searchableStudents = useMemo<SearchableStudent[]>(
@@ -496,6 +498,15 @@ const UploadDashboard = () => {
       ),
     [rows],
   );
+  const hasAnyReadyRow = useMemo(
+    () =>
+      rows.some(
+        (row) =>
+          requiredScoreKeys.every((key) => Number.isFinite(row.parsed.scores[key])) &&
+          row.parsed.feedback.trim().length > 0,
+      ),
+    [rows],
+  );
   const readByReportId = useMemo(
     () => new Map(classReports.map((report) => [report.id, report.isRead])),
     [classReports],
@@ -601,15 +612,11 @@ const UploadDashboard = () => {
     }
 
     if (hasAnyInvalidRow) {
-      setMessage(
-        "입력 확인이 필요합니다. 점수 5개(독해력/내용 이해력/문제 이해력/구성력/표현력)와 첨삭 총평을 모두 입력해주세요.",
-      );
       toast({
         variant: "destructive",
         title: "내용 확인 필요",
-        description: "점수 또는 첨삭 총평이 누락된 항목이 있어 배포할 수 없습니다.",
+        description: "일부 항목에 누락된 점수/총평이 있습니다. 해당 파일은 스킵되고 나머지 파일을 배포합니다.",
       });
-      return;
     }
 
     setUploading(true);
@@ -1420,7 +1427,7 @@ const UploadDashboard = () => {
                 !selectedClass ||
                 !selectedDateText ||
                 rows.length === 0 ||
-                hasAnyInvalidRow ||
+                !hasAnyReadyRow ||
                 !canManageReports
               }
             >
