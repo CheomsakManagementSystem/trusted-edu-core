@@ -189,6 +189,69 @@ export const cascadeUpdateStudentId = async (
   return updatedCount;
 };
 
+/**
+ * users 컬렉션 전수 스캔 → phoneSuffix 중복 대상에게 인앱 알림 발송
+ * isNotificationSent: true 플래그로 재발송 방지
+ */
+export const notifyDuplicatePhoneSuffixUsers = async (
+  actorUid: string,
+): Promise<{ notified: number; skipped: number }> => {
+  const snap = await getDocs(collection(db, "users"));
+
+  // phoneSuffix별 uid 목록 집계
+  const suffixMap = new Map<string, { uid: string; name: string; docId: string }[]>();
+  for (const docSnap of snap.docs) {
+    const data = docSnap.data() as {
+      uid?: string;
+      name?: string;
+      phoneSuffix?: string;
+      isNotificationSent?: boolean;
+    };
+    const suffix = data.phoneSuffix?.trim();
+    if (!suffix) continue;
+    const entry = { uid: data.uid ?? docSnap.id, name: data.name ?? "", docId: docSnap.id };
+    const list = suffixMap.get(suffix) ?? [];
+    list.push(entry);
+    suffixMap.set(suffix, list);
+  }
+
+  let notified = 0;
+  let skipped = 0;
+
+  for (const [, users] of suffixMap) {
+    if (users.length < 2) continue;
+
+    for (const u of users) {
+      try {
+        // 이미 발송된 유저 스킵
+        const userSnap = await getDoc(doc(db, "users", u.docId));
+        if (userSnap.data()?.isNotificationSent === true) {
+          skipped++;
+          continue;
+        }
+
+        await addDoc(collection(db, "notifications"), {
+          studentUid: u.uid,
+          category: "DUPLICATE_ID_WARNING",
+          title: "학생 ID 중복 안내",
+          message:
+            "[김윤환입시연구소] 안내: 회원님의 4자리 학생 ID가 다른 회원과 중복되어 있습니다. 대시보드 또는 마이페이지에서 즉시 ID를 변경해 주세요.",
+          isRead: false,
+          createdAt: serverTimestamp(),
+          createdBy: actorUid,
+        });
+
+        await updateDoc(doc(db, "users", u.docId), { isNotificationSent: true });
+        notified++;
+      } catch (err) {
+        console.error(`[notifyDuplicates] uid=${u.uid} 처리 실패`, err);
+      }
+    }
+  }
+
+  return { notified, skipped };
+};
+
 export const enqueueReportNotifications = async (
   reportIds: string[],
   actorUid: string,

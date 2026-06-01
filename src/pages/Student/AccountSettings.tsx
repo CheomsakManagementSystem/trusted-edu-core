@@ -1,5 +1,6 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { EmailAuthProvider, reauthenticateWithCredential, updatePassword } from "firebase/auth";
+import { collection, doc, getDocs, query, updateDoc, where } from "firebase/firestore";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -11,7 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { auth } from "@/lib/firebase";
+import { auth, db } from "@/lib/firebase";
 import { useAuth } from "@/contexts/AuthContext";
 import { fetchClasses, type ClassLite } from "@/lib/pdfProcessor";
 import { updateStudentClassAssignment } from "@/services/classTransferService";
@@ -27,6 +28,9 @@ const AccountSettings = () => {
   const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSaving, setPasswordSaving] = useState(false);
+  const [newPhoneSuffix, setNewPhoneSuffix] = useState("");
+  const [phoneSuffixSaving, setPhoneSuffixSaving] = useState(false);
+  const [phoneSuffixError, setPhoneSuffixError] = useState<string | null>(null);
 
   useEffect(() => {
     const run = async () => {
@@ -67,6 +71,44 @@ const AccountSettings = () => {
       setSelectedClassId(user.classId ?? "none");
     } finally {
       setClassSaving(false);
+    }
+  };
+
+  const handleUpdateId = async () => {
+    setPhoneSuffixError(null);
+    const trimmed = newPhoneSuffix.trim();
+
+    if (!/^\d{4}$/.test(trimmed)) {
+      setPhoneSuffixError("숫자 4자리를 입력해 주세요.");
+      return;
+    }
+
+    if (trimmed === (user?.phoneSuffix ?? "")) {
+      setPhoneSuffixError("현재 ID와 동일합니다.");
+      return;
+    }
+
+    setPhoneSuffixSaving(true);
+    try {
+      const dupSnap = await getDocs(
+        query(collection(db, "users"), where("phoneSuffix", "==", trimmed)),
+      );
+      if (!dupSnap.empty) {
+        setPhoneSuffixError("이미 다른 학생이 사용 중인 ID입니다. 다른 숫자를 입력해 주세요.");
+        return;
+      }
+
+      if (!user?.docPath) throw new Error("유저 문서 경로를 확인할 수 없습니다.");
+      await updateDoc(doc(db, user.docPath), { phoneSuffix: trimmed });
+
+      setNewPhoneSuffix("");
+      toast({ title: "학생 ID가 변경되었습니다." });
+    } catch (err) {
+      setPhoneSuffixError(
+        err instanceof Error ? err.message : "ID 변경 중 오류가 발생했습니다.",
+      );
+    } finally {
+      setPhoneSuffixSaving(false);
     }
   };
 
@@ -180,6 +222,35 @@ const AccountSettings = () => {
               </Button>
             </div>
           </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-white p-5 shadow-card">
+          <h3 className="text-base font-bold text-card-foreground">학생 ID 수정 (4자리 숫자)</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            현재 ID: <span className="font-semibold text-foreground">{user?.phoneSuffix ?? "미설정"}</span>
+          </p>
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-end">
+            <div className="flex-1 space-y-1">
+              <label className="text-sm font-medium text-card-foreground">새 학생 ID</label>
+              <Input
+                value={newPhoneSuffix}
+                onChange={(e) => setNewPhoneSuffix(e.target.value)}
+                placeholder="변경할 숫자 4자리"
+                maxLength={4}
+              />
+            </div>
+            <Button
+              type="button"
+              disabled={phoneSuffixSaving}
+              onClick={handleUpdateId}
+              className="sm:w-28"
+            >
+              {phoneSuffixSaving ? "변경 중..." : "변경하기"}
+            </Button>
+          </div>
+          {phoneSuffixError && (
+            <p className="mt-2 text-sm text-destructive">{phoneSuffixError}</p>
+          )}
         </div>
 
         <div className="relative block rounded-lg border-2 border-primary/20 bg-primary/5 p-3 shadow-card md:p-5">

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { createUserWithEmailAndPassword, type AuthError } from "firebase/auth";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { collection, doc, getDocs, query, setDoc, where } from "firebase/firestore";
 import { Loader2 } from "lucide-react";
 import { auth, db } from "@/lib/firebase";
 import DashboardLayout from "@/components/DashboardLayout";
@@ -16,7 +16,6 @@ import { type CanonicalRole } from "@/lib/authz";
 
 const Signup = () => {
   const navigate = useNavigate();
-  const [customId, setCustomId] = useState("");
   const [name, setName] = useState("");
   const [phoneSuffix, setPhoneSuffix] = useState("");
   const [email, setEmail] = useState("");
@@ -41,18 +40,8 @@ const Signup = () => {
     e.preventDefault();
     setError(null);
 
-    // customId 검증 (ADMIN/INSTRUCTOR는 면제 — masterCode/instructorCode 입력 전이라 role 미확정이므로 학생만 강제)
-    const isStaffSignup = masterCode.trim().length > 0 || instructorCode.trim().length > 0;
-    if (!isStaffSignup) {
-      const idVal = customId.trim().toLowerCase();
-      if (!/^[a-z0-9]{6,8}$/.test(idVal)) {
-        setError("아이디는 영소문자·숫자 조합 6~8자여야 합니다. (예: dohyun17)");
-        return;
-      }
-    }
-
     if (!/^\d{4}$/.test(phoneSuffix)) {
-      setError("전화번호 뒷자리는 숫자 4자리여야 합니다.");
+      setError("학생 ID는 숫자 4자리여야 합니다.");
       return;
     }
 
@@ -68,15 +57,14 @@ const Signup = () => {
             ? "INSTRUCTOR"
             : "STUDENT";
 
-      const docId = role === "STUDENT" ? customId.trim().toLowerCase() : null;
-
-      // 학생 아이디 중복 확인 (Firestore doc 존재 여부)
-      if (docId) {
-        const dupSnap = await getDoc(doc(db, "users", docId));
-        if (dupSnap.exists()) {
-          setError("이미 사용 중인 아이디입니다. 다른 아이디를 선택해주세요.");
-          return;
-        }
+      // 학생 ID(4자리) 중복 확인
+      const idDupSnap = await getDocs(
+        query(collection(db, "users"), where("phoneSuffix", "==", phoneSuffix)),
+      );
+      if (!idDupSnap.empty) {
+        setError("이미 사용 중인 4자리 ID입니다. 다른 숫자로 변경해 주세요.");
+        setLoading(false);
+        return;
       }
 
       const credential = await createUserWithEmailAndPassword(auth, email, password);
@@ -84,29 +72,15 @@ const Signup = () => {
 
       const studentKey = `${name}_${phoneSuffix}`;
 
-      if (role === "STUDENT" && docId) {
-        // 신형: users/{customId} — uid 필드 포함해야 AuthContext가 재조회 가능
-        await setDoc(doc(db, "users", docId), {
-          uid,
-          name,
-          email,
-          role,
-          studentId: docId,   // customId = 학생 고유 ID
-          studentKey,
-          phoneSuffix,
-        });
-      } else {
-        // 관리자/강사: 기존 방식 users/{uid}
-        await setDoc(doc(db, "users", uid), {
-          uid,
-          name,
-          email,
-          role,
-          studentId: phoneSuffix,
-          studentKey,
-          phoneSuffix,
-        });
-      }
+      await setDoc(doc(db, "users", uid), {
+        uid,
+        name,
+        email,
+        role,
+        studentId: phoneSuffix,
+        studentKey,
+        phoneSuffix,
+      });
 
       toast.success("가입을 환영합니다!", {
         description: "잠시 후 해당 권한의 대시보드로 이동합니다.",
@@ -154,23 +128,6 @@ const Signup = () => {
           </p>
 
           <form onSubmit={handleSubmit} className="space-y-4">
-            {/* 학생 고유 아이디 (최상단) */}
-            <div className="space-y-1">
-              <label className="text-sm font-medium text-card-foreground">
-                아이디 (6~8자)
-              </label>
-              <Input
-                value={customId}
-                onChange={(e) => setCustomId(e.target.value.toLowerCase())}
-                placeholder="dohyun17"
-                maxLength={8}
-                autoComplete="username"
-              />
-              <p className="text-xs text-muted-foreground">
-                영소문자·숫자 조합, 6~8자. 선생님 코드 입력 시 생략 가능.
-              </p>
-            </div>
-
             <div className="space-y-1">
               <label className="text-sm font-medium text-card-foreground">이름</label>
               <Input
@@ -183,15 +140,18 @@ const Signup = () => {
 
             <div className="space-y-1">
               <label className="text-sm font-medium text-card-foreground">
-                전화번호 뒷자리 (4자리)
+                학생 ID (4자리 숫자)
               </label>
               <Input
                 value={phoneSuffix}
                 onChange={(e) => setPhoneSuffix(e.target.value)}
-                placeholder="1234"
+                placeholder="나만의 고유 ID 4자리"
                 maxLength={4}
                 required
               />
+              <p className="text-xs text-muted-foreground">
+                중복되지 않는 나만의 숫자 4자리를 정해 주세요.
+              </p>
             </div>
 
             <div className="space-y-1">

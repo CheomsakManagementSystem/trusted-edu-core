@@ -31,6 +31,7 @@ import {
   deleteManagedUserCompletely,
   fetchManagedUsers,
   getMasterControls,
+  notifyDuplicatePhoneSuffixUsers,
   saveMasterControls,
   updateManagedUserRole,
   type ManagedUser,
@@ -115,6 +116,26 @@ const MasterAdminPage = () => {
   const [editingPhoneUid, setEditingPhoneUid] = useState<string | null>(null);
   const [editingPhoneValue, setEditingPhoneValue] = useState("");
   const [savingPhoneUid, setSavingPhoneUid] = useState<string | null>(null);
+
+  const [notifyingDuplicates, setNotifyingDuplicates] = useState(false);
+
+  const handleNotifyDuplicates = async () => {
+    if (!user?.uid) return;
+    if (!window.confirm("중복 학생 ID 보유 유저에게 인앱 알림을 발송합니다. 계속하시겠습니까?")) return;
+    setNotifyingDuplicates(true);
+    try {
+      const { notified, skipped } = await notifyDuplicatePhoneSuffixUsers(user.uid);
+      toast({ title: `발송 완료: ${notified}명 / 이미 발송됨: ${skipped}명` });
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "발송 실패",
+        description: err instanceof Error ? err.message : "오류가 발생했습니다.",
+      });
+    } finally {
+      setNotifyingDuplicates(false);
+    }
+  };
 
   const [analysisStudentUid, setAnalysisStudentUid] = useState("");
   const [analysisQuery, setAnalysisQuery] = useState("");
@@ -471,7 +492,7 @@ const MasterAdminPage = () => {
             </div>
           </div>
 
-          <div className="mt-4 flex items-center gap-2">
+          <div className="mt-4 flex flex-wrap items-center gap-2">
             <Button onClick={saveControls} disabled={savingControls || loading}>
               {savingControls ? "저장 중..." : "설정 완료"}
             </Button>
@@ -479,6 +500,22 @@ const MasterAdminPage = () => {
               저장 즉시 가입 코드와 알림 기능에 적용됩니다.
             </p>
           </div>
+        </section>
+
+        <section className="rounded-xl border border-border bg-card p-5">
+          <h2 className="text-lg font-semibold text-card-foreground">중복 학생 ID 알림 발송</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            전체 회원 중 동일한 4자리 ID를 사용하는 유저에게 변경 안내 인앱 알림을 일괄 발송합니다.
+            이미 발송된 유저는 자동으로 건너뜁니다.
+          </p>
+          <Button
+            className="mt-4"
+            variant="destructive"
+            disabled={notifyingDuplicates}
+            onClick={handleNotifyDuplicates}
+          >
+            {notifyingDuplicates ? "발송 중..." : "중복 ID 유저 알림 발송"}
+          </Button>
         </section>
 
         <section className="rounded-xl border border-border bg-card p-5">
