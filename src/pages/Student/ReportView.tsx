@@ -123,7 +123,11 @@ const ReportView = () => {
     const toRows = (docs: Array<{ id: string; data: () => unknown }>): ReportRecord[] =>
       docs
         .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-        .filter((row) => row.assignmentStatus !== "duplicate_pending" && row.assignmentStatus !== "unassigned_pending")
+        .filter((row) =>
+          row.assignmentStatus !== "duplicate_pending" &&
+          row.assignmentStatus !== "unassigned_pending" &&
+          (row.assignmentStatus as string) !== "unassigned",
+        )
         .sort(compareReportsByExamDateDesc);
 
     const mergeReports = (...groups: ReportRecord[][]) =>
@@ -266,27 +270,27 @@ const ReportView = () => {
     return [
       {
         subject: isMobile ? "독해" : "독해력",
-        myScore: selectedReport.scores.reading ?? 0,
+        myScore: selectedReport.scores?.reading ?? 0,
         avgScore: selectedReport.averageScores?.reading ?? 0,
       },
       {
         subject: isMobile ? "내용이해" : "내용 이해력",
-        myScore: selectedReport.scores.comprehension ?? 0,
+        myScore: selectedReport.scores?.comprehension ?? 0,
         avgScore: selectedReport.averageScores?.comprehension ?? 0,
       },
       {
         subject: isMobile ? "문제이해" : "문제 이해력",
-        myScore: selectedReport.scores.problemUnderstanding ?? 0,
+        myScore: selectedReport.scores?.problemUnderstanding ?? 0,
         avgScore: selectedReport.averageScores?.problemUnderstanding ?? 0,
       },
       {
         subject: isMobile ? "구성" : "구성력",
-        myScore: selectedReport.scores.organization ?? 0,
+        myScore: selectedReport.scores?.organization ?? 0,
         avgScore: selectedReport.averageScores?.organization ?? 0,
       },
       {
         subject: isMobile ? "표현" : "표현력",
-        myScore: selectedReport.scores.expression ?? 0,
+        myScore: selectedReport.scores?.expression ?? 0,
         avgScore: selectedReport.averageScores?.expression ?? 0,
       },
     ];
@@ -620,11 +624,11 @@ const ReportView = () => {
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     {[
-                      { label: "독해력", value: selectedReport.scores.reading ?? "-" },
-                      { label: "내용 이해력", value: selectedReport.scores.comprehension ?? "-" },
-                      { label: "문제 이해력", value: selectedReport.scores.problemUnderstanding ?? "-" },
-                      { label: "구성력", value: selectedReport.scores.organization ?? "-" },
-                      { label: "표현력", value: selectedReport.scores.expression ?? "-" },
+                      { label: "독해력", value: selectedReport.scores?.reading ?? "-" },
+                      { label: "내용 이해력", value: selectedReport.scores?.comprehension ?? "-" },
+                      { label: "문제 이해력", value: selectedReport.scores?.problemUnderstanding ?? "-" },
+                      { label: "구성력", value: selectedReport.scores?.organization ?? "-" },
+                      { label: "표현력", value: selectedReport.scores?.expression ?? "-" },
                       { label: "총점", value: selectedReport.totalScore ?? "-" },
                       { label: "등급", value: selectedReport.grade || "기록 없음" },
                     ].map((item) => (
@@ -659,7 +663,16 @@ const ReportView = () => {
                   </div>
                   <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
                     <p className="text-slate-500">학생명</p>
-                    <p className="font-semibold text-slate-800">{feedbackMeta.studentName}</p>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <p className="font-semibold text-slate-800">
+                        {feedbackMeta.studentName || "미연결 학생"}
+                      </p>
+                      {!selectedReport.studentUid && !selectedReport.studentId && (
+                        <span className="rounded bg-zinc-200 px-1.5 py-0.5 text-xs text-zinc-600">
+                          가입 대기
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 md:col-span-2">
                     <p className="text-slate-500">논제</p>

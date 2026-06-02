@@ -21,7 +21,7 @@ import { isStaffRole } from "@/lib/authz";
 const STORAGE_UPLOAD_TIMEOUT_MS = 60_000;
 const PDFJS_VERSION = "4.10.38";
 
-export type MatchStatus = "ready" | "needs_selection" | "unregistered";
+export type MatchStatus = "ready" | "unregistered";
 export type JoinRequestStatus = "pending" | "approved" | "rejected";
 export type ReportAssignmentStatus = "completed" | "duplicate_pending" | "unassigned_pending";
 
@@ -294,11 +294,23 @@ export const hydrateReportRecord = (
     normalizeDateString(data.writtenAt) ??
     "";
 
+  const NULL_SCORES: ScoreBreakdown = {
+    reading: null, comprehension: null, problemUnderstanding: null,
+    organization: null, expression: null, total: null,
+  };
+
   return {
     id,
     ...data,
     examDate,
     isRead: Boolean(data.isRead),
+    scores: ((data.scores as ScoreBreakdown | null | undefined) ?? NULL_SCORES),
+    averageScores: ((data.averageScores as ScoreBreakdown | null | undefined) ?? NULL_SCORES),
+    convertedScores: ((data.convertedScores as ScoreBreakdown | null | undefined) ?? NULL_SCORES),
+    totalScore: (data.totalScore as number | null | undefined) ?? 0,
+    studentName: (data.studentName as string | null | undefined) ?? "",
+    feedback: (data.feedback as string | null | undefined) ?? "",
+    fileName: (data.fileName as string | null | undefined) ?? "",
   };
 };
 
@@ -1230,10 +1242,10 @@ export const resolveMatchStatus = (
     }
     if (globalIdMatches.length > 1) {
       return {
-        status: "needs_selection",
-        candidates: globalIdMatches,
+        status: "unregistered",
+        candidates: [],
         selectedStudentUid: null,
-        matchReason: `학생 고유 ID(${parsedCustomId})가 여러 문서에 중복 존재 → 수동 선택 필요.`,
+        matchReason: `학생 고유 ID(${parsedCustomId})가 여러 계정에 중복 존재 → 미연결 자동 처리됩니다.`,
       };
     }
   }
@@ -1293,13 +1305,12 @@ export const resolveMatchStatus = (
     }
 
     return {
-      status: "needs_selection",
-      candidates: classNameMatches,
+      status: "unregistered",
+      candidates: [],
       selectedStudentUid: null,
-      matchReason:
-        phoneMatches.length > 1
-          ? "선택한 반 안의 동명이인 중 같은 번호 후보가 여러 명이어서 수동 매칭이 필요합니다."
-          : "선택한 반 안에 동명이인이 있어 수동 매칭이 필요합니다.",
+      matchReason: phoneMatches.length > 1
+        ? "동명이인 중 번호 후보가 여럿 → 미연결 자동 처리됩니다."
+        : "동명이인이 있어 특정 불가 → 미연결 자동 처리됩니다.",
     };
   }
 
@@ -1310,7 +1321,7 @@ export const resolveMatchStatus = (
       status: "unregistered",
       candidates: [],
       selectedStudentUid: null,
-      matchReason: "선택한 반 밖에만 이름이 일치하는 학생이 있어 자동 매칭하지 않았습니다.",
+      matchReason: "선택한 반 안에 일치하는 학생이 없습니다 → 미연결 자동 처리됩니다.",
     };
   }
 
@@ -1502,11 +1513,7 @@ export const publishReportBatch = async (
         : null;
 
       const completedStudent = resolvedStudent;
-      const assignmentStatus: ReportAssignmentStatus = completedStudent
-        ? "completed"
-        : row.status === "needs_selection"
-          ? "duplicate_pending"
-          : "unassigned_pending";
+      const assignmentStatus: ReportAssignmentStatus = completedStudent ? "completed" : "unassigned_pending";
 
       const storageOwnerUid = completedStudent?.uid ?? uid;
 

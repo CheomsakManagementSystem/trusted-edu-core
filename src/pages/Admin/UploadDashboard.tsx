@@ -83,8 +83,7 @@ const requiredScoreKeys: Array<keyof ScoreBreakdown> = [
 
 const statusLabel = {
   ready: "자동 매칭 완료",
-  needs_selection: "수동 확인 필요",
-  unregistered: "가입 대기/미매칭",
+  unregistered: "가입 대기/미연결",
 } as const;
 
 type SearchableStudent = StudentLite & {
@@ -122,11 +121,9 @@ const UploadDashboard = () => {
   const [isDragging, setIsDragging] = useState(false);
   const [message, setMessage] = useState("");
   const [progress, setProgress] = useState(0);
-  const [studentSearch, setStudentSearch] = useState<Record<string, string>>({});
   const [pendingSearch, setPendingSearch] = useState<Record<string, string>>({});
   const [pendingSelectedStudent, setPendingSelectedStudent] = useState<Record<string, string>>({});
   const [resolvingPendingId, setResolvingPendingId] = useState<string | null>(null);
-  const [manualMatchTargetId, setManualMatchTargetId] = useState<string | null>(null);
   const [archiveClassFilter, setArchiveClassFilter] = useState<string>("all");
   const [archiveStudentFilter, setArchiveStudentFilter] = useState("");
   const [archiveReadFilter, setArchiveReadFilter] = useState<string>("all");
@@ -323,14 +320,7 @@ const UploadDashboard = () => {
 
   const applyMatchResolution = useCallback((row: UploadCandidate): UploadCandidate => {
     const nextMatch = resolveMatchStatus(row.parsed, classStudents, students);
-    const keepManualSelection =
-      row.selectedStudentUid && nextMatch.candidates.some((student) => student.uid === row.selectedStudentUid);
-
-    return {
-      ...row,
-      ...nextMatch,
-      selectedStudentUid: keepManualSelection ? row.selectedStudentUid : nextMatch.selectedStudentUid,
-    };
+    return { ...row, ...nextMatch };
   }, [classStudents, students]);
 
   useEffect(() => {
@@ -395,12 +385,6 @@ const UploadDashboard = () => {
         const deduped = parsedWithHash.filter((row) => !ids.has(row.id));
         return [...prev, ...deduped];
       });
-      const firstDuplicate = parsedWithHash.find(
-        (row) => row.status === "needs_selection" && row.candidates.length > 1,
-      );
-      if (firstDuplicate) {
-        setManualMatchTargetId(firstDuplicate.id);
-      }
       const parseFailedCount = parsedWithHash.filter((row) => Boolean(row.parseError)).length;
       if (parseFailedCount > 0) {
         toast({
@@ -485,10 +469,6 @@ const UploadDashboard = () => {
     }));
   };
 
-  const getSearchableCandidates = (row: UploadCandidate) => {
-    return filterStudents(studentSearch[row.id] ?? "");
-  };
-
   const hasAnyInvalidRow = useMemo(
     () =>
       rows.some(
@@ -524,10 +504,6 @@ const UploadDashboard = () => {
         .filter((report) => !report.studentId && !report.studentUid)
         .sort(compareReportsByExamDateDesc),
     [pendingReports],
-  );
-  const manualMatchTarget = useMemo(
-    () => rows.find((row) => row.id === manualMatchTargetId) ?? null,
-    [manualMatchTargetId, rows],
   );
   const filteredPublishedReports = useMemo(() => {
     return [...publishedReports]
@@ -904,28 +880,6 @@ const UploadDashboard = () => {
     }
   };
 
-  const handleManualMatchApply = (studentUid: string) => {
-    if (!manualMatchTargetId) {
-      return;
-    }
-    const target = students.find((student) => student.uid === studentUid);
-    if (!target) {
-      return;
-    }
-
-    updateRow(manualMatchTargetId, (row) => ({
-      ...row,
-      selectedStudentUid: target.uid,
-      status: "needs_selection",
-      matchReason: "관리자가 수동으로 학생을 지정했습니다. 이 선택으로만 배포됩니다.",
-    }));
-    setManualMatchTargetId(null);
-    toast({
-      title: "수동 매칭 완료",
-      description: `${formatStudentLabel(target)} (${target.email}) 유저로 배정했습니다.`,
-    });
-  };
-
   const openEditModal = (report: ReportRecord) => {
     setEditingReport(report);
     setEditForm({
@@ -1231,7 +1185,6 @@ const UploadDashboard = () => {
 
           <div className="space-y-4">
             {rows.map((row) => {
-              const options = getSearchableCandidates(row);
               const invalidRow =
                 requiredScoreKeys.some((key) => !Number.isFinite(row.parsed.scores[key])) ||
                 !row.parsed.feedback.trim();
@@ -1290,51 +1243,10 @@ const UploadDashboard = () => {
                       onChange={(event) => handleNameEdit(row.id, event.target.value)}
                       placeholder="이름"
                     />
-                    <Select
-                      value={row.selectedStudentUid ?? "none"}
-                      onValueChange={(value) =>
-                        updateRow(row.id, (current) =>
-                          value === "none"
-                            ? applyMatchResolution({ ...current, selectedStudentUid: null })
-                            : {
-                                ...current,
-                                selectedStudentUid: value,
-                                matchReason: "관리자가 수동으로 학생을 지정했습니다. 이 선택으로만 배포됩니다.",
-                              },
-                        )
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="학생 매칭 선택" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">학생 선택</SelectItem>
-                        {options.map((student) => (
-                          <SelectItem key={student.uid} value={student.uid}>
-                            {formatStudentLabel(student)} ({student.className || "미배정"})
-                          </SelectItem>
-                        ))}
-                        {options.length === 0 && (
-                          <SelectItem value="no-results" disabled>
-                            검색어를 입력하세요
-                          </SelectItem>
-                        )}
-                      </SelectContent>
-                    </Select>
-                    {row.selectedStudentUid && (
-                      <p className="text-xs text-emerald-700">
-                        선택된 학생으로만 배포됩니다. 자동 재매칭은 수행되지 않습니다.
-                      </p>
-                    )}
-                    {row.status !== "ready" && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={!canManageReports}
-                      onClick={() => setManualMatchTargetId(row.id)}
-                    >
-                        수동 학생 매칭
-                      </Button>
+                    {row.status === "unregistered" && (
+                      <span className="flex items-center rounded bg-amber-100 px-2 py-1 text-xs text-amber-800">
+                        미연결 상태로 자동 전송됨
+                      </span>
                     )}
                   </div>
 
@@ -1362,7 +1274,7 @@ const UploadDashboard = () => {
                     <Input value={row.parsed.reviewer} onChange={(event) => handleMetaEdit(row.id, "reviewer", event.target.value)} placeholder="첨삭자" />
                   </div>
 
-                  <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
                     <Input
                       value={row.parsed.essayTopic}
                       onChange={(event) => handleMetaEdit(row.id, "essayTopic", event.target.value)}
@@ -1372,13 +1284,6 @@ const UploadDashboard = () => {
                       value={row.parsed.grade}
                       onChange={(event) => handleMetaEdit(row.id, "grade", event.target.value)}
                       placeholder="등급"
-                    />
-                    <Input
-                      value={studentSearch[row.id] ?? ""}
-                      onChange={(event) =>
-                        setStudentSearch((prev) => ({ ...prev, [row.id]: event.target.value }))
-                      }
-                      placeholder="학생 검색 (이름/이메일)"
                     />
                   </div>
 
@@ -1468,9 +1373,14 @@ const UploadDashboard = () => {
                 className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2"
               >
                 <div>
-                  <p className="text-sm font-medium text-card-foreground">
-                    {formatReportStudentLabel(report)} | {getReportExamTitle(report)}
-                  </p>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <p className="text-sm font-medium text-card-foreground">
+                      {formatReportStudentLabel(report)} | {getReportExamTitle(report)}
+                    </p>
+                    {!report.studentUid && !report.studentId && (
+                      <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700">미연결</span>
+                    )}
+                  </div>
                   <p className="text-xs text-muted-foreground">
                     총점 {report.totalScore} / 등급 {report.grade || "기록 없음"} / 시험일 {formatExamDate(report.examDate)}
                   </p>
@@ -1597,7 +1507,12 @@ const UploadDashboard = () => {
                   className="grid grid-cols-1 gap-2 rounded-lg border border-border bg-background px-3 py-2.5 md:grid-cols-[1.2fr_1fr_0.7fr_0.7fr_auto]"
                 >
                   <div>
-                    <p className="truncate text-sm font-semibold text-card-foreground">{getReportExamTitle(report)}</p>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <p className="truncate text-sm font-semibold text-card-foreground">{getReportExamTitle(report)}</p>
+                      {!report.studentUid && !report.studentId && (
+                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700">미연결</span>
+                      )}
+                    </div>
                     <p className="text-xs text-muted-foreground">
                       학생 {formatReportStudentLabel(report)} | 반 {report.className || "기록 없음"} | 시험일 {formatExamDate(report.examDate)}
                     </p>
@@ -1892,54 +1807,6 @@ const UploadDashboard = () => {
               </Button>
               <Button onClick={handleApplyFix} disabled={!fixStudentUid || savingFix || !canManageReports}>
                 {savingFix ? "저장 중..." : "확인"}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        <Dialog open={Boolean(manualMatchTarget)} onOpenChange={(open) => !open && setManualMatchTargetId(null)}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>동명이인 수동 매칭</DialogTitle>
-              <DialogDescription>
-                반, 학생 코드, 전화번호 뒤 4자리를 확인해 정확한 계정을 선택하세요. 선택 전까지 이 리포트는 보류됩니다.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-2">
-              <p className="text-sm font-medium text-card-foreground">
-                대상 이름: {manualMatchTarget?.parsed.name || "기록 없음"}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                원본 식별값: {manualMatchTarget?.parsed.studentId || manualMatchTarget?.parsed.phoneSuffix || "보조키 없음"} / 반 {manualMatchTarget?.parsed.className || "기록 없음"}
-              </p>
-              {manualMatchTarget && (
-                <Input
-                  value={studentSearch[manualMatchTarget.id] ?? ""}
-                  onChange={(event) =>
-                    setStudentSearch((prev) => ({ ...prev, [manualMatchTarget.id]: event.target.value }))
-                  }
-                  placeholder="학생 이름, 번호, 반 검색"
-                />
-              )}
-              <div className="max-h-72 space-y-2 overflow-y-auto rounded-md border border-border p-2">
-                {(manualMatchTarget ? getSearchableCandidates(manualMatchTarget) : []).map((candidate) => (
-                  <button
-                    key={candidate.uid}
-                    type="button"
-                    onClick={() => handleManualMatchApply(candidate.uid)}
-                    className="w-full rounded-md border border-border px-3 py-2 text-left text-sm hover:border-primary/50 hover:bg-primary/5"
-                  >
-                    <p className="font-medium text-card-foreground">{formatStudentLabel(candidate)}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {candidate.email || "이메일 없음"} | {candidate.className || "반 정보 없음"}
-                    </p>
-                  </button>
-                ))}
-              </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setManualMatchTargetId(null)}>
-                닫기
               </Button>
             </DialogFooter>
           </DialogContent>
