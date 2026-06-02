@@ -311,10 +311,8 @@ const UploadDashboard = () => {
 
   useEffect(() => {
     setRows([]);
-    setStudentSearch({});
     setPendingSearch({});
     setPendingSelectedStudent({});
-    setManualMatchTargetId(null);
     setMessage("");
   }, [selectedClassId, selectedDateText]);
 
