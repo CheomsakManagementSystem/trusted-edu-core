@@ -3,7 +3,7 @@ import {
   arrayUnion,
   doc,
   serverTimestamp,
-  updateDoc,
+  setDoc,
   writeBatch,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
@@ -27,7 +27,7 @@ export const updateStudentClassAssignment = async (
   studentUid: string,
   targetClass: TransferClassTarget,
 ) => {
-  await updateDoc(doc(db, "users", studentUid), buildAssignmentPayload(targetClass));
+  await setDoc(doc(db, "users", studentUid), buildAssignmentPayload(targetClass), { merge: true });
 };
 
 export const bulkUpdateStudentClassAssignments = async (
@@ -40,7 +40,7 @@ export const bulkUpdateStudentClassAssignments = async (
 
   const batch = writeBatch(db);
   studentUids.forEach((studentUid) => {
-    batch.update(doc(db, "users", studentUid), buildAssignmentPayload(targetClass));
+    batch.set(doc(db, "users", studentUid), buildAssignmentPayload(targetClass), { merge: true });
   });
   await batch.commit();
 };
@@ -55,10 +55,10 @@ export const addClassIdToStudent = async (
   studentUid: string,
   classId: string,
 ): Promise<void> => {
-  await updateDoc(doc(db, "users", studentUid), {
+  await setDoc(doc(db, "users", studentUid), {
     classIds: arrayUnion(classId),
     updatedAt: serverTimestamp(),
-  });
+  }, { merge: true });
 };
 
 /**
@@ -74,11 +74,11 @@ export const removeClassIdFromStudent = async (
     remainingCount <= 1
       ? { isEnrolled: false, enrollmentStatus: null }
       : {};
-  await updateDoc(doc(db, "users", studentUid), {
+  await setDoc(doc(db, "users", studentUid), {
     classIds: arrayRemove(classId),
     ...extra,
     updatedAt: serverTimestamp(),
-  });
+  }, { merge: true });
 };
 
 /**
@@ -90,12 +90,12 @@ export const updateStudentClassIds = async (
   classIds: string[],
 ): Promise<void> => {
   const deduped = Array.from(new Set(classIds.filter(Boolean)));
-  await updateDoc(doc(db, "users", studentUid), {
+  await setDoc(doc(db, "users", studentUid), {
     classIds: deduped,
     isEnrolled: deduped.length > 0,
     enrollmentStatus: deduped.length > 0 ? "active" : null,
     updatedAt: serverTimestamp(),
-  });
+  }, { merge: true });
 };
 
 /**
@@ -111,12 +111,12 @@ export const bulkAddClassIdToStudents = async (
 
   const batch = writeBatch(db);
   studentUids.forEach((studentUid) => {
-    batch.update(doc(db, "users", studentUid), {
+    batch.set(doc(db, "users", studentUid), {
       classIds: arrayUnion(classId),
       isEnrolled: true,
       enrollmentStatus: "active",
       updatedAt: serverTimestamp(),
-    });
+    }, { merge: true });
   });
   await batch.commit();
 };
@@ -135,12 +135,12 @@ export const bulkUpdateStudentClassIds = async (
   const deduped = Array.from(new Set(classIds.filter(Boolean)));
   const batch = writeBatch(db);
   studentUids.forEach((studentUid) => {
-    batch.update(doc(db, "users", studentUid), {
+    batch.set(doc(db, "users", studentUid), {
       classIds: deduped,
       isEnrolled: deduped.length > 0,
       enrollmentStatus: deduped.length > 0 ? "active" : null,
       updatedAt: serverTimestamp(),
-    });
+    }, { merge: true });
   });
   await batch.commit();
 };

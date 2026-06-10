@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { EmailAuthProvider, reauthenticateWithCredential, updatePassword } from "firebase/auth";
-import { collection, doc, getDocs, query, updateDoc, where } from "firebase/firestore";
+import { collection, doc, getDocs, query, serverTimestamp, setDoc, where } from "firebase/firestore";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -99,7 +99,7 @@ const AccountSettings = () => {
       }
 
       if (!user?.docPath) throw new Error("유저 문서 경로를 확인할 수 없습니다.");
-      await updateDoc(doc(db, user.docPath), { phoneSuffix: trimmed });
+      await setDoc(doc(db, user.docPath), { phoneSuffix: trimmed, updatedAt: serverTimestamp() }, { merge: true });
 
       setNewPhoneSuffix("");
       toast({ title: "학생 ID가 변경되었습니다." });

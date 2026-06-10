@@ -9,7 +9,6 @@ import {
   query,
   serverTimestamp,
   setDoc,
-  updateDoc,
   where,
   writeBatch,
 } from "firebase/firestore";
@@ -143,20 +142,20 @@ export const updateManagedUserRole = async (
   uid: string,
   role: Extract<CanonicalRole, "STUDENT" | "INSTRUCTOR">,
 ): Promise<void> => {
-  await updateDoc(doc(db, "users", uid), {
+  await setDoc(doc(db, "users", uid), {
     role,
     updatedAt: serverTimestamp(),
-  });
+  }, { merge: true });
 };
 
 export const updateManagedUserPhoneSuffix = async (
   uid: string,
   phoneSuffix: string,
 ): Promise<void> => {
-  await updateDoc(doc(db, "users", uid), {
+  await setDoc(doc(db, "users", uid), {
     phoneSuffix: phoneSuffix.trim() || null,
     updatedAt: serverTimestamp(),
-  });
+  }, { merge: true });
 };
 
 /** 학생 식별 ID 강제 수정 + 연동 리포트 일괄 cascade update (단일 writeBatch) */
@@ -168,11 +167,11 @@ export const cascadeUpdateStudentId = async (
   const batch = writeBatch(db);
   const normalized = newStudentId.trim() || null;
 
-  batch.update(doc(db, "users", uid), {
+  batch.set(doc(db, "users", uid), {
     phoneSuffix: normalized,
     studentId: normalized,
     updatedAt: serverTimestamp(),
-  });
+  }, { merge: true });
 
   let updatedCount = 0;
   if (oldStudentId) {
@@ -241,7 +240,7 @@ export const notifyDuplicatePhoneSuffixUsers = async (
           createdBy: actorUid,
         });
 
-        await updateDoc(doc(db, "users", u.docId), { isNotificationSent: true });
+        await setDoc(doc(db, "users", u.docId), { isNotificationSent: true }, { merge: true });
         notified++;
       } catch (err) {
         console.error(`[notifyDuplicates] uid=${u.uid} 처리 실패`, err);
