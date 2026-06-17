@@ -135,7 +135,7 @@ const MigrationModal = () => {
   return (
     <Dialog open={!dismissed} onOpenChange={(open) => !open && handleClose()} modal>
       <DialogContent
-        className="relative sm:max-w-md [&>button:last-child]:hidden"
+        className="fixed left-[50%] top-[50%] z-50 grid w-full max-w-md translate-x-[-50%] translate-y-[-50%] gap-4 border border-zinc-800 bg-zinc-950 p-6 text-zinc-50 shadow-lg duration-200 sm:rounded-lg [&>button:last-child]:hidden"
       >
         <button
           type="button"
@@ -147,8 +147,8 @@ const MigrationModal = () => {
         </button>
 
         <DialogHeader>
-          <DialogTitle>아이디 설정이 필요합니다</DialogTitle>
-          <DialogDescription>
+          <DialogTitle className="text-white">아이디 설정이 필요합니다</DialogTitle>
+          <DialogDescription className="text-zinc-300">
             새 시스템 전환에 따라 <strong>6~8자리 고유 아이디</strong>를 한 번만 설정합니다.
             영소문자·숫자 조합으로 입력하세요. (예: dohyun17)
           </DialogDescription>
@@ -159,12 +159,13 @@ const MigrationModal = () => {
             <label className="text-sm font-medium text-card-foreground">아이디 (6~8자)</label>
             <Input
               ref={inputRef}
+              className="flex h-10 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-black placeholder:text-zinc-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400"
               value={customId}
               onChange={(e) => {
                 setCustomId(e.target.value.replace(/\s+/g, "").toLowerCase());
                 setError(null);
               }}
-              placeholder="dohyun17"
+              placeholder="아이디를 입력하세요"
               maxLength={8}
               autoFocus
               onKeyDown={(e) => {
