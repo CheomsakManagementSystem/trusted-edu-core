@@ -1,9 +1,12 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
-  deleteDoc,
+  collection,
   doc,
   getDoc,
+  getDocs,
+  query,
   serverTimestamp,
+  where,
   writeBatch,
 } from "firebase/firestore";
 import { Loader2 } from "lucide-react";
@@ -27,6 +30,7 @@ const CUSTOM_ID_REGEX = /^[a-z0-9]{6,8}$/;
  */
 const MigrationModal = () => {
   const { user } = useAuth();
+  const inputRef = useRef<HTMLInputElement>(null);
   const [customId, setCustomId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -40,8 +44,34 @@ const MigrationModal = () => {
     return null;
   };
 
-  const handleSubmit = async () => {
-    const id = customId.trim().toLowerCase();
+  const checkIdDuplication = async (rawInput: string) => {
+    const normalizedId = rawInput.replace(/\s+/g, "").toLowerCase();
+
+    console.log("[Audit] 입력된 원본 값:", rawInput);
+    console.log("[Audit] 정규화 후 쿼리 대상 값:", normalizedId);
+
+    if (!normalizedId || normalizedId.length < 6 || !CUSTOM_ID_REGEX.test(normalizedId)) {
+      console.error("[Audit] 유효하지 않은 아이디 입력으로 인해 Firestore 쿼리 차단:", normalizedId);
+      return false;
+    }
+
+    const loginIdQuery = query(collection(db, "users"), where("loginId", "==", normalizedId));
+    const querySnapshot = await getDocs(loginIdQuery);
+
+    console.log("[Audit] Firestore loginId 조회 결과 문서 개수:", querySnapshot.size);
+    querySnapshot.forEach((docSnap) => {
+      console.log("[Audit] 중복 검출된 유저 UID 및 데이터:", docSnap.id, docSnap.data());
+    });
+
+    if (!querySnapshot.empty) return true;
+
+    const docSnapshot = await getDoc(doc(db, "users", normalizedId));
+    console.log("[Audit] Firestore users/{normalizedId} 문서 존재 여부:", docSnapshot.exists());
+    return docSnapshot.exists();
+  };
+
+  const handleSubmit = async (rawInput: string) => {
+    const id = rawInput.replace(/\s+/g, "").toLowerCase();
     const validationError = validate(id);
     if (validationError) {
       setError(validationError);
@@ -53,12 +83,14 @@ const MigrationModal = () => {
 
     try {
       // 중복 확인
-      const newRef = doc(db, "users", id);
-      const dupSnap = await getDoc(newRef);
-      if (dupSnap.exists()) {
+      const isDuplicated = await checkIdDuplication(rawInput);
+      console.log("[Audit] 최종 중복 판정:", isDuplicated);
+      if (isDuplicated) {
         setError("이미 사용 중인 아이디입니다. 다른 아이디를 선택해주세요.");
         return;
       }
+
+      const newRef = doc(db, "users", id);
 
       // 기존 문서 읽기
       const oldRef = doc(db, "users", user.uid);
@@ -74,6 +106,7 @@ const MigrationModal = () => {
       batch.set(newRef, {
         ...oldData,
         studentId: id,       // 새 customId를 studentId로 확정
+        loginId: id,         // 중복 검사 기준 필드
         uid: user.uid,        // Firebase Auth UID 보존 (AuthContext 재조회용)
         updatedAt: serverTimestamp(),
       });
@@ -85,7 +118,7 @@ const MigrationModal = () => {
       // 안전하게 리로드해서 상태를 완전히 초기화.
       window.location.reload();
     } catch (err) {
-      console.error("Migration failed:", err);
+      console.error("[Audit] 아이디 설정 또는 중복 체크 실패:", err);
       setError(
         err instanceof Error ? err.message : "아이디 설정 중 오류가 발생했습니다. 다시 시도해주세요.",
       );
@@ -114,16 +147,17 @@ const MigrationModal = () => {
           <div className="space-y-1">
             <label className="text-sm font-medium text-card-foreground">아이디 (6~8자)</label>
             <Input
+              ref={inputRef}
               value={customId}
               onChange={(e) => {
-                setCustomId(e.target.value.toLowerCase());
+                setCustomId(e.target.value.replace(/\s+/g, "").toLowerCase());
                 setError(null);
               }}
               placeholder="dohyun17"
               maxLength={8}
               autoFocus
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !loading) handleSubmit();
+                if (e.key === "Enter" && !loading) handleSubmit(e.currentTarget.value);
               }}
             />
             <p className="text-xs text-muted-foreground">영소문자(a-z)와 숫자(0-9)만 사용 가능</p>
@@ -131,7 +165,11 @@ const MigrationModal = () => {
 
           {error && <p className="text-sm text-destructive">{error}</p>}
 
-          <Button className="w-full" onClick={handleSubmit} disabled={loading}>
+          <Button
+            className="w-full"
+            onClick={() => handleSubmit(inputRef.current?.value ?? customId)}
+            disabled={loading}
+          >
             {loading && <Loader2 className="h-4 w-4 animate-spin" />}
             {loading ? "설정 중..." : "아이디 확정하기"}
           </Button>
