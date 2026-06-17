@@ -9,7 +9,7 @@ import {
   where,
   writeBatch,
 } from "firebase/firestore";
-import { Loader2 } from "lucide-react";
+import { Loader2, X } from "lucide-react";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/contexts/AuthContext";
 import {
@@ -34,8 +34,9 @@ const MigrationModal = () => {
   const [customId, setCustomId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
 
-  if (!user?.needsMigration) return null;
+  if (!user?.needsMigration || dismissed) return null;
 
   const validate = (value: string): string | null => {
     if (!value) return "아이디를 입력해주세요.";
@@ -127,14 +128,24 @@ const MigrationModal = () => {
     }
   };
 
+  const handleClose = () => {
+    setDismissed(true);
+  };
+
   return (
-    <Dialog open modal>
-      {/* 닫기(X) 버튼 숨김 → 강제 진행 */}
+    <Dialog open={!dismissed} onOpenChange={(open) => !open && handleClose()} modal>
       <DialogContent
-        className="sm:max-w-md [&>button:last-child]:hidden"
-        onInteractOutside={(e) => e.preventDefault()}
-        onEscapeKeyDown={(e) => e.preventDefault()}
+        className="relative sm:max-w-md [&>button:last-child]:hidden"
       >
+        <button
+          type="button"
+          aria-label="닫기"
+          className="absolute right-4 top-4 rounded-sm text-muted-foreground opacity-70 transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+          onClick={handleClose}
+        >
+          <X className="h-4 w-4" />
+        </button>
+
         <DialogHeader>
           <DialogTitle>아이디 설정이 필요합니다</DialogTitle>
           <DialogDescription>
@@ -172,6 +183,15 @@ const MigrationModal = () => {
           >
             {loading && <Loader2 className="h-4 w-4 animate-spin" />}
             {loading ? "설정 중..." : "아이디 확정하기"}
+          </Button>
+
+          <Button
+            type="button"
+            variant="ghost"
+            className="w-full text-muted-foreground"
+            onClick={handleClose}
+          >
+            나중에 하기
           </Button>
         </div>
       </DialogContent>
