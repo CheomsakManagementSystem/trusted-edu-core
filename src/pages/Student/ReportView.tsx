@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import WithdrawalDialog from "@/components/WithdrawalDialog";
 import { useAuth } from "@/contexts/AuthContext";
@@ -26,6 +26,7 @@ import {
 import { formatStudentName } from "@/lib/studentName";
 import { db } from "@/lib/firebase";
 import { collection, doc, onSnapshot, orderBy, query, serverTimestamp, where, writeBatch } from "firebase/firestore";
+import { Check, Clipboard } from "lucide-react";
 import {
   clearClientSession,
   deleteCurrentUserAccount,
@@ -109,6 +110,10 @@ const ReportView = () => {
   const [feedbackExpanded, setFeedbackExpanded] = useState(false);
   const [claimingReportId, setClaimingReportId] = useState<string | null>(null);
   const [claimedReportIds, setClaimedReportIds] = useState<Set<string>>(new Set());
+  const [copyAllLocked, setCopyAllLocked] = useState(false);
+  const [copyAllCompleted, setCopyAllCompleted] = useState(false);
+  const copyAllTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const lastCopyAllAtRef = useRef(0);
 
   useEffect(() => {
     if (!user?.uid) {
@@ -340,6 +345,14 @@ const ReportView = () => {
     setFeedbackExpanded(false);
   }, [selectedReportId]);
 
+  useEffect(() => {
+    return () => {
+      if (copyAllTimerRef.current) {
+        window.clearTimeout(copyAllTimerRef.current);
+      }
+    };
+  }, []);
+
   const handleReportClaim = async () => {
     if (!user?.uid || !selectedReport) {
       return;
@@ -401,6 +414,72 @@ const ReportView = () => {
     }
     return `${text.slice(0, 190)}...`;
   }, [feedbackExpanded, feedbackMeta.summary]);
+
+  const reportData = useMemo(
+    () => ({
+      reading: selectedReport?.scores?.reading ?? "-",
+      comprehension: selectedReport?.scores?.comprehension ?? "-",
+      problemUnderstanding: selectedReport?.scores?.problemUnderstanding ?? "-",
+      organization: selectedReport?.scores?.organization ?? "-",
+      expression: selectedReport?.scores?.expression ?? "-",
+      feedback: feedbackMeta.summary || "첨삭 총평이 없습니다.",
+    }),
+    [feedbackMeta.summary, selectedReport],
+  );
+
+  const copyAllData = useCallback(
+    async () => {
+      const now = Date.now();
+      if (copyAllLocked || now - lastCopyAllAtRef.current < 1000) {
+        return;
+      }
+
+      lastCopyAllAtRef.current = now;
+      const clipboardText = [
+        reportData.reading,
+        reportData.comprehension,
+        reportData.problemUnderstanding,
+        reportData.organization,
+        reportData.expression,
+      ].map(String).join("\n") + `\n\n${reportData.feedback}`;
+
+      try {
+        await navigator.clipboard.writeText(clipboardText);
+        setCopyAllLocked(true);
+        setCopyAllCompleted(true);
+
+        if (copyAllTimerRef.current) {
+          window.clearTimeout(copyAllTimerRef.current);
+        }
+
+        copyAllTimerRef.current = window.setTimeout(() => {
+          setCopyAllLocked(false);
+          setCopyAllCompleted(false);
+          copyAllTimerRef.current = null;
+        }, 1000);
+      } catch {
+        toast({
+          variant: "destructive",
+          title: "복사 실패",
+          description: "클립보드 권한을 확인한 뒤 다시 시도해주세요.",
+        });
+      }
+    },
+    [copyAllLocked, reportData, toast],
+  );
+
+  const reportStatItems = useMemo(
+    () => [
+      { label: "독해력", value: reportData.reading },
+      { label: "내용 이해력", value: reportData.comprehension },
+      { label: "문제 이해력", value: reportData.problemUnderstanding },
+      { label: "구성력", value: reportData.organization },
+      { label: "표현력", value: reportData.expression },
+      { label: "총점", value: selectedReport?.totalScore ?? "-" },
+      { label: "등급", value: selectedReport?.grade || "기록 없음" },
+    ],
+    [reportData, selectedReport],
+  );
 
   const chartAxisColor = "#111827";
   const chartGridColor = "#d1d5db";
@@ -502,13 +581,35 @@ const ReportView = () => {
   return (
     <DashboardLayout>
       <div className="space-y-5 px-4 md:space-y-6 md:px-0">
-        <div>
-          <h2 className="text-2xl font-extrabold tracking-tight text-slate-900 md:text-xl">
-            나의 논술 성장 리포트
-          </h2>
-          <p className="mt-1 text-base text-slate-600 md:text-sm">
-            나의 논술 성장 기록을 한눈에 확인하고 취약점을 보완하세요.
-          </p>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 className="text-2xl font-extrabold tracking-tight text-slate-900 md:text-xl">
+              나의 논술 성장 리포트
+            </h2>
+            <p className="mt-1 text-base text-slate-600 md:text-sm">
+              나의 논술 성장 기록을 한눈에 확인하고 취약점을 보완하세요.
+            </p>
+            {copyAllCompleted && (
+              <p className="mt-2 text-xs font-semibold text-slate-600">
+                리소스 절약을 위해 1초간 버튼이 비활성화됩니다
+              </p>
+            )}
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            aria-label="전체 데이터 복사"
+            className="w-full border-slate-900 bg-white text-slate-900 hover:bg-slate-900 hover:text-white sm:w-auto"
+            disabled={!selectedReport || copyAllLocked}
+            onClick={copyAllData}
+          >
+            {copyAllCompleted ? (
+              <Check className="h-4 w-4" />
+            ) : (
+              <Clipboard className="h-4 w-4" />
+            )}
+            전체 복사
+          </Button>
         </div>
 
         <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5">
@@ -623,23 +724,13 @@ const ReportView = () => {
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    {[
-                      { label: "독해력", value: selectedReport.scores?.reading ?? "-" },
-                      { label: "내용 이해력", value: selectedReport.scores?.comprehension ?? "-" },
-                      { label: "문제 이해력", value: selectedReport.scores?.problemUnderstanding ?? "-" },
-                      { label: "구성력", value: selectedReport.scores?.organization ?? "-" },
-                      { label: "표현력", value: selectedReport.scores?.expression ?? "-" },
-                      { label: "총점", value: selectedReport.totalScore ?? "-" },
-                      { label: "등급", value: selectedReport.grade || "기록 없음" },
-                    ].map((item) => (
+                    {reportStatItems.map((item) => (
                       <div
                         key={item.label}
                         className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
                       >
                         <p className="text-xs font-semibold text-slate-500">{item.label}</p>
-                        <p className="mt-1 text-2xl font-black leading-none text-slate-900">
-                          {item.value}
-                        </p>
+                        <p className="mt-1 text-2xl font-black leading-none text-slate-900">{item.value}</p>
                       </div>
                     ))}
                   </div>
@@ -687,6 +778,9 @@ const ReportView = () => {
                     {summaryPreview}
                   </div>
                 </div>
+                <p className="mt-2 text-center text-xs font-medium text-slate-500">
+                  불필요한 클릭을 줄여 리소스를 절약하세요
+                </p>
                 {feedbackMeta.summary.length > 190 && (
                   <Button
                     type="button"
