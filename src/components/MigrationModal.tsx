@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { memo, useCallback, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
   collection,
   doc,
@@ -36,14 +37,12 @@ const MigrationModal = () => {
   const [loading, setLoading] = useState(false);
   const [dismissed, setDismissed] = useState(false);
 
-  if (!user?.needsMigration || dismissed) return null;
-
-  const validate = (value: string): string | null => {
+  const validate = useCallback((value: string): string | null => {
     if (!value) return "아이디를 입력해주세요.";
     if (!CUSTOM_ID_REGEX.test(value))
       return "영소문자·숫자만, 6~8자로 입력해주세요. (예: dohyun17)";
     return null;
-  };
+  }, []);
 
   const checkIdDuplication = async (rawInput: string) => {
     const normalizedId = rawInput.replace(/\s+/g, "").toLowerCase();
@@ -72,6 +71,8 @@ const MigrationModal = () => {
   };
 
   const handleSubmit = async (rawInput: string) => {
+    if (dismissed || !user) return;
+
     const id = rawInput.replace(/\s+/g, "").toLowerCase();
     const validationError = validate(id);
     if (validationError) {
@@ -128,12 +129,47 @@ const MigrationModal = () => {
     }
   };
 
-  const handleClose = () => {
-    setDismissed(true);
-  };
+  const handleClose = useCallback(() => {
+    if (dismissed) return;
+
+    try {
+      flushSync(() => {
+        setDismissed(true);
+      });
+
+      window.setTimeout(() => {
+        setLoading(false);
+        setError(null);
+      }, 0);
+    } catch (error) {
+      console.error("Modal close error:", error);
+
+      try {
+        flushSync(() => {
+          setDismissed(true);
+        });
+      } catch {
+        setDismissed(true);
+      }
+
+      window.setTimeout(() => {
+        setLoading(false);
+        setError(null);
+      }, 0);
+    }
+  }, [dismissed]);
+
+  const handleOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open) handleClose();
+    },
+    [handleClose],
+  );
+
+  if (!user || !user.needsMigration || dismissed) return null;
 
   return (
-    <Dialog open={!dismissed} onOpenChange={(open) => !open && handleClose()} modal>
+    <Dialog open={!dismissed} onOpenChange={handleOpenChange} modal>
       <DialogContent
         className="fixed left-[50%] top-[50%] z-50 grid w-full max-w-md translate-x-[-50%] translate-y-[-50%] gap-4 border border-zinc-800 bg-zinc-950 p-6 text-zinc-50 shadow-lg duration-200 sm:rounded-lg [&>button:last-child]:hidden"
       >
@@ -200,4 +236,4 @@ const MigrationModal = () => {
   );
 };
 
-export default MigrationModal;
+export default memo(MigrationModal);
