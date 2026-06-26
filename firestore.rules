@@ -1,0 +1,70 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function classExists(classId) {
+      return exists(/databases/$(database)/documents/classes/$(classId));
+    }
+
+    function validMemberId(memberId, classId) {
+      return signedIn() && memberId == classId + "_" + request.auth.uid;
+    }
+
+    match /classes/{classId} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
+    match /class_members/{memberId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn()
+        && request.resource.data.classId is string
+        && request.resource.data.uid == request.auth.uid
+        && validMemberId(memberId, request.resource.data.classId)
+        && classExists(request.resource.data.classId)
+        && request.resource.data.keys().hasOnly([
+          "classId",
+          "className",
+          "uid",
+          "studentName",
+          "studentEmail",
+          "createdAt"
+        ]);
+      allow delete: if false;
+    }
+
+    match /users/{uid} {
+      allow read: if isSelf(uid);
+      allow update: if isSelf(uid)
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(["classIds"])
+        && request.resource.data.classIds is list;
+      allow create, delete: if false;
+    }
+
+    match /enrollment_events/{eventId} {
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.classId is string
+        && classExists(request.resource.data.classId)
+        && request.resource.data.keys().hasOnly([
+          "type",
+          "classId",
+          "uid",
+          "createdAt"
+        ]);
+      allow read, update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

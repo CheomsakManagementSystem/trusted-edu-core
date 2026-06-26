@@ -92,33 +92,41 @@ const MigrationModal = () => {
         return;
       }
 
-      const newRef = doc(db, "users", id);
-
-      // 기존 문서 읽기
       const oldRef = doc(db, "users", user.uid);
       const oldSnap = await getDoc(oldRef);
       if (!oldSnap.exists()) {
         setError("기존 계정 정보를 찾을 수 없습니다. 페이지를 새로고침해주세요.");
         return;
       }
-      const oldData = oldSnap.data() as Record<string, unknown>;
+      const oldData = oldSnap.data() as { classIds?: unknown };
+      const existingClassIds = Array.isArray(oldData.classIds)
+        ? oldData.classIds.filter((classId): classId is string => typeof classId === "string")
+        : [];
+      const memberSnap = await getDocs(
+        query(collection(db, "class_members"), where("uid", "==", user.uid)),
+      );
+      const memberClassIds = memberSnap.docs
+        .map((memberDoc) => memberDoc.data().classId)
+        .filter((classId): classId is string => typeof classId === "string");
+      const classIds = Array.from(new Set([...existingClassIds, ...memberClassIds]));
 
-      // 원자적 이사 (writeBatch)
       const batch = writeBatch(db);
-      batch.set(newRef, {
-        ...oldData,
-        studentId: id,       // 새 customId를 studentId로 확정
-        loginId: id,         // 중복 검사 기준 필드
-        uid: user.uid,        // Firebase Auth UID 보존 (AuthContext 재조회용)
+      batch.set(oldRef, {
+        studentId: id,
+        loginId: id,
+        uid: user.uid,
+        classIds,
+        needsMigration: false,
         updatedAt: serverTimestamp(),
-      });
-      batch.delete(oldRef);   // 구형 users/{uid} 문서 삭제
+      }, { merge: true });
 
       await batch.commit();
-
-      // AuthContext가 onSnapshot 삭제 이벤트를 감지하고 재구독함.
-      // 안전하게 리로드해서 상태를 완전히 초기화.
-      window.location.reload();
+      const verifiedSnap = await getDoc(oldRef);
+      if (verifiedSnap.data()?.needsMigration === true) {
+        setError("아이디 설정 상태 확인에 실패했습니다. 다시 시도해주세요.");
+        return;
+      }
+      handleClose();
     } catch (err) {
       console.error("[Audit] 아이디 설정 또는 중복 체크 실패:", err);
       setError(

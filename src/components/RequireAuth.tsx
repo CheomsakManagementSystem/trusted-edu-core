@@ -20,14 +20,8 @@ export const RequireAuth = ({ children }: { children: ReactNode }) => {
     return <Navigate to="/login" replace state={{ from: location }} />;
   }
 
-  // 레거시 학생 → 마이그레이션 모달이 대시보드를 덮음 (진입 자체는 허용, 모달로 차단)
   if (user.needsMigration) {
-    return (
-      <>
-        {children}
-        <MigrationModal />
-      </>
-    );
+    return <MigrationModal />;
   }
 
   return <>{children}</>;

@@ -19,13 +19,13 @@ import {
   formatExamDateShort,
   getReportExamTitle,
   hydrateReportRecord,
-  submitClassJoinRequest,
   type ClassLite,
   type ReportRecord,
 } from "@/lib/pdfProcessor";
 import { formatStudentName } from "@/lib/studentName";
 import { db } from "@/lib/firebase";
 import { collection, doc, onSnapshot, orderBy, query, serverTimestamp, where, writeBatch } from "firebase/firestore";
+import { joinClass } from "@/services/classTransferService";
 import { Check, Clipboard } from "lucide-react";
 import {
   clearClientSession,
@@ -508,7 +508,7 @@ const ReportView = () => {
     setJoinLoading(true);
 
     try {
-      await submitClassJoinRequest(
+      await joinClass(
         {
           uid: user.uid,
           name: user.name,

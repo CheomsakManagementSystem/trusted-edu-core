@@ -34,6 +34,7 @@ interface AppUser {
   studentKey?: string;
   phoneSuffix?: string;
   classId?: string | null;
+  classIds: string[];
   className?: string | null;
   /** Firestore 문서 경로 (users/{docId}) */
   docPath: string;
@@ -117,18 +118,21 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
             studentKey?: string;
             phoneSuffix?: string;
             classId?: string | null;
+            classIds?: unknown;
             className?: string | null;
+            needsMigration?: boolean;
           };
+
+          console.log("Loaded user data:", data);
+          console.log("Loaded classIds:", data.classIds);
 
           const inferredStudentId =
             data.studentId ??
             data.phoneSuffix ??
             data.studentKey?.match(/_(\d{4})$/)?.[1];
 
-          // 레거시 판별: doc id === firebase uid 이고 role === STUDENT
-          const isLegacyDoc = snap.ref.id === firebaseUser.uid;
           const role = normalizeRole(data.role);
-          const needsMigration = isLegacyDoc && role === "STUDENT";
+          const needsMigration = data.needsMigration === true;
 
           setUser({
             uid: firebaseUser.uid,
@@ -139,6 +143,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
             studentKey: data.studentKey,
             phoneSuffix: data.phoneSuffix,
             classId: data.classId ?? null,
+            classIds: Array.isArray(data.classIds)
+              ? data.classIds.filter((id): id is string => typeof id === "string")
+              : [],
             className: data.className ?? null,
             docPath: `users/${snap.ref.id}`,
             needsMigration,

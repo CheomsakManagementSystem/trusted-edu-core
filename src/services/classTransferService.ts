@@ -1,6 +1,7 @@
 import {
   arrayRemove,
   arrayUnion,
+  collection,
   doc,
   serverTimestamp,
   setDoc,
@@ -12,6 +13,64 @@ export type TransferClassTarget = {
   id: string;
   name: string;
 } | null;
+
+export type JoinClassStudent = {
+  uid: string;
+  name?: string | null;
+  email?: string | null;
+};
+
+export type JoinClassTarget = {
+  id: string;
+  name?: string | null;
+};
+
+export const buildClassMemberId = (classId: string, uid: string) => `${classId}_${uid}`;
+
+export const joinClass = async (
+  student: JoinClassStudent,
+  targetClass: JoinClassTarget,
+): Promise<void> => {
+  if (!student.uid) {
+    throw new Error("사용자 정보를 확인할 수 없습니다.");
+  }
+
+  if (!targetClass.id) {
+    throw new Error("반 정보를 확인할 수 없습니다.");
+  }
+
+  const batch = writeBatch(db);
+  const memberId = buildClassMemberId(targetClass.id, student.uid);
+  const memberRef = doc(db, "class_members", memberId);
+  const userRef = doc(db, "users", student.uid);
+  const eventRef = doc(collection(db, "enrollment_events"));
+
+  console.log("Updating document at:", memberRef.path);
+  console.log("Updating document at:", userRef.path);
+  console.log("Updating document at:", eventRef.path);
+
+  batch.set(memberRef, {
+    classId: targetClass.id,
+    className: targetClass.name ?? null,
+    uid: student.uid,
+    studentName: student.name ?? null,
+    studentEmail: student.email ?? null,
+    createdAt: serverTimestamp(),
+  }, { merge: true });
+
+  batch.set(userRef, {
+    classIds: arrayUnion(targetClass.id),
+  }, { merge: true });
+
+  batch.set(eventRef, {
+    type: "class_joined",
+    classId: targetClass.id,
+    uid: student.uid,
+    createdAt: serverTimestamp(),
+  });
+
+  await batch.commit();
+};
 
 // ─── 단일 classId 기반 (하위 호환 유지) ─────────────────────────────────────
 
