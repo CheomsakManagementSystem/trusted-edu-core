@@ -3,7 +3,9 @@ import {
   createContext,
   useContext,
   useEffect,
+  useMemo,
   useRef,
+  useCallback,
   useState,
 } from "react";
 import {
@@ -134,7 +136,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
           const role = normalizeRole(data.role);
           const needsMigration = data.needsMigration === true;
 
-          setUser({
+          const newClassIds = Array.isArray(data.classIds)
+            ? data.classIds.filter((id): id is string => typeof id === "string")
+            : [];
+
+          setUser((prev) => ({
+            ...prev,
             uid: firebaseUser.uid,
             name: data.name ?? firebaseUser.displayName ?? "사용자",
             email: data.email ?? firebaseUser.email,
@@ -143,13 +150,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
             studentKey: data.studentKey,
             phoneSuffix: data.phoneSuffix,
             classId: data.classId ?? null,
-            classIds: Array.isArray(data.classIds)
-              ? data.classIds.filter((id): id is string => typeof id === "string")
-              : [],
+            classIds: newClassIds,
             className: data.className ?? null,
             docPath: `users/${snap.ref.id}`,
             needsMigration,
-          });
+          }));
           setLoading(false);
         },
         (error) => {
@@ -183,13 +188,18 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     };
   }, []);
 
-  const signOut = async () => {
+  const signOut = useCallback(async () => {
     await firebaseSignOut(auth);
     setUser(null);
-  };
+  }, []);
+
+  const value = useMemo(
+    () => ({ user, loading, signOut }),
+    [user, loading, signOut],
+  );
 
   return (
-    <AuthContext.Provider value={{ user, loading, signOut }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );

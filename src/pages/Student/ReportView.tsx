@@ -116,6 +116,10 @@ const ReportView = () => {
   const lastCopyAllAtRef = useRef(0);
 
   useEffect(() => {
+    console.log("Rendering with classIds:", user?.classIds);
+  }, [user?.classIds]);
+
+  useEffect(() => {
     if (!user?.uid) {
       setReports([]);
       setLoading(false);
@@ -578,9 +582,11 @@ const ReportView = () => {
     }
   };
 
+  const classIdsKey = user?.classIds?.join(",") || "empty";
+
   return (
     <DashboardLayout>
-      <div className="space-y-5 px-4 md:space-y-6 md:px-0">
+      <div key={classIdsKey} className="space-y-5 px-4 md:space-y-6 md:px-0">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h2 className="text-2xl font-extrabold tracking-tight text-slate-900 md:text-xl">
@@ -616,9 +622,11 @@ const ReportView = () => {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <h3 className="text-base font-semibold text-slate-900 md:text-sm">반 배정 신청</h3>
-              <p className="text-sm text-slate-600 md:text-xs">
-                현재 배정 반: {user?.className ?? "기록 없음"}
-              </p>
+              {Array.isArray(user?.classIds) && user.classIds.length > 0 ? (
+                <div className="text-sm text-slate-600 md:text-xs">{user.classIds.join(", ")}</div>
+              ) : (
+                <p className="text-sm text-slate-600 md:text-xs">현재 배정 반: 기록 없음</p>
+              )}
             </div>
             <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
               <Select value={selectedClassId} onValueChange={setSelectedClassId}>
