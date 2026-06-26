@@ -42,6 +42,11 @@ type ClassFormState = {
   name: string;
 };
 
+const getValidClassIds = (classIds: unknown): string[] =>
+  Array.isArray(classIds)
+    ? classIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+    : [];
+
 const ClassManager = () => {
   const { toast } = useToast();
   const [classes, setClasses] = useState<ClassLite[]>([]);
@@ -75,8 +80,8 @@ const ClassManager = () => {
   );
 
   const hasAssignedClass = (student: StudentLite) => {
-    // classIds 배열 우선, 없으면 구버전 classId 폴백
-    if (Array.isArray(student.classIds) && student.classIds.length > 0) return true;
+    // classIds 배열 우선, 빈 문자열 같은 무효값은 미배정으로 처리
+    if (getValidClassIds(student.classIds).length > 0) return true;
     return Boolean(student.classId) || Boolean(student.className && student.className !== "미배정");
   };
 
@@ -126,8 +131,8 @@ const ClassManager = () => {
     students.forEach((student) => {
       // classIds 배열 우선, 없으면 classId 폴백
       const rawIds: string[] =
-        Array.isArray(student.classIds) && student.classIds.length > 0
-          ? student.classIds
+        getValidClassIds(student.classIds).length > 0
+          ? getValidClassIds(student.classIds)
           : student.classId
             ? [student.classId]
             : [];
@@ -164,8 +169,8 @@ const ClassManager = () => {
           next[student.uid] = prev[student.uid];
         } else {
           const ids =
-            Array.isArray(student.classIds) && student.classIds.length > 0
-              ? student.classIds
+            getValidClassIds(student.classIds).length > 0
+              ? getValidClassIds(student.classIds)
               : student.classId
                 ? [student.classId]
                 : [];

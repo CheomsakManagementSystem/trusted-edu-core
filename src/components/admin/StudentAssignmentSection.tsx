@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  arrayUnion,
   collection,
+  doc,
   onSnapshot,
   query,
   orderBy,
+  serverTimestamp,
+  writeBatch,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import {
@@ -21,7 +25,7 @@ import { User, GraduationCap } from "lucide-react";
 import { normalizeRole } from "@/lib/authz";
 import {
   bulkUpdateStudentClassAssignments,
-  updateStudentClassAssignment,
+  buildClassMemberId,
 } from "@/services/classTransferService";
 
 type ClassDoc = {
@@ -35,8 +39,14 @@ type StudentDoc = {
   email: string;
   role: string;
   classId?: string;
+  classIds: string[];
   className?: string;
 };
+
+const getValidClassIds = (classIds: unknown): string[] =>
+  Array.isArray(classIds)
+    ? classIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+    : [];
 
 const StudentAssignmentSection = () => {
   const { toast } = useToast();
@@ -74,6 +84,7 @@ const StudentAssignmentSection = () => {
           email: data.email,
           role: data.role,
           classId: data.classId,
+          classIds: getValidClassIds(data.classIds),
           className: data.className,
         });
       });
@@ -100,7 +111,7 @@ const StudentAssignmentSection = () => {
     setPendingClassSelections((prev) => {
       const next: Record<string, string> = {};
       students.forEach((student) => {
-        next[student.id] = prev[student.id] ?? student.classId ?? "none";
+        next[student.id] = prev[student.id] ?? student.classIds[0] ?? student.classId ?? "none";
       });
       return next;
     });
@@ -112,8 +123,8 @@ const StudentAssignmentSection = () => {
   }, [filteredStudents]);
 
   const handleAssignClass = async (student: StudentDoc) => {
-    const nextClassId = pendingClassSelections[student.id] ?? student.classId ?? "none";
-    const currentClassId = student.classId ?? "none";
+    const nextClassId = pendingClassSelections[student.id] ?? student.classIds[0] ?? student.classId ?? "none";
+    const currentClassId = student.classIds[0] ?? student.classId ?? "none";
     if (nextClassId === currentClassId) {
       return;
     }
@@ -121,7 +132,52 @@ const StudentAssignmentSection = () => {
     setSavingStudentId(student.id);
     try {
       const cls = classes.find((c) => c.id === nextClassId) ?? null;
-      await updateStudentClassAssignment(student.id, cls);
+      if (!cls) {
+        throw new Error("배정할 반을 선택해주세요.");
+      }
+
+      console.log(`[Assign] Starting batch for student: ${student.id}`);
+
+      const batch = writeBatch(db);
+      const memberRef = doc(db, "class_members", buildClassMemberId(cls.id, student.id));
+      const userRef = doc(db, "users", student.id);
+
+      batch.set(memberRef, {
+        classId: cls.id,
+        className: cls.name,
+        uid: student.id,
+        studentName: student.name ?? null,
+        studentEmail: student.email ?? null,
+        createdAt: serverTimestamp(),
+      }, { merge: true });
+
+      batch.set(userRef, {
+        classId: cls.id,
+        className: cls.name,
+        classIds: arrayUnion(cls.id),
+        isEnrolled: true,
+        enrollmentStatus: "active",
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+
+      await batch.commit();
+      console.log(`[Assign] Batch committed successfully for student: ${student.id}`);
+
+      setStudents((prev) =>
+        prev.map((item) =>
+          item.id === student.id
+            ? {
+                ...item,
+                classId: cls.id,
+                className: cls.name,
+                classIds: Array.from(new Set([...item.classIds, cls.id])),
+              }
+            : item,
+        ),
+      );
+      setPendingClassSelections((prev) => ({ ...prev, [student.id]: cls.id }));
+      console.log("[Sync] UI state refreshed after assignment");
+
       toast({
         title: "반 정보가 성공적으로 업데이트되었습니다",
       });
@@ -133,7 +189,7 @@ const StudentAssignmentSection = () => {
       });
       setPendingClassSelections((prev) => ({
         ...prev,
-        [student.id]: student.classId ?? "none",
+        [student.id]: student.classIds[0] ?? student.classId ?? "none",
       }));
     } finally {
       setSavingStudentId(null);
@@ -276,7 +332,7 @@ const StudentAssignmentSection = () => {
                 <td className="px-4 py-2">
                   <div className="flex items-center gap-2">
                     <Select
-                      value={pendingClassSelections[s.id] ?? s.classId ?? "none"}
+                      value={pendingClassSelections[s.id] ?? s.classIds[0] ?? s.classId ?? "none"}
                       onValueChange={(v) =>
                         setPendingClassSelections((prev) => ({ ...prev, [s.id]: v }))
                       }
@@ -299,7 +355,8 @@ const StudentAssignmentSection = () => {
                       variant="secondary"
                       disabled={
                         savingStudentId === s.id ||
-                        (pendingClassSelections[s.id] ?? s.classId ?? "none") === (s.classId ?? "none")
+                        (pendingClassSelections[s.id] ?? s.classIds[0] ?? s.classId ?? "none") ===
+                          (s.classIds[0] ?? s.classId ?? "none")
                       }
                       className="border border-slate-700 bg-slate-800 text-slate-50 hover:bg-slate-700"
                       onClick={() => handleAssignClass(s)}
