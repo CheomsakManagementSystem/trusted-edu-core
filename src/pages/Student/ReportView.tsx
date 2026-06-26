@@ -14,18 +14,15 @@ import { useToast } from "@/hooks/use-toast";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   compareReportsByExamDateDesc,
-  fetchClasses,
   formatExamDate,
   formatExamDateShort,
   getReportExamTitle,
   hydrateReportRecord,
-  type ClassLite,
   type ReportRecord,
 } from "@/lib/pdfProcessor";
 import { formatStudentName } from "@/lib/studentName";
 import { db } from "@/lib/firebase";
 import { collection, doc, onSnapshot, orderBy, query, serverTimestamp, where, writeBatch } from "firebase/firestore";
-import { joinClass } from "@/services/classTransferService";
 import { Check, Clipboard } from "lucide-react";
 import {
   clearClientSession,
@@ -100,9 +97,6 @@ const ReportView = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const [classes, setClasses] = useState<ClassLite[]>([]);
-  const [selectedClassId, setSelectedClassId] = useState("none");
-  const [joinLoading, setJoinLoading] = useState(false);
   const [withdrawing, setWithdrawing] = useState(false);
   const [withdrawDialogOpen, setWithdrawDialogOpen] = useState(false);
   const [withdrawPassword, setWithdrawPassword] = useState("");
@@ -114,10 +108,6 @@ const ReportView = () => {
   const [copyAllCompleted, setCopyAllCompleted] = useState(false);
   const copyAllTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const lastCopyAllAtRef = useRef(0);
-
-  useEffect(() => {
-    console.log("Rendering with classIds:", user?.classIds);
-  }, [user?.classIds]);
 
   useEffect(() => {
     if (!user?.uid) {
@@ -233,24 +223,6 @@ const ReportView = () => {
       identityFallbackUnsub?.();
     };
   }, [user?.studentId, user?.uid]);
-
-  useEffect(() => {
-    const run = async () => {
-      if (!user?.uid) {
-        setClasses([]);
-        return;
-      }
-
-      try {
-        const classRows = await fetchClasses();
-        setClasses(classRows);
-      } catch {
-        // 신청 상태 조회 실패는 대시보드 핵심 기능을 막지 않음
-      }
-    };
-
-    run();
-  }, [user?.uid]);
 
   const studentReports = useMemo(
     () =>
@@ -489,58 +461,6 @@ const ReportView = () => {
   const chartGridColor = "#d1d5db";
   const chartLineColor = "#2563eb";
 
-  const handleJoinRequest = async () => {
-    if (!user?.uid || !user?.email) {
-      toast({
-        variant: "destructive",
-        title: "신청 실패",
-        description: "사용자 정보를 확인할 수 없습니다.",
-      });
-      return;
-    }
-
-    const targetClass = classes.find((item) => item.id === selectedClassId);
-    if (!targetClass) {
-      toast({
-        variant: "destructive",
-        title: "신청 실패",
-        description: "반을 먼저 선택해주세요.",
-      });
-      return;
-    }
-
-    setJoinLoading(true);
-
-    try {
-      await joinClass(
-        {
-          uid: user.uid,
-          name: user.name,
-          email: user.email,
-        },
-        targetClass,
-      );
-      toast({
-        title: "반 배정이 완료되었습니다!",
-        description: `${targetClass.name} 반으로 즉시 배정되었습니다.`,
-      });
-      window.setTimeout(() => {
-        window.location.reload();
-      }, 600);
-    } catch (submitError) {
-      toast({
-        variant: "destructive",
-        title: "신청 실패",
-        description:
-          submitError instanceof Error
-            ? submitError.message
-            : "가입 신청 중 오류가 발생했습니다.",
-      });
-    } finally {
-      setJoinLoading(false);
-    }
-  };
-
   const handleWithdrawAccount = async () => {
     if (!user?.uid) {
       toast({
@@ -582,11 +502,9 @@ const ReportView = () => {
     }
   };
 
-  const classIdsKey = user?.classIds?.join(",") || "empty";
-
   return (
     <DashboardLayout>
-      <div key={classIdsKey} className="space-y-5 px-4 md:space-y-6 md:px-0">
+      <div className="space-y-5 px-4 md:space-y-6 md:px-0">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h2 className="text-2xl font-extrabold tracking-tight text-slate-900 md:text-xl">
@@ -616,40 +534,6 @@ const ReportView = () => {
             )}
             전체 복사
           </Button>
-        </div>
-
-        <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:p-5">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <h3 className="text-base font-semibold text-slate-900 md:text-sm">반 배정 신청</h3>
-              {Array.isArray(user?.classIds) && user.classIds.length > 0 ? (
-                <div className="text-sm text-slate-600 md:text-xs">{user.classIds.join(", ")}</div>
-              ) : (
-                <p className="text-sm text-slate-600 md:text-xs">현재 배정 반: 기록 없음</p>
-              )}
-            </div>
-            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-              <Select value={selectedClassId} onValueChange={setSelectedClassId}>
-                <SelectTrigger className="w-full sm:w-64">
-                  <SelectValue placeholder="가입할 반 선택" />
-                </SelectTrigger>
-                <SelectContent className="rounded-t-2xl rounded-b-xl md:rounded-md">
-                  <SelectItem value="none">반 선택</SelectItem>
-                  {classes.map((item) => (
-                    <SelectItem key={item.id} value={item.id}>
-                      {item.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button
-                onClick={handleJoinRequest}
-                disabled={joinLoading || selectedClassId === "none"}
-              >
-                {joinLoading ? "신청 중..." : "가입 신청"}
-              </Button>
-            </div>
-          </div>
         </div>
 
         {loading && <p className="text-sm text-muted-foreground">정보를 불러오는 중입니다</p>}
