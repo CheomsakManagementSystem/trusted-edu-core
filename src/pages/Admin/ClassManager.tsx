@@ -5,6 +5,8 @@ import {
   deleteDoc,
   doc,
   getDocs,
+  getDocsFromServer,
+  orderBy,
   query,
   serverTimestamp,
   updateDoc,
@@ -23,16 +25,12 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { db } from "@/lib/firebase";
-import {
-  fetchClasses,
-  fetchStudents,
-  type ClassLite,
-  type StudentLite,
-} from "@/lib/pdfProcessor";
+import { type ClassLite, type StudentLite } from "@/lib/pdfProcessor";
 import { formatStudentName } from "@/lib/studentName";
 import {
   bulkAddClassIdToStudents,
   bulkUpdateStudentClassIds,
+  normalizeClassIds,
   removeClassIdFromStudent,
   updateStudentClassIds,
 } from "@/services/classTransferService";
@@ -42,10 +40,48 @@ type ClassFormState = {
   name: string;
 };
 
-const getValidClassIds = (classIds: unknown): string[] =>
-  Array.isArray(classIds)
-    ? classIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
-    : [];
+const hydrateStudent = (id: string, data: Record<string, unknown>): StudentLite => {
+  const phoneNumber = typeof data.phoneNumber === "string" ? data.phoneNumber : null;
+  const phoneDigits = (phoneNumber ?? "").replace(/\D/g, "");
+  const phoneLast4 = phoneDigits.length >= 4 ? phoneDigits.slice(-4) : null;
+  const phoneSuffix = typeof data.phoneSuffix === "string" ? data.phoneSuffix : null;
+  const studentId =
+    typeof data.studentId === "string" ? data.studentId : phoneSuffix ?? phoneLast4 ?? null;
+  const classId = typeof data.classId === "string" ? data.classId : null;
+  const classIds = normalizeClassIds(data.classIds, classId);
+
+  return {
+    uid: typeof data.uid === "string" ? data.uid : id,
+    name: typeof data.name === "string" ? data.name : "이름없음",
+    email: typeof data.email === "string" ? data.email : "",
+    classId,
+    classIds,
+    className: typeof data.className === "string" ? data.className : null,
+    studentId,
+    phoneNumber,
+    phoneSuffix,
+  };
+};
+
+const loadClassManagerDataFromServer = async () => {
+  const [classSnap, studentSnap] = await Promise.all([
+    getDocsFromServer(query(collection(db, "classes"), orderBy("createdAt", "desc"))),
+    getDocsFromServer(query(collection(db, "users"), where("role", "in", ["student", "STUDENT"]))),
+  ]);
+
+  const classDocs: ClassLite[] = classSnap.docs.map((docSnap) => {
+    const data = docSnap.data() as Record<string, unknown>;
+    return {
+      id: docSnap.id,
+      name: typeof data.name === "string" ? data.name : "이름없는 반",
+    };
+  });
+  const studentDocs = studentSnap.docs.map((docSnap) =>
+    hydrateStudent(docSnap.id, docSnap.data() as Record<string, unknown>),
+  );
+
+  return { classDocs, studentDocs };
+};
 
 const ClassManager = () => {
   const { toast } = useToast();
@@ -58,6 +94,7 @@ const ClassManager = () => {
   const [classForm, setClassForm] = useState<ClassFormState>({ id: null, name: "" });
   const [message, setMessage] = useState<string>("");
   const [loading, setLoading] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [expandedClassId, setExpandedClassId] = useState<string | null>(null);
   const [adminSearch, setAdminSearch] = useState("");
   const [selectedBulkClassId, setSelectedBulkClassId] = useState("none");
@@ -65,25 +102,32 @@ const ClassManager = () => {
   const [pendingClassSelections, setPendingClassSelections] = useState<Record<string, string[]>>({});
 
   const loadData = async () => {
-    const [classDocs, studentDocs] = await Promise.all([fetchClasses(), fetchStudents()]);
+    const { classDocs, studentDocs } = await loadClassManagerDataFromServer();
     setClasses(classDocs);
     setStudents(studentDocs);
+  };
+
+  const forceSync = async () => {
+    setIsSyncing(true);
+    try {
+      await loadData();
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   useEffect(() => {
     loadData();
   }, []);
 
+  useEffect(() => {
+    console.log("데이터 동기화 분석: 현재 로드된 학생 목록", students.map(s => ({ uid: s.uid, classIds: s.classIds, status: s.classIds?.length > 0 ? 'assigned' : 'unassigned' })));
+  }, [students]);
+
   const selectedClass = useMemo(
     () => classes.find((item) => item.id === selectedClassId) ?? null,
     [classes, selectedClassId],
   );
-
-  const hasAssignedClass = (student: StudentLite) => {
-    // classIds 배열 우선, 빈 문자열 같은 무효값은 미배정으로 처리
-    if (getValidClassIds(student.classIds).length > 0) return true;
-    return Boolean(student.classId) || Boolean(student.className && student.className !== "미배정");
-  };
 
   const formatStudentLabel = (student: StudentLite) =>
     formatStudentName(student.name, {
@@ -92,21 +136,29 @@ const ClassManager = () => {
       studentId: student.studentId,
     });
 
-  const filteredStudents = useMemo(() => {
-    const keyword = search.trim().toLowerCase();
+  const assignableStudents = useMemo(() => {
     return students.filter((student) => {
-      if (hasAssignedClass(student)) {
-        return false;
+      const classIds = normalizeClassIds(student.classIds);
+
+      if (selectedClassId !== "none") {
+        return !classIds.includes(selectedClassId);
       }
-      if (!keyword) {
-        return true;
-      }
-      return (
-        student.name.toLowerCase().includes(keyword) ||
-        student.email.toLowerCase().includes(keyword)
-      );
+
+      return classIds.length === 0;
     });
-  }, [search, students]);
+  }, [selectedClassId, students]);
+
+  const filteredStudents = useMemo(() => {
+    const searchQuery = search.toLowerCase();
+    return assignableStudents.filter((student) => {
+      const isMatch = (student.name ?? "").toLowerCase().includes(searchQuery);
+      return isMatch;
+    });
+  }, [assignableStudents, search]);
+
+  const classNameById = useMemo(() => {
+    return new Map(classes.map((item) => [item.id, item.name]));
+  }, [classes]);
 
   const filteredManageableStudents = useMemo(() => {
     const keyword = adminSearch.trim().toLowerCase();
@@ -131,11 +183,7 @@ const ClassManager = () => {
     students.forEach((student) => {
       // classIds 배열 우선, 없으면 classId 폴백
       const rawIds: string[] =
-        getValidClassIds(student.classIds).length > 0
-          ? getValidClassIds(student.classIds)
-          : student.classId
-            ? [student.classId]
-            : [];
+        normalizeClassIds(student.classIds);
 
       // classIds 내 중복 제거 → 동일 반에 같은 학생이 두 번 추가되는 것 방지
       const uniqueIds = Array.from(new Set(rawIds));
@@ -169,11 +217,7 @@ const ClassManager = () => {
           next[student.uid] = prev[student.uid];
         } else {
           const ids =
-            getValidClassIds(student.classIds).length > 0
-              ? getValidClassIds(student.classIds)
-              : student.classId
-                ? [student.classId]
-                : [];
+            normalizeClassIds(student.classIds);
           next[student.uid] = ids;
         }
       });
@@ -228,7 +272,7 @@ const ClassManager = () => {
           name,
           updatedAt: serverTimestamp(),
         });
-        await getDocs(query(collection(db, "users"), where("classId", "==", classForm.id))).then(
+        await getDocs(query(collection(db, "users"), where("classIds", "array-contains", classForm.id))).then(
           async (snap) => {
             await Promise.all(
               snap.docs.map((studentDoc) =>
@@ -269,13 +313,13 @@ const ClassManager = () => {
 
     try {
       const studentsInClass = await getDocs(
-        query(collection(db, "users"), where("classId", "==", classDoc.id)),
+        query(collection(db, "users"), where("classIds", "array-contains", classDoc.id)),
       );
 
       await Promise.all(
         studentsInClass.docs.map((studentDoc) => {
           const data = studentDoc.data() as { classIds?: unknown };
-          const prevIds = Array.isArray(data.classIds) ? (data.classIds as string[]) : [];
+          const prevIds = normalizeClassIds(data.classIds);
           const nextIds = prevIds.filter((id) => id !== classDoc.id);
           return updateDoc(studentDoc.ref, {
             classIds: nextIds,
@@ -316,25 +360,13 @@ const ClassManager = () => {
 
     const assignedUids = [...checkedStudentUids];
     setLoading(true);
+    setIsSyncing(true);
     setMessage("");
 
     try {
       // classIds 배열에 원자적 추가 (arrayUnion → 중복 방지)
       await bulkAddClassIdToStudents(assignedUids, selectedClass.id);
-
-      setStudents((prev) =>
-        prev.map((student) => {
-          if (!assignedUids.includes(student.uid)) return student;
-          const prevIds = Array.isArray(student.classIds) ? student.classIds : student.classId ? [student.classId] : [];
-          const nextIds = Array.from(new Set([...prevIds, selectedClass.id]));
-          return {
-            ...student,
-            classId: selectedClass.id,
-            classIds: nextIds,
-            className: student.className || selectedClass.name,
-          };
-        }),
-      );
+      await forceSync();
       setCheckedStudentUids([]);
       setMessage(`${assignedUids.length}명의 학생을 '${selectedClass.name}'에 배정했습니다.`);
       toast({ title: "반 정보가 성공적으로 업데이트되었습니다" });
@@ -342,17 +374,14 @@ const ClassManager = () => {
       setMessage(error instanceof Error ? error.message : "학생 배정에 실패했습니다.");
       await loadData();
     } finally {
+      setIsSyncing(false);
       setLoading(false);
     }
   };
 
   const handleStudentClassSave = async (student: StudentLite) => {
     const nextIds = pendingClassSelections[student.uid] ?? [];
-    const currentIds = Array.isArray(student.classIds)
-      ? [...student.classIds].sort()
-      : student.classId
-        ? [student.classId]
-        : [];
+    const currentIds = normalizeClassIds(student.classIds).sort();
     const deduped = Array.from(new Set(nextIds)).sort();
 
     if (JSON.stringify(deduped) === JSON.stringify(currentIds)) {
@@ -439,11 +468,7 @@ const ClassManager = () => {
       return;
     }
 
-    const currentIds = Array.isArray(student.classIds)
-      ? student.classIds
-      : student.classId
-        ? [student.classId]
-        : [];
+    const currentIds = normalizeClassIds(student.classIds);
     const remaining = currentIds.filter((id) => id !== targetClassId).length;
 
     setLoading(true);
@@ -633,6 +658,13 @@ const ClassManager = () => {
           <div className="mt-4 space-y-2">
             {filteredStudents.map((student) => {
               const checked = checkedStudentUids.includes(student.uid);
+              const currentClassNames = normalizeClassIds(student.classIds)
+                .map((classId) => classNameById.get(classId))
+                .filter((name): name is string => Boolean(name));
+              const classStatus =
+                currentClassNames.length > 0
+                  ? `(현재 수강 중: ${currentClassNames.join(", ")})`
+                  : "미배정";
               return (
                 <label
                   key={student.uid}
@@ -649,7 +681,7 @@ const ClassManager = () => {
                     </div>
                   </div>
                   <span className="text-xs text-muted-foreground">
-                    {student.className || "미배정"}
+                    {classStatus}
                   </span>
                 </label>
               );
@@ -720,9 +752,7 @@ const ClassManager = () => {
               <div className="space-y-2 p-3">
                 {filteredManageableStudents.map((student) => {
                   const checked = checkedManagedStudentUids.includes(student.uid);
-                  const currentIds = Array.isArray(student.classIds)
-                    ? [...student.classIds].sort()
-                    : student.classId ? [student.classId] : [];
+                  const currentIds = normalizeClassIds(student.classIds).sort();
                   const pendingIds: string[] =
                     pendingClassSelections[student.uid] ?? currentIds;
                   const isDirty =
@@ -796,6 +826,11 @@ const ClassManager = () => {
           </div>
         </div>
 
+        {isSyncing && (
+          <p className="text-sm font-medium text-card-foreground">
+            Firestore 서버 데이터와 동기화 중입니다...
+          </p>
+        )}
         {message && <p className="text-sm text-card-foreground">{message}</p>}
       </div>
     </DashboardLayout>

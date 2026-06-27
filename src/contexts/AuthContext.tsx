@@ -24,6 +24,7 @@ import {
 } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 import { normalizeRole, type CanonicalRole } from "@/lib/authz";
+import { normalizeClassIds } from "@/services/classTransferService";
 
 type Role = CanonicalRole;
 
@@ -136,9 +137,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
           const role = normalizeRole(data.role);
           const needsMigration = data.needsMigration === true;
 
-          const newClassIds = Array.isArray(data.classIds)
-            ? data.classIds.filter((id): id is string => typeof id === "string")
-            : [];
+          const newClassIds = normalizeClassIds(data.classIds, data.classId);
 
           setUser((prev) => ({
             ...prev,

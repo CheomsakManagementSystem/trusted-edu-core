@@ -27,6 +27,21 @@ export type JoinClassTarget = {
 
 export const buildClassMemberId = (classId: string, uid: string) => `${classId}_${uid}`;
 
+export const normalizeClassIds = (
+  classIds: unknown,
+  legacyClassId?: string | null,
+): string[] => {
+  const ids = Array.isArray(classIds)
+    ? classIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+    : [];
+
+  if (ids.length > 0) {
+    return Array.from(new Set(ids));
+  }
+
+  return legacyClassId ? [legacyClassId] : [];
+};
+
 export const joinClass = async (
   student: JoinClassStudent,
   targetClass: JoinClassTarget,
@@ -74,19 +89,33 @@ export const joinClass = async (
 
 // ─── 단일 classId 기반 (하위 호환 유지) ─────────────────────────────────────
 
-const buildAssignmentPayload = (targetClass: TransferClassTarget) => ({
-  classId: targetClass?.id ?? null,
-  className: targetClass?.name ?? null,
-  isEnrolled: Boolean(targetClass),
-  enrollmentStatus: targetClass ? "active" : null,
-  updatedAt: serverTimestamp(),
-});
+export const syncClassFields = (targetClass: TransferClassTarget) => {
+  if (!targetClass) {
+    return {
+      classId: null,
+      className: null,
+      classIds: [],
+      isEnrolled: false,
+      enrollmentStatus: null,
+      updatedAt: serverTimestamp(),
+    };
+  }
+
+  return {
+    classId: targetClass.id,
+    className: targetClass.name,
+    classIds: arrayUnion(targetClass.id),
+    isEnrolled: true,
+    enrollmentStatus: "active",
+    updatedAt: serverTimestamp(),
+  };
+};
 
 export const updateStudentClassAssignment = async (
   studentUid: string,
   targetClass: TransferClassTarget,
 ) => {
-  await setDoc(doc(db, "users", studentUid), buildAssignmentPayload(targetClass), { merge: true });
+  await setDoc(doc(db, "users", studentUid), syncClassFields(targetClass), { merge: true });
 };
 
 export const bulkUpdateStudentClassAssignments = async (
@@ -99,7 +128,16 @@ export const bulkUpdateStudentClassAssignments = async (
 
   const batch = writeBatch(db);
   studentUids.forEach((studentUid) => {
-    batch.set(doc(db, "users", studentUid), buildAssignmentPayload(targetClass), { merge: true });
+    if (!studentUid) {
+      console.error("[BulkAssign] studentUid 누락으로 업데이트 제외:", {
+        studentUid,
+        targetClass,
+      });
+      return;
+    }
+
+    console.log("[BulkAssign] users document id 확인:", studentUid);
+    batch.update(doc(db, "users", studentUid), syncClassFields(targetClass));
   });
   await batch.commit();
 };

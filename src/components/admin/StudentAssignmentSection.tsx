@@ -1,13 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { type Dispatch, type SetStateAction, useEffect, useMemo, useState } from "react";
 import {
-  arrayUnion,
   collection,
   doc,
+  getDocsFromServer,
   onSnapshot,
   query,
   orderBy,
   serverTimestamp,
-  writeBatch,
+  setDoc,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import {
@@ -19,13 +19,12 @@ import {
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { User, GraduationCap } from "lucide-react";
+import { User, GraduationCap, Loader2, RefreshCcw, ShieldCheck } from "lucide-react";
 import { normalizeRole } from "@/lib/authz";
 import {
-  bulkUpdateStudentClassAssignments,
-  buildClassMemberId,
+  normalizeClassIds,
 } from "@/services/classTransferService";
 
 type ClassDoc = {
@@ -43,21 +42,254 @@ type StudentDoc = {
   className?: string;
 };
 
-const getValidClassIds = (classIds: unknown): string[] =>
-  Array.isArray(classIds)
-    ? classIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
-    : [];
+const hydrateStudentDoc = (id: string, data: Record<string, unknown>): StudentDoc => {
+  const classId = typeof data.classId === "string" ? data.classId : undefined;
+
+  return {
+    id: typeof data.uid === "string" ? data.uid : id,
+    name: typeof data.name === "string" ? data.name : "",
+    email: typeof data.email === "string" ? data.email : "",
+    role: typeof data.role === "string" ? data.role : "",
+    classId,
+    classIds: normalizeClassIds(data.classIds, classId),
+    className: typeof data.className === "string" ? data.className : undefined,
+  };
+};
+
+const waitForServerPropagation = () =>
+  new Promise((resolve) => setTimeout(resolve, 500));
+
+const fetchStudentsFromServer = async (): Promise<StudentDoc[]> => {
+  // [FIXED] Firestore 로컬 캐시를 우회하고 서버 원본 데이터를 강제 재조회한다.
+  const querySnapshot = await getDocsFromServer(query(collection(db, "users")));
+
+  return querySnapshot.docs
+    .map((docSnap) => hydrateStudentDoc(docSnap.id, docSnap.data() as Record<string, unknown>))
+    .sort((a, b) => a.name.localeCompare(b.name));
+};
+
+type SyncMismatch = {
+  id: string;
+  name: string;
+  email: string;
+  uiClassId: string;
+  dbClassId: string;
+};
+
+type SyncManagerProps = {
+  classes: ClassDoc[];
+  pendingClassSelections: Record<string, string>;
+  setPendingClassSelections: Dispatch<SetStateAction<Record<string, string>>>;
+  setStudents: Dispatch<SetStateAction<StudentDoc[]>>;
+};
+
+const buildPendingSelections = (rows: StudentDoc[]) => {
+  const next: Record<string, string> = {};
+  rows.forEach((student) => {
+    if (normalizeRole(student.role) === "STUDENT") {
+      next[student.id] = normalizeClassIds(student.classIds).at(0) ?? "none";
+    }
+  });
+  return next;
+};
+
+const SyncManager = ({
+  classes,
+  pendingClassSelections,
+  setPendingClassSelections,
+  setStudents,
+}: SyncManagerProps) => {
+  const { toast } = useToast();
+  const [mismatches, setMismatches] = useState<SyncMismatch[]>([]);
+  const [checking, setChecking] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+
+  const classNameById = useMemo(
+    () => new Map(classes.map((classRow) => [classRow.id, classRow.name])),
+    [classes],
+  );
+
+  const findMismatches = async () => {
+    const freshStudents = await fetchStudentsFromServer();
+    const nextMismatches = freshStudents
+      .filter((student) => normalizeRole(student.role) === "STUDENT")
+      .map((student) => {
+        const uiClassId = pendingClassSelections[student.id];
+        if (uiClassId === undefined) {
+          return null;
+        }
+
+        const normalizedUiClassId = uiClassId || "none";
+        const dbClassId = normalizeClassIds(student.classIds).at(0) ?? "none";
+
+        if (normalizedUiClassId === dbClassId) {
+          return null;
+        }
+
+        return {
+          id: student.id,
+          name: student.name,
+          email: student.email,
+          uiClassId: normalizedUiClassId,
+          dbClassId,
+        };
+      })
+      .filter((row): row is SyncMismatch => row !== null);
+
+    return { freshStudents, nextMismatches };
+  };
+
+  const handleVerifySync = async () => {
+    setChecking(true);
+    try {
+      const { nextMismatches } = await findMismatches();
+      setMismatches(nextMismatches);
+      toast({
+        title: "싱크 검증 완료",
+        description: `불일치 ${nextMismatches.length}건을 확인했습니다.`,
+      });
+    } catch (error) {
+      console.error("[SyncManager] verify failed", error);
+      toast({
+        variant: "destructive",
+        title: "싱크 검증 실패",
+        description: error instanceof Error ? error.message : "검증 중 오류가 발생했습니다.",
+      });
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const handleForceSync = async () => {
+    setSyncing(true);
+    try {
+      const { nextMismatches } = await findMismatches();
+
+      await Promise.all(
+        nextMismatches.map((mismatch) => {
+          const nextClassId = mismatch.uiClassId === "none" ? null : mismatch.uiClassId;
+          const nextClassName = nextClassId ? classNameById.get(nextClassId) ?? null : null;
+
+          return setDoc(
+            doc(db, "users", mismatch.id),
+            {
+              classId: nextClassId,
+              className: nextClassName,
+              classIds: nextClassId ? [nextClassId] : [],
+              isEnrolled: Boolean(nextClassId),
+              enrollmentStatus: nextClassId ? "active" : null,
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true },
+          );
+        }),
+      );
+
+      await waitForServerPropagation();
+      const syncedStudents = await fetchStudentsFromServer();
+      setStudents(syncedStudents);
+      setPendingClassSelections(buildPendingSelections(syncedStudents));
+      setMismatches([]);
+
+      toast({
+        title: "싱크 강제 동기화 완료",
+        description: `${nextMismatches.length}개 학생 문서를 UI 값 기준으로 동기화했습니다.`,
+      });
+    } catch (error) {
+      console.error("[SyncManager] force sync failed", error);
+      toast({
+        variant: "destructive",
+        title: "싱크 강제 동기화 실패",
+        description: error instanceof Error ? error.message : "동기화 중 오류가 발생했습니다.",
+      });
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const isWorking = checking || syncing;
+
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <ShieldCheck className="h-4 w-4 text-sky-400" />
+            <h3 className="text-sm font-semibold text-slate-50">UI/DB 싱크 관리</h3>
+            <Badge variant={mismatches.length > 0 ? "destructive" : "secondary"}>
+              Sync Mismatch {mismatches.length}
+            </Badge>
+          </div>
+          <p className="text-xs text-slate-400">
+            기준: normalizeClassIds(user.classIds).at(0) === pendingClassSelections[user.id]
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={handleVerifySync}
+            disabled={isWorking}
+            className="border border-slate-700 bg-slate-800 text-slate-50 hover:bg-slate-700"
+          >
+            {checking ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCcw className="mr-2 h-4 w-4" />}
+            싱크 검증
+          </Button>
+          <Button
+            type="button"
+            onClick={handleForceSync}
+            disabled={isWorking}
+            className="bg-sky-500 text-slate-950 hover:bg-sky-400"
+          >
+            {syncing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
+            싱크 강제 동기화
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-4 overflow-hidden rounded-lg border border-slate-800">
+        <table className="min-w-full divide-y divide-slate-800 text-xs">
+          <thead className="bg-slate-950/60 text-slate-400">
+            <tr>
+              <th className="px-3 py-2 text-left font-medium">학생</th>
+              <th className="px-3 py-2 text-left font-medium">이메일</th>
+              <th className="px-3 py-2 text-left font-medium">UI 값</th>
+              <th className="px-3 py-2 text-left font-medium">DB 값</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-800 bg-slate-900/40">
+            {mismatches.map((mismatch) => (
+              <tr key={mismatch.id}>
+                <td className="px-3 py-2 text-slate-100">{mismatch.name}</td>
+                <td className="px-3 py-2 text-slate-300">{mismatch.email}</td>
+                <td className="px-3 py-2 text-sky-300">
+                  {mismatch.uiClassId === "none" ? "미배정" : classNameById.get(mismatch.uiClassId) ?? mismatch.uiClassId}
+                </td>
+                <td className="px-3 py-2 text-rose-300">
+                  {mismatch.dbClassId === "none" ? "미배정" : classNameById.get(mismatch.dbClassId) ?? mismatch.dbClassId}
+                </td>
+              </tr>
+            ))}
+            {mismatches.length === 0 && (
+              <tr>
+                <td colSpan={4} className="px-3 py-4 text-center text-slate-500">
+                  싱크 불일치 학생이 없습니다.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
 
 const StudentAssignmentSection = () => {
-  const { toast } = useToast();
   const [classes, setClasses] = useState<ClassDoc[]>([]);
   const [students, setStudents] = useState<StudentDoc[]>([]);
   const [search, setSearch] = useState("");
-  const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
-  const [selectedBulkClassId, setSelectedBulkClassId] = useState("none");
   const [pendingClassSelections, setPendingClassSelections] = useState<Record<string, string>>({});
-  const [savingStudentId, setSavingStudentId] = useState<string | null>(null);
-  const [bulkSaving, setBulkSaving] = useState(false);
 
   useEffect(() => {
     const q = query(collection(db, "classes"), orderBy("createdAt", "desc"));
@@ -74,19 +306,14 @@ const StudentAssignmentSection = () => {
 
   useEffect(() => {
     const q = query(collection(db, "users"), orderBy("name"));
-    const unsub = onSnapshot(q, (snap) => {
+    const unsub = onSnapshot(q, { includeMetadataChanges: true }, (snap) => {
+      if (snap.metadata.fromCache) {
+        return;
+      }
+
       const list: StudentDoc[] = [];
       snap.forEach((d) => {
-        const data = d.data() as any;
-        list.push({
-          id: data.uid ?? d.id,
-          name: data.name,
-          email: data.email,
-          role: data.role,
-          classId: data.classId,
-          classIds: getValidClassIds(data.classIds),
-          className: data.className,
-        });
+        list.push(hydrateStudentDoc(d.id, d.data() as Record<string, unknown>));
       });
       setStudents(list);
     });
@@ -111,114 +338,11 @@ const StudentAssignmentSection = () => {
     setPendingClassSelections((prev) => {
       const next: Record<string, string> = {};
       students.forEach((student) => {
-        next[student.id] = prev[student.id] ?? student.classIds[0] ?? student.classId ?? "none";
+        next[student.id] = prev[student.id] ?? normalizeClassIds(student.classIds).at(0) ?? "none";
       });
       return next;
     });
   }, [students]);
-
-  useEffect(() => {
-    const ids = new Set(filteredStudents.map((student) => student.id));
-    setSelectedStudentIds((prev) => prev.filter((id) => ids.has(id)));
-  }, [filteredStudents]);
-
-  const handleAssignClass = async (student: StudentDoc) => {
-    const nextClassId = pendingClassSelections[student.id] ?? student.classIds[0] ?? student.classId ?? "none";
-    const currentClassId = student.classIds[0] ?? student.classId ?? "none";
-    if (nextClassId === currentClassId) {
-      return;
-    }
-
-    setSavingStudentId(student.id);
-    try {
-      const cls = classes.find((c) => c.id === nextClassId) ?? null;
-      if (!cls) {
-        throw new Error("배정할 반을 선택해주세요.");
-      }
-
-      console.log(`[Assign] Starting batch for student: ${student.id}`);
-
-      const batch = writeBatch(db);
-      const memberRef = doc(db, "class_members", buildClassMemberId(cls.id, student.id));
-      const userRef = doc(db, "users", student.id);
-
-      batch.set(memberRef, {
-        classId: cls.id,
-        className: cls.name,
-        uid: student.id,
-        studentName: student.name ?? null,
-        studentEmail: student.email ?? null,
-        createdAt: serverTimestamp(),
-      }, { merge: true });
-
-      batch.set(userRef, {
-        classId: cls.id,
-        className: cls.name,
-        classIds: arrayUnion(cls.id),
-        isEnrolled: true,
-        enrollmentStatus: "active",
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
-
-      await batch.commit();
-      console.log(`[Assign] Batch committed successfully for student: ${student.id}`);
-
-      setStudents((prev) =>
-        prev.map((item) =>
-          item.id === student.id
-            ? {
-                ...item,
-                classId: cls.id,
-                className: cls.name,
-                classIds: Array.from(new Set([...item.classIds, cls.id])),
-              }
-            : item,
-        ),
-      );
-      setPendingClassSelections((prev) => ({ ...prev, [student.id]: cls.id }));
-      console.log("[Sync] UI state refreshed after assignment");
-
-      toast({
-        title: "반 정보가 성공적으로 업데이트되었습니다",
-      });
-    } catch (error) {
-      toast({
-        variant: "destructive",
-        title: "반 변경 실패",
-        description: error instanceof Error ? error.message : "잠시 후 다시 시도해주세요.",
-      });
-      setPendingClassSelections((prev) => ({
-        ...prev,
-        [student.id]: student.classIds[0] ?? student.classId ?? "none",
-      }));
-    } finally {
-      setSavingStudentId(null);
-    }
-  };
-
-  const handleBulkAssign = async () => {
-    if (!selectedStudentIds.length) {
-      return;
-    }
-
-    setBulkSaving(true);
-    try {
-      const cls = classes.find((c) => c.id === selectedBulkClassId) ?? null;
-      await bulkUpdateStudentClassAssignments(selectedStudentIds, cls);
-      setSelectedStudentIds([]);
-      toast({
-        title: "반 정보가 성공적으로 업데이트되었습니다",
-      });
-    } catch (error) {
-      toast({
-        variant: "destructive",
-        title: "일괄 변경 실패",
-        description: error instanceof Error ? error.message : "잠시 후 다시 시도해주세요.",
-      });
-    } finally {
-      setBulkSaving(false);
-    }
-  };
 
   return (
     <div className="space-y-6">
@@ -251,38 +375,17 @@ const StudentAssignmentSection = () => {
         </div>
       </div>
 
-      <div className="flex flex-col gap-2 rounded-xl border border-slate-800 bg-slate-900/70 p-3 md:flex-row md:items-center">
-        <Select value={selectedBulkClassId} onValueChange={setSelectedBulkClassId}>
-          <SelectTrigger className="h-9 w-full border-slate-700 bg-slate-900 text-xs text-slate-50 md:w-56">
-            <SelectValue placeholder="반 일괄 변경" />
-          </SelectTrigger>
-          <SelectContent className="bg-slate-900 text-slate-50">
-            <SelectItem value="none">미배정</SelectItem>
-            {classes.map((c) => (
-              <SelectItem key={c.id} value={c.id}>
-                {c.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Button
-          type="button"
-          onClick={handleBulkAssign}
-          disabled={bulkSaving || selectedStudentIds.length === 0}
-          className="bg-sky-500 text-slate-950 hover:bg-sky-400"
-        >
-          반 일괄 변경
-        </Button>
-        <span className="text-xs text-slate-400">선택 학생 {selectedStudentIds.length}명</span>
-      </div>
+      <SyncManager
+        classes={classes}
+        pendingClassSelections={pendingClassSelections}
+        setPendingClassSelections={setPendingClassSelections}
+        setStudents={setStudents}
+      />
 
       <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/70">
         <table className="min-w-full divide-y divide-slate-800 text-sm">
           <thead className="bg-slate-900">
             <tr>
-              <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wide text-slate-400">
-                선택
-              </th>
               <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wide text-slate-400">
                 학생
               </th>
@@ -300,19 +403,6 @@ const StudentAssignmentSection = () => {
           <tbody className="divide-y divide-slate-800 bg-slate-900/40">
             {filteredStudents.map((s) => (
               <tr key={s.id}>
-                <td className="px-4 py-2">
-                  <Checkbox
-                    checked={selectedStudentIds.includes(s.id)}
-                    onCheckedChange={(checked) =>
-                      setSelectedStudentIds((prev) =>
-                        checked
-                          ? Array.from(new Set([...prev, s.id]))
-                          : prev.filter((id) => id !== s.id),
-                      )
-                    }
-                    className="border-slate-600 data-[state=checked]:border-sky-500 data-[state=checked]:bg-sky-500"
-                  />
-                </td>
                 <td className="px-4 py-2 text-slate-100">
                   <div className="flex items-center gap-2">
                     <div className="flex h-7 w-7 items-center justify-center rounded-full bg-sky-500/10 text-sky-400">
@@ -332,7 +422,7 @@ const StudentAssignmentSection = () => {
                 <td className="px-4 py-2">
                   <div className="flex items-center gap-2">
                     <Select
-                      value={pendingClassSelections[s.id] ?? s.classIds[0] ?? s.classId ?? "none"}
+                      value={pendingClassSelections[s.id] ?? normalizeClassIds(s.classIds).at(0) ?? "none"}
                       onValueChange={(v) =>
                         setPendingClassSelections((prev) => ({ ...prev, [s.id]: v }))
                       }
@@ -349,20 +439,6 @@ const StudentAssignmentSection = () => {
                         ))}
                       </SelectContent>
                     </Select>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      disabled={
-                        savingStudentId === s.id ||
-                        (pendingClassSelections[s.id] ?? s.classIds[0] ?? s.classId ?? "none") ===
-                          (s.classIds[0] ?? s.classId ?? "none")
-                      }
-                      className="border border-slate-700 bg-slate-800 text-slate-50 hover:bg-slate-700"
-                      onClick={() => handleAssignClass(s)}
-                    >
-                      저장
-                    </Button>
                   </div>
                 </td>
               </tr>
@@ -370,7 +446,7 @@ const StudentAssignmentSection = () => {
             {filteredStudents.length === 0 && (
               <tr>
                 <td
-                  colSpan={5}
+                  colSpan={4}
                   className="px-4 py-6 text-center text-xs text-slate-500"
                 >
                   조건에 맞는 학생이 없습니다.

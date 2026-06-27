@@ -15,7 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 import { auth, db } from "@/lib/firebase";
 import { useAuth } from "@/contexts/AuthContext";
 import { fetchClasses, type ClassLite } from "@/lib/pdfProcessor";
-import { updateStudentClassAssignment } from "@/services/classTransferService";
+import { normalizeClassIds, updateStudentClassAssignment } from "@/services/classTransferService";
 
 const AccountSettings = () => {
   const { user } = useAuth();
@@ -41,15 +41,15 @@ const AccountSettings = () => {
   }, []);
 
   useEffect(() => {
-    setSelectedClassId(user?.classId ?? "none");
-  }, [user?.classId]);
+    setSelectedClassId(normalizeClassIds(user?.classIds).at(0) ?? "none");
+  }, [user?.classIds]);
 
   const selectedClass = useMemo(
     () => classes.find((item) => item.id === selectedClassId) ?? null,
     [classes, selectedClassId],
   );
 
-  const hasClassSelectionChanged = (user?.classId ?? "none") !== selectedClassId;
+  const hasClassSelectionChanged = (normalizeClassIds(user?.classIds).at(0) ?? "none") !== selectedClassId;
 
   const handleClassChange = async () => {
     if (!user?.uid || !hasClassSelectionChanged) {
@@ -68,7 +68,7 @@ const AccountSettings = () => {
         title: "반 변경에 실패했습니다",
         description: error instanceof Error ? error.message : "잠시 후 다시 시도해주세요.",
       });
-      setSelectedClassId(user.classId ?? "none");
+      setSelectedClassId(normalizeClassIds(user.classIds).at(0) ?? "none");
     } finally {
       setClassSaving(false);
     }

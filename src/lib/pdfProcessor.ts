@@ -1,6 +1,7 @@
 import {
   Timestamp,
   addDoc,
+  arrayUnion,
   collection,
   deleteDoc,
   doc,
@@ -17,6 +18,7 @@ import {
 import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 import { db, storage } from "@/lib/firebase";
 import { isStaffRole } from "@/lib/authz";
+import { normalizeClassIds } from "@/services/classTransferService";
 
 const STORAGE_UPLOAD_TIMEOUT_MS = 60_000;
 const PDFJS_VERSION = "4.10.38";
@@ -43,6 +45,9 @@ export type ClassLite = {
   id: string;
   name: string;
 };
+
+const resolvePrimaryClassId = (student: Pick<StudentLite, "classIds">): string | null =>
+  normalizeClassIds(student.classIds).at(0) ?? null;
 
 export type ScoreBreakdown = {
   reading: number | null;
@@ -1615,13 +1620,7 @@ export const fetchStudents = async (): Promise<StudentLite[]> => {
       const phoneDigits = (data.phoneNumber ?? "").replace(/\D/g, "");
       const phoneLast4 = phoneDigits.length >= 4 ? phoneDigits.slice(-4) : null;
       const studentId = data.studentId ?? data.phoneSuffix ?? phoneLast4 ?? null;
-      // classIds 정규화: 배열이면 그대로, 없으면 classId 폴백, 그것도 없으면 []
-      const rawClassIds = Array.isArray(data.classIds) ? (data.classIds as string[]) : null;
-      const classIds: string[] = rawClassIds
-        ? rawClassIds.filter((id): id is string => typeof id === "string" && id.length > 0)
-        : data.classId
-          ? [data.classId]
-          : [];
+      const classIds = normalizeClassIds(data.classIds, data.classId ?? null);
       return {
         uid: data.uid ?? docSnap.id,
         name: data.name ?? "이름없음",
@@ -1664,15 +1663,17 @@ export const submitClassJoinRequest = async (
 
   const studentData = studentSnap.data() as {
     classId?: string | null;
+    classIds?: unknown;
     className?: string | null;
   };
 
-  if (studentData.classId === classInfo.id) {
+  if (normalizeClassIds(studentData.classIds, studentData.classId).includes(classInfo.id)) {
     throw new Error("이미 배정된 반입니다.");
   }
 
   await updateDoc(studentRef, {
     classId: classInfo.id,
+    classIds: arrayUnion(classInfo.id),
     className: classInfo.name,
     isEnrolled: true,
     enrollmentStatus: "active",
@@ -1751,7 +1752,10 @@ export const approveClassJoinRequest = async (
 
   await updateDoc(doc(db, "users", requestData.studentUid), {
     classId: requestData.classId,
+    classIds: arrayUnion(requestData.classId),
     className: requestData.className,
+    isEnrolled: true,
+    enrollmentStatus: "active",
     updatedAt: serverTimestamp(),
   });
 
@@ -1830,15 +1834,16 @@ export const subscribePendingReports = (
 
 export const assignPendingReportToStudent = async (
   reportId: string,
-  student: Pick<StudentLite, "uid" | "name" | "studentId" | "classId" | "className">,
+  student: Pick<StudentLite, "uid" | "name" | "studentId" | "classIds" | "className">,
 ): Promise<void> => {
   // studentId: customId(6~8자) 우선. 없으면 null → ReportView where("studentId") 쿼리와 정합
   const resolvedStudentId = (student.studentId ?? "").trim() || null;
+  const primaryClassId = resolvePrimaryClassId(student);
   await updateDoc(doc(db, "reports", reportId), {
     studentUid: student.uid,
     studentId: resolvedStudentId,
     studentName: student.name ?? "",
-    classId: student.classId ?? null,
+    classId: primaryClassId,
     className: student.className ?? null,
     assignmentStatus: "completed",
     status: "completed",
@@ -1850,7 +1855,7 @@ export const assignPendingReportToStudent = async (
 
 export const assignReportToStudentOverride = async (
   reportId: string,
-  student: Pick<StudentLite, "uid" | "name" | "studentId" | "classId" | "className">,
+  student: Pick<StudentLite, "uid" | "name" | "studentId" | "classIds" | "className">,
   actorRole?: string | null,
   actorUid?: string | null,
 ): Promise<void> => {
@@ -1864,12 +1869,13 @@ export const assignReportToStudentOverride = async (
   const claimRef = previous.studentUid ? doc(db, "report_claims", `${reportId}_${previous.studentUid}`) : null;
   const claimSnap = claimRef ? await getDoc(claimRef) : null;
   const batch = writeBatch(db);
+  const primaryClassId = resolvePrimaryClassId(student);
 
   batch.update(reportRef, {
     studentUid: student.uid,
     studentName: student.name ?? "",
     studentId: (student.studentId ?? "").trim() || null,
-    classId: student.classId ?? null,
+    classId: primaryClassId,
     className: student.className ?? null,
     assignmentStatus: "completed",
     status: "completed",
@@ -1893,7 +1899,7 @@ export const assignReportToStudentOverride = async (
 
 export const fixAndAssignPendingReport = async (
   reportId: string,
-  student: Pick<StudentLite, "uid" | "name" | "studentId" | "classId" | "className">,
+  student: Pick<StudentLite, "uid" | "name" | "studentId" | "classIds" | "className">,
   source: {
     sourceName: string;
     sourceStudentId: string;
@@ -1920,12 +1926,13 @@ export const fixAndAssignPendingReport = async (
       }
     : undefined;
   const batch = writeBatch(db);
+  const primaryClassId = resolvePrimaryClassId(student);
 
   batch.update(reportRef, {
     studentUid: student.uid,
     studentName: student.name ?? "",
     studentId: (student.studentId ?? "").trim() || null,
-    classId: student.classId ?? null,
+    classId: primaryClassId,
     className: student.className ?? null,
     sourceName: source.sourceName.trim(),
     sourceStudentId: source.sourceStudentId.trim() || null,

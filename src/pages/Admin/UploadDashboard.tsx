@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { CheckCircle2, Calendar as CalendarIcon, Circle, Loader2, Pencil, Trash2 } from "lucide-react";
+import IntegrityManager from "@/components/admin/IntegrityManager";
 import {
   assignReportToStudentOverride,
   compareReportsByExamDateDesc,
@@ -63,6 +64,7 @@ import {
   getMasterControls,
 } from "@/services/masterAdminService";
 import { formatStudentName } from "@/lib/studentName";
+import { normalizeClassIds } from "@/services/classTransferService";
 import { isStaffRole } from "@/lib/authz";
 
 const scoreFields: Array<{ key: keyof ScoreBreakdown; label: string }> = [
@@ -182,7 +184,7 @@ const UploadDashboard = () => {
 
   const classStudents = useMemo(
     () => students.filter((student) =>
-      student.classId === selectedClassId || student.classIds.includes(selectedClassId)
+      normalizeClassIds(student.classIds).includes(selectedClassId)
     ),
     [selectedClassId, students],
   );
@@ -1056,6 +1058,8 @@ const UploadDashboard = () => {
   return (
     <DashboardLayout>
       <div className="space-y-6">
+        <IntegrityManager />
+
         <div>
           <h2 className="text-xl font-bold text-foreground">새로운 첨삭 리포트 등록</h2>
           <p className="text-sm text-muted-foreground">
