@@ -1,5 +1,28 @@
-# Logs
-logs
+# 의존성 패키지 (루트 및 functions/ 등 모든 하위 프로젝트에 적용)
+node_modules/
+
+# Vite/TypeScript 빌드 결과물
+dist/
+dist-ssr/
+build/
+out/
+*.tsbuildinfo
+
+# 테스트 결과와 코드 커버리지 보고서
+coverage/
+.nyc_output/
+test-results/
+
+# 개발 도구 및 번들러 캐시
+.vite/
+.cache/
+.parcel-cache/
+.eslintcache
+.stylelintcache
+*.local
+
+# npm, Yarn, pnpm, Lerna 디버그 로그 및 일반 로그
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -7,18 +30,54 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# 런타임 프로세스 및 임시 파일
+*.pid
+*.pid.lock
+*.seed
+*.tmp
+*.temp
+tmp/
+temp/
 
-# Editor directories and files
+# 환경 변수 및 로컬 비밀 정보 (예시 파일은 버전 관리 허용)
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Firebase 로컬 에뮬레이터 데이터, 캐시 및 디버그 로그
+.firebase/
+firebase-debug.log*
+firestore-debug.log*
+ui-debug.log*
+*-debug.log
+
+# VS Code의 개인별 설정 (팀 공유용 확장 추천 파일은 허용)
 .vscode/*
 !.vscode/extensions.json
-.idea
-.DS_Store
+*.code-workspace
+
+# 다른 IDE에서 생성될 수 있는 프로젝트/사용자 설정
+.idea/
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# macOS Finder 및 파일 시스템 메타데이터
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+
+# 운영체제/에디터가 만드는 백업 파일
+*~
+*.bak
+*.orig
