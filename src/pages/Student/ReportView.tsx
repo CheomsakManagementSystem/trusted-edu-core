@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import WithdrawalDialog from "@/components/WithdrawalDialog";
+import NonsulfitIntegrationSection from "@/components/student/NonsulfitIntegrationSection";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import {
@@ -317,6 +318,14 @@ const ReportView = () => {
     };
   }, [selectedReport, user?.className, user?.name, user?.studentId]);
 
+  const overallStudentName = useMemo(
+    () =>
+      formatStudentName(user?.name || selectedReport?.studentName || "학생", {
+        studentId: user?.studentId ?? selectedReport?.studentId ?? null,
+      }),
+    [selectedReport, user?.name, user?.studentId],
+  );
+
   useEffect(() => {
     setFeedbackExpanded(false);
   }, [selectedReportId]);
@@ -562,6 +571,8 @@ const ReportView = () => {
                 </Select>
               </div>
             </div>
+
+            <NonsulfitIntegrationSection studentName={overallStudentName} reports={studentReports} />
 
             <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
               <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
