@@ -301,7 +301,7 @@ const UploadDashboard = () => {
   }, []);
 
   useEffect(() => {
-    const measurement = startPerformanceTraceeTrace("admin_published_load");
+    const measurement = startPerformanceTrace("admin_published_load");
     const run = async () => {
       try {
         const reports = await fetchPublishedReports();

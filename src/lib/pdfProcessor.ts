@@ -360,7 +360,7 @@ const parseFileNameHint = (
 
 const normalizeText = (text: string) =>
   text
-    .replace(/\u0000/g, "")
+    .split("\u0000").join("")
     .replace(/\r/g, "\n")
     .replace(/김윤환\s*class/gi, " ")
     .replace(/첨삭\s*채점표/gi, " ")
