@@ -37,6 +37,7 @@ import {
   type ManagedUser,
 } from "@/services/masterAdminService";
 import { Search } from "lucide-react";
+import { startPerformanceTrace } from "@/lib/performanceMonitoring";
 
 const scoreMetrics: Array<{ key: keyof NonNullable<ReportRecord["scores"]>; label: string }> = [
   { key: "reading", label: "독해력" },
@@ -146,12 +147,15 @@ const MasterAdminPage = () => {
 
   const loadData = async () => {
     setLoading(true);
+    const measurement = startPerformanceTrace("master_admin_load");
     try {
       const [controls, userRows] = await Promise.all([getMasterControls(), fetchManagedUsers()]);
       setInstructorSignupCode(controls.instructorSignupCode);
       setAutoNotifyOnFeedbackComplete(controls.autoNotifyOnFeedbackComplete);
       setUsers(userRows);
+      measurement.stop({ status: "success", metrics: { user_count: userRows.length } });
     } catch (error) {
+      measurement.stop({ status: "error" });
       toast({
         variant: "destructive",
         title: "초기 데이터 로드 실패",

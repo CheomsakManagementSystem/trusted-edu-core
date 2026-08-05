@@ -66,6 +66,7 @@ import {
 import { formatStudentName } from "@/lib/studentName";
 import { normalizeClassIds } from "@/services/classTransferService";
 import { isStaffRole } from "@/lib/authz";
+import { startPerformanceTrace } from "@/lib/performanceMonitoring";
 
 const scoreFields: Array<{ key: keyof ScoreBreakdown; label: string }> = [
   { key: "reading", label: "독해력" },
@@ -251,19 +252,40 @@ const UploadDashboard = () => {
   );
 
   useEffect(() => {
+    const measurement = startPerformanceTrace("admin_base_load");
     const run = async () => {
-      const [classDocs, studentDocs] = await Promise.all([fetchClasses(), fetchStudents()]);
-      setClasses(classDocs);
-      setStudents(studentDocs);
+      try {
+        const [classDocs, studentDocs] = await Promise.all([fetchClasses(), fetchStudents()]);
+        setClasses(classDocs);
+        setStudents(studentDocs);
+        measurement.stop({
+          status: "success",
+          metrics: { class_count: classDocs.length, student_count: studentDocs.length },
+        });
+      } catch (error) {
+        measurement.stop({ status: "error" });
+        throw error;
+      }
     };
 
-    run();
+    void run();
   }, []);
 
   useEffect(() => {
+    const measurement = startPerformanceTrace("admin_pending_load");
+    let recorded = false;
+    const record = (status: "success" | "error" | "cancelled", reportCount = 0) => {
+      if (recorded) return;
+      recorded = true;
+      measurement.stop({ status, metrics: { report_count: reportCount } });
+    };
     const unsubscribe = subscribePendingReports(
-      setPendingReports,
+      (reports) => {
+        setPendingReports(reports);
+        record("success", reports.length);
+      },
       (pendingError) => {
+        record("error");
         toastRef.current({
           variant: "destructive",
           title: "미연결 자료 조회 실패",
@@ -272,15 +294,25 @@ const UploadDashboard = () => {
       },
     );
 
-    return unsubscribe;
+    return () => {
+      record("cancelled");
+      unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
+    const measurement = startPerformanceTrace("admin_published_load");
     const run = async () => {
-      const rows = await fetchPublishedReports();
-      setPublishedReports(rows);
+      try {
+        const reports = await fetchPublishedReports();
+        setPublishedReports(reports);
+        measurement.stop({ status: "success", metrics: { report_count: reports.length } });
+      } catch (error) {
+        measurement.stop({ status: "error" });
+        throw error;
+      }
     };
-    run();
+    void run();
   }, []);
 
   useEffect(() => {
@@ -304,11 +336,18 @@ const UploadDashboard = () => {
         setClassReports([]);
         return;
       }
-      const reports = await fetchReportsByClassId(selectedClass.id);
-      setClassReports(reports);
+      const measurement = startPerformanceTrace("admin_class_reports_load");
+      try {
+        const reports = await fetchReportsByClassId(selectedClass.id);
+        setClassReports(reports);
+        measurement.stop({ status: "success", metrics: { report_count: reports.length } });
+      } catch (error) {
+        measurement.stop({ status: "error" });
+        throw error;
+      }
     };
 
-    run();
+    void run();
   }, [selectedClass, selectedClassId]);
 
   useEffect(() => {
@@ -348,6 +387,7 @@ const UploadDashboard = () => {
 
     setLoading(true);
     setMessage("");
+    const measurement = startPerformanceTrace("pdf_parse_batch", { source: "admin_upload" });
 
     try {
       const hashes = await Promise.all(
@@ -375,6 +415,7 @@ const UploadDashboard = () => {
           "선택한 날짜와 파일 내 날짜가 다릅니다. 이대로 진행할까요?",
         );
         if (!confirmed) {
+          measurement.stop({ status: "cancelled", metrics: { file_count: files.length } });
           setMessage("날짜 불일치로 업로드를 중단했습니다.");
           return;
         }
@@ -386,6 +427,10 @@ const UploadDashboard = () => {
         return [...prev, ...deduped];
       });
       const parseFailedCount = parsedWithHash.filter((row) => Boolean(row.parseError)).length;
+      measurement.stop({
+        status: parseFailedCount > 0 ? "partial" : "success",
+        metrics: { file_count: files.length, parse_failure_count: parseFailedCount },
+      });
       if (parseFailedCount > 0) {
         toast({
           variant: "destructive",
@@ -395,6 +440,7 @@ const UploadDashboard = () => {
       }
       setProgress(0);
     } catch (error) {
+      measurement.stop({ status: "error", metrics: { file_count: files.length } });
       const reason = toFriendlyMessage(
         error instanceof Error ? error.message : "파일 내용을 확인하지 못했습니다.",
       );
@@ -598,6 +644,7 @@ const UploadDashboard = () => {
     setUploading(true);
     setProgress(0);
     setMessage("");
+    const measurement = startPerformanceTrace("report_publish_batch", { source: "admin_upload" });
 
     try {
       const result = await publishReportBatch(
@@ -676,7 +723,17 @@ const UploadDashboard = () => {
       setClassReports(reports);
       const pending = await fetchPendingReports();
       setPendingReports(pending);
+      measurement.stop({
+        status: result.failureCount > 0 ? "partial" : "success",
+        metrics: {
+          file_count: rows.length,
+          success_count: result.successCount,
+          pending_count: result.pendingCount,
+          failure_count: result.failureCount,
+        },
+      });
     } catch (error) {
+      measurement.stop({ status: "error", metrics: { file_count: rows.length } });
       const reason = toFriendlyMessage(
         error instanceof Error ? error.message : "배포 중 오류가 발생했습니다.",
       );

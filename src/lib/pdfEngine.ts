@@ -137,7 +137,17 @@ const hydrateReportRecord = (
   data: Omit<ReportRecord, "id" | "examDate"> & Record<string, unknown> & { examDate?: string | null },
 ): ReportRecord => {
   const legacyTestDate =
-    typeof data.testDate === "string" || data.testDate === null ? data.testDate : undefined;
+    typeof data.testDate === "string"
+      ? data.testDate
+      : data.testDate === null
+        ? null
+        : undefined;
+  const writtenAt =
+    typeof data.writtenAt === "string"
+      ? data.writtenAt
+      : data.writtenAt === null
+        ? null
+        : undefined;
 
   return {
     id,
@@ -145,7 +155,7 @@ const hydrateReportRecord = (
     examDate:
       normalizeDateString(data.examDate) ??
       normalizeDateString(legacyTestDate) ??
-      normalizeDateString(data.writtenAt) ??
+      normalizeDateString(writtenAt) ??
       "",
   };
 };
