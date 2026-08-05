@@ -1,12 +1,13 @@
-name: KPI fix validation
+name: KPI validation
 
 on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   validate:
@@ -20,45 +21,11 @@ jobs:
       VITE_FIREBASE_MESSAGING_SENDER_ID: "123456789012"
       VITE_FIREBASE_APP_ID: 1:123456789012:web:0123456789abcdef012345
     steps:
-      - name: Checkout develop
-        uses: actions/checkout@v4
-        with:
-          ref: develop
-          fetch-depth: 0
-
-      - name: Apply validation fixes
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          dashboard = Path("src/pages/Admin/UploadDashboard.tsx")
-          dashboard_text = dashboard.read_text(encoding="utf-8")
-          dashboard_text = dashboard_text.replace(
-              "startPerformanceTraceeTrace",
-              "startPerformanceTrace",
-          )
-          dashboard.write_text(dashboard_text, encoding="utf-8")
-
-          processor = Path("src/lib/pdfProcessor.ts")
-          processor_text = processor.read_text(encoding="utf-8")
-          processor_text = processor_text.replace(
-              r'.replace(/\u0000/g, "")',
-              r'.split("\u0000").join("")',
-          )
-          processor.write_text(processor_text, encoding="utf-8")
-          PY
-
-          if ! git diff --quiet; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add src/pages/Admin/UploadDashboard.tsx src/lib/pdfProcessor.ts
-            git commit -m "fix: correct KPI validation compatibility"
-            git push origin HEAD:develop
-          fi
+      - name: Checkout
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: npm
