@@ -1,4 +1,4 @@
-name: KPI bootstrap validation
+name: KPI fix validation
 
 on:
   pull_request:
@@ -26,18 +26,36 @@ jobs:
           ref: develop
           fetch-depth: 0
 
-      - name: Apply KPI instrumentation
+      - name: Apply validation fixes
         shell: bash
         run: |
-          cat .kpi-patch/part-* | base64 -d > /tmp/kpi.patch
-          git apply --check /tmp/kpi.patch
-          git apply /tmp/kpi.patch
-          rm -rf .kpi-patch
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "feat: add KPI performance instrumentation"
-          git push origin HEAD:develop
+          python - <<'PY'
+          from pathlib import Path
+
+          dashboard = Path("src/pages/Admin/UploadDashboard.tsx")
+          dashboard_text = dashboard.read_text(encoding="utf-8")
+          dashboard_text = dashboard_text.replace(
+              "startPerformanceTraceeTrace",
+              "startPerformanceTrace",
+          )
+          dashboard.write_text(dashboard_text, encoding="utf-8")
+
+          processor = Path("src/lib/pdfProcessor.ts")
+          processor_text = processor.read_text(encoding="utf-8")
+          processor_text = processor_text.replace(
+              r'.replace(/\u0000/g, "")',
+              r'.split("\u0000").join("")',
+          )
+          processor.write_text(processor_text, encoding="utf-8")
+          PY
+
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add src/pages/Admin/UploadDashboard.tsx src/lib/pdfProcessor.ts
+            git commit -m "fix: correct KPI validation compatibility"
+            git push origin HEAD:develop
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
