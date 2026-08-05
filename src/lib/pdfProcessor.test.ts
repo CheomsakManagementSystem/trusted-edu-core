@@ -6,6 +6,7 @@ const student = (overrides: Partial<StudentLite>): StudentLite => ({
   name: overrides.name ?? "홍길동",
   email: overrides.email ?? "",
   classId: overrides.classId ?? "class-a",
+  classIds: overrides.classIds ?? [overrides.classId ?? "class-a"],
   className: overrides.className ?? "A반",
   studentId: overrides.studentId ?? null,
   phoneNumber: overrides.phoneNumber ?? null,

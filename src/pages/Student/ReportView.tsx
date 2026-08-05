@@ -23,6 +23,7 @@ import {
 } from "@/lib/pdfProcessor";
 import { formatStudentName } from "@/lib/studentName";
 import { db } from "@/lib/firebase";
+import { startPerformanceTrace } from "@/lib/performanceMonitoring";
 import { collection, doc, onSnapshot, orderBy, query, serverTimestamp, where, writeBatch } from "firebase/firestore";
 import { Check, Clipboard } from "lucide-react";
 import {
@@ -107,7 +108,7 @@ const ReportView = () => {
   const [claimedReportIds, setClaimedReportIds] = useState<Set<string>>(new Set());
   const [copyAllLocked, setCopyAllLocked] = useState(false);
   const [copyAllCompleted, setCopyAllCompleted] = useState(false);
-  const copyAllTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const copyAllTimerRef = useRef<number | null>(null);
   const lastCopyAllAtRef = useRef(0);
 
   useEffect(() => {
@@ -119,6 +120,13 @@ const ReportView = () => {
 
     setLoading(true);
     setError("");
+    const measurement = startPerformanceTrace("student_reports_load");
+    let firstLoadRecorded = false;
+    const recordFirstLoad = (status: "success" | "error" | "cancelled", reportCount = 0) => {
+      if (firstLoadRecorded) return;
+      firstLoadRecorded = true;
+      measurement.stop({ status, metrics: { report_count: reportCount } });
+    };
 
     const toRows = (docs: Array<{ id: string; data: () => unknown }>): ReportRecord[] =>
       docs
@@ -156,6 +164,7 @@ const ReportView = () => {
         return ownRecords[0]?.id ?? "";
       });
       setLoading(false);
+      recordFirstLoad("success", ownRecords.length);
     };
 
     const primaryUnsub = onSnapshot(
@@ -173,6 +182,7 @@ const ReportView = () => {
             syncRows();
           },
           (loadError) => {
+            recordFirstLoad("error");
             setError(
               loadError instanceof Error
                 ? loadError.message
@@ -205,6 +215,7 @@ const ReportView = () => {
               syncRows();
             },
             (loadError) => {
+              recordFirstLoad("error");
               setError(
                 loadError instanceof Error
                   ? loadError.message
@@ -218,6 +229,7 @@ const ReportView = () => {
     }
 
     return () => {
+      recordFirstLoad("cancelled");
       primaryUnsub();
       fallbackUnsub?.();
       identityUnsub?.();

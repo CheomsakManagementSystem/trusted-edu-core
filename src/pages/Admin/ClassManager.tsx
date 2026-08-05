@@ -27,6 +27,7 @@ import { useToast } from "@/hooks/use-toast";
 import { db } from "@/lib/firebase";
 import { type ClassLite, type StudentLite } from "@/lib/pdfProcessor";
 import { formatStudentName } from "@/lib/studentName";
+import { startPerformanceTrace } from "@/lib/performanceMonitoring";
 import {
   bulkAddClassIdToStudents,
   bulkUpdateStudentClassIds,
@@ -102,9 +103,19 @@ const ClassManager = () => {
   const [pendingClassSelections, setPendingClassSelections] = useState<Record<string, string[]>>({});
 
   const loadData = async () => {
-    const { classDocs, studentDocs } = await loadClassManagerDataFromServer();
-    setClasses(classDocs);
-    setStudents(studentDocs);
+    const measurement = startPerformanceTrace("class_manager_load");
+    try {
+      const { classDocs, studentDocs } = await loadClassManagerDataFromServer();
+      setClasses(classDocs);
+      setStudents(studentDocs);
+      measurement.stop({
+        status: "success",
+        metrics: { class_count: classDocs.length, student_count: studentDocs.length },
+      });
+    } catch (error) {
+      measurement.stop({ status: "error" });
+      throw error;
+    }
   };
 
   const forceSync = async () => {

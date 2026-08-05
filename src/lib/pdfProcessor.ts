@@ -292,11 +292,21 @@ export const hydrateReportRecord = (
   data: Omit<ReportRecord, "id" | "examDate"> & Record<string, unknown> & { examDate?: string | null },
 ): ReportRecord => {
   const legacyTestDate =
-    typeof data.testDate === "string" || data.testDate === null ? data.testDate : undefined;
+    typeof data.testDate === "string"
+      ? data.testDate
+      : data.testDate === null
+        ? null
+        : undefined;
+  const writtenAt =
+    typeof data.writtenAt === "string"
+      ? data.writtenAt
+      : data.writtenAt === null
+        ? null
+        : undefined;
   const examDate =
     normalizeDateString(data.examDate) ??
     normalizeDateString(legacyTestDate) ??
-    normalizeDateString(data.writtenAt) ??
+    normalizeDateString(writtenAt) ??
     "";
 
   const NULL_SCORES: ScoreBreakdown = {
@@ -350,7 +360,7 @@ const parseFileNameHint = (
 
 const normalizeText = (text: string) =>
   text
-    .replaceAll("\u0000", "")
+    .replace(/\u0000/g, "")
     .replace(/\r/g, "\n")
     .replace(/김윤환\s*class/gi, " ")
     .replace(/첨삭\s*채점표/gi, " ")
