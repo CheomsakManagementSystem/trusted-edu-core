@@ -6,6 +6,7 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getDocFromServer,
   getDocs,
   onSnapshot,
   orderBy,
@@ -14,6 +15,7 @@ import {
   serverTimestamp,
   updateDoc,
   where,
+  type WriteBatch,
 } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 import { db, storage } from "@/lib/firebase";
@@ -28,6 +30,9 @@ export type JoinRequestStatus = "pending" | "approved" | "rejected";
 export type ReportAssignmentStatus = "completed" | "duplicate_pending" | "unassigned_pending";
 
 export type StudentLite = {
+  /** Firestore users 문서의 실제 Document ID */
+  docId: string;
+  /** Firebase Auth UID */
   uid: string;
   name: string;
   email: string;
@@ -1613,39 +1618,40 @@ export const publishReportBatch = async (
 };
 
 export const fetchStudents = async (): Promise<StudentLite[]> => {
-  try {
-    const snap = await getDocs(query(collection(db, "users"), where("role", "in", ["student", "STUDENT"])));
-    return snap.docs.map((docSnap) => {
-      const data = docSnap.data() as {
-        uid?: string;
-        name?: string;
-        email?: string;
-        classId?: string;
-        classIds?: unknown;
-        className?: string;
-        studentId?: string;
-        phoneNumber?: string;
-        phoneSuffix?: string;
-      };
-      const phoneDigits = (data.phoneNumber ?? "").replace(/\D/g, "");
-      const phoneLast4 = phoneDigits.length >= 4 ? phoneDigits.slice(-4) : null;
-      const studentId = data.studentId ?? data.phoneSuffix ?? phoneLast4 ?? null;
-      const classIds = normalizeClassIds(data.classIds, data.classId ?? null);
-      return {
-        uid: data.uid ?? docSnap.id,
-        name: data.name ?? "이름없음",
-        email: data.email ?? "",
-        classId: data.classId ?? null,
-        classIds,
-        className: data.className ?? null,
-        studentId,
-        phoneNumber: data.phoneNumber ?? null,
-        phoneSuffix: data.phoneSuffix ?? null,
-      };
-    });
-  } catch {
-    return [];
-  }
+  const snap = await getDocs(
+    query(collection(db, "users"), where("role", "in", ["student", "STUDENT"])),
+  );
+
+  return snap.docs.map((docSnap) => {
+    const data = docSnap.data() as {
+      uid?: string;
+      name?: string;
+      email?: string;
+      classId?: string;
+      classIds?: unknown;
+      className?: string;
+      studentId?: string;
+      phoneNumber?: string;
+      phoneSuffix?: string;
+    };
+    const phoneDigits = (data.phoneNumber ?? "").replace(/\D/g, "");
+    const phoneLast4 = phoneDigits.length >= 4 ? phoneDigits.slice(-4) : null;
+    const studentId = data.studentId ?? data.phoneSuffix ?? phoneLast4 ?? null;
+    const classIds = normalizeClassIds(data.classIds, data.classId ?? null);
+
+    return {
+      docId: docSnap.id,
+      uid: data.uid ?? docSnap.id,
+      name: data.name ?? "이름없음",
+      email: data.email ?? "",
+      classId: data.classId ?? null,
+      classIds,
+      className: data.className ?? null,
+      studentId,
+      phoneNumber: data.phoneNumber ?? null,
+      phoneSuffix: data.phoneSuffix ?? null,
+    };
+  });
 };
 
 export const fetchClasses = async (): Promise<ClassLite[]> => {
@@ -1661,10 +1667,10 @@ export const fetchClasses = async (): Promise<ClassLite[]> => {
 };
 
 export const submitClassJoinRequest = async (
-  student: Pick<StudentLite, "uid" | "name" | "email">,
+  student: Pick<StudentLite, "docId" | "uid" | "name" | "email">,
   classInfo: ClassLite,
 ): Promise<void> => {
-  const studentRef = doc(db, "users", student.uid);
+  const studentRef = doc(db, "users", student.docId);
   const studentSnap = await getDoc(studentRef);
 
   if (!studentSnap.exists()) {
@@ -1842,30 +1848,93 @@ export const subscribePendingReports = (
   );
 };
 
+type ReportAssignmentStudent = Pick<
+  StudentLite,
+  "docId" | "uid" | "name" | "studentId" | "classIds" | "className"
+>;
+
+export const resolveReportAssignmentClass = (
+  report: Partial<ReportRecord>,
+  student: ReportAssignmentStudent,
+) => {
+  const classId = report.classId ?? resolvePrimaryClassId(student);
+  const className = report.className ?? (report.classId ? null : student.className ?? null);
+  return { classId, className };
+};
+
+const queueMissingStudentClass = (
+  batch: WriteBatch,
+  student: ReportAssignmentStudent,
+  classId: string | null,
+  className: string | null,
+): boolean => {
+  if (!classId || normalizeClassIds(student.classIds).includes(classId)) {
+    return false;
+  }
+
+  const hasExistingClass = normalizeClassIds(student.classIds).length > 0;
+  batch.update(doc(db, "users", student.docId), {
+    classIds: arrayUnion(classId),
+    isEnrolled: true,
+    enrollmentStatus: "active",
+    updatedAt: serverTimestamp(),
+    ...(hasExistingClass ? {} : { classId, className }),
+  });
+  return true;
+};
+
+const verifyStudentHasClass = async (
+  student: ReportAssignmentStudent,
+  classId: string | null,
+): Promise<void> => {
+  if (!classId) return;
+  const snapshot = await getDocFromServer(doc(db, "users", student.docId));
+  if (!snapshot.exists()) {
+    throw new Error("연결 대상 학생 문서를 찾을 수 없습니다.");
+  }
+  const data = snapshot.data() as { classIds?: unknown; classId?: string | null };
+  if (!normalizeClassIds(data.classIds, data.classId ?? null).includes(classId)) {
+    throw new Error("리포트 연결 후 학생 반 배정 검증에 실패했습니다.");
+  }
+};
+
 export const assignPendingReportToStudent = async (
   reportId: string,
-  student: Pick<StudentLite, "uid" | "name" | "studentId" | "classIds" | "className">,
+  student: ReportAssignmentStudent,
 ): Promise<void> => {
-  // studentId: customId(6~8자) 우선. 없으면 null → ReportView where("studentId") 쿼리와 정합
-  const resolvedStudentId = (student.studentId ?? "").trim() || null;
-  const primaryClassId = resolvePrimaryClassId(student);
-  await updateDoc(doc(db, "reports", reportId), {
+  const reportRef = doc(db, "reports", reportId);
+  const reportSnap = await getDocFromServer(reportRef);
+  if (!reportSnap.exists()) {
+    throw new Error("연결할 리포트를 찾을 수 없습니다.");
+  }
+
+  const previous = reportSnap.data() as Partial<ReportRecord>;
+  const { classId, className } = resolveReportAssignmentClass(previous, student);
+  const batch = writeBatch(db);
+  const classAdded = queueMissingStudentClass(batch, student, classId, className);
+
+  batch.update(reportRef, {
     studentUid: student.uid,
-    studentId: resolvedStudentId,
+    studentId: (student.studentId ?? "").trim() || null,
     studentName: student.name ?? "",
-    classId: primaryClassId,
-    className: student.className ?? null,
+    classId,
+    className,
     assignmentStatus: "completed",
     status: "completed",
     assignedAt: serverTimestamp(),
-    matchReason: "관리자가 수동으로 학생을 연결했습니다.",
+    matchReason: classAdded
+      ? "관리자가 학생을 반에 추가하고 리포트를 연결했습니다."
+      : "관리자가 수동으로 학생을 연결했습니다.",
     updatedAt: serverTimestamp(),
   });
+
+  await batch.commit();
+  if (classAdded) await verifyStudentHasClass(student, classId);
 };
 
 export const assignReportToStudentOverride = async (
   reportId: string,
-  student: Pick<StudentLite, "uid" | "name" | "studentId" | "classIds" | "className">,
+  student: ReportAssignmentStudent,
   actorRole?: string | null,
   actorUid?: string | null,
 ): Promise<void> => {
@@ -1874,23 +1943,30 @@ export const assignReportToStudentOverride = async (
   }
 
   const reportRef = doc(db, "reports", reportId);
-  const reportSnap = await getDoc(reportRef);
-  const previous = (reportSnap.data() ?? {}) as Partial<ReportRecord>;
+  const reportSnap = await getDocFromServer(reportRef);
+  if (!reportSnap.exists()) {
+    throw new Error("연결할 리포트를 찾을 수 없습니다.");
+  }
+
+  const previous = reportSnap.data() as Partial<ReportRecord>;
   const claimRef = previous.studentUid ? doc(db, "report_claims", `${reportId}_${previous.studentUid}`) : null;
   const claimSnap = claimRef ? await getDoc(claimRef) : null;
+  const { classId, className } = resolveReportAssignmentClass(previous, student);
   const batch = writeBatch(db);
-  const primaryClassId = resolvePrimaryClassId(student);
+  const classAdded = queueMissingStudentClass(batch, student, classId, className);
 
   batch.update(reportRef, {
     studentUid: student.uid,
     studentName: student.name ?? "",
     studentId: (student.studentId ?? "").trim() || null,
-    classId: primaryClassId,
-    className: student.className ?? null,
+    classId,
+    className,
     assignmentStatus: "completed",
     status: "completed",
     matchMethod: "admin_manual_override",
-    matchReason: "관리자가 수동으로 학생을 변경했습니다.",
+    matchReason: classAdded
+      ? "관리자가 학생을 반에 추가하고 리포트를 변경했습니다."
+      : "관리자가 수동으로 학생을 변경했습니다.",
     assignedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
@@ -1905,11 +1981,12 @@ export const assignReportToStudentOverride = async (
   }
 
   await batch.commit();
+  if (classAdded) await verifyStudentHasClass(student, classId);
 };
 
 export const fixAndAssignPendingReport = async (
   reportId: string,
-  student: Pick<StudentLite, "uid" | "name" | "studentId" | "classIds" | "className">,
+  student: ReportAssignmentStudent,
   source: {
     sourceName: string;
     sourceStudentId: string;
@@ -1924,8 +2001,12 @@ export const fixAndAssignPendingReport = async (
   }
 
   const reportRef = doc(db, "reports", reportId);
-  const snap = await getDoc(reportRef);
-  const prev = (snap.data() ?? {}) as Partial<ReportRecord>;
+  const snap = await getDocFromServer(reportRef);
+  if (!snap.exists()) {
+    throw new Error("수정할 리포트를 찾을 수 없습니다.");
+  }
+
+  const prev = snap.data() as Partial<ReportRecord>;
   const parsedJson = prev.parsedJson
     ? {
         ...prev.parsedJson,
@@ -1935,15 +2016,16 @@ export const fixAndAssignPendingReport = async (
         writtenAt: source.examDate.trim(),
       }
     : undefined;
+  const { classId, className } = resolveReportAssignmentClass(prev, student);
   const batch = writeBatch(db);
-  const primaryClassId = resolvePrimaryClassId(student);
+  const classAdded = queueMissingStudentClass(batch, student, classId, className);
 
   batch.update(reportRef, {
     studentUid: student.uid,
     studentName: student.name ?? "",
     studentId: (student.studentId ?? "").trim() || null,
-    classId: primaryClassId,
-    className: student.className ?? null,
+    classId,
+    className,
     sourceName: source.sourceName.trim(),
     sourceStudentId: source.sourceStudentId.trim() || null,
     sourcePhoneSuffix: source.sourcePhoneSuffix.trim() || null,
@@ -1952,7 +2034,9 @@ export const fixAndAssignPendingReport = async (
     assignmentStatus: "completed",
     status: "completed",
     matchMethod: "admin_manual_fix",
-    matchReason: "관리자가 원본 정보를 수정하고 학생을 배정했습니다.",
+    matchReason: classAdded
+      ? "관리자가 원본 정보를 수정하고 학생을 반에 추가한 뒤 배정했습니다."
+      : "관리자가 원본 정보를 수정하고 학생을 배정했습니다.",
     assignedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
     fixedBy: actorUid ?? null,
@@ -1961,7 +2045,9 @@ export const fixAndAssignPendingReport = async (
   });
 
   await batch.commit();
+  if (classAdded) await verifyStudentHasClass(student, classId);
 };
+
 
 export const subscribeOpenReportClaims = (
   onChange: (claims: ReportClaimTriageRecord[]) => void,

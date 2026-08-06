@@ -133,10 +133,10 @@ const UploadDashboard = () => {
   const [cleanupSearch, setCleanupSearch] = useState("");
   const [pendingMatchTarget, setPendingMatchTarget] = useState<ReportRecord | null>(null);
   const [pendingMatchSearch, setPendingMatchSearch] = useState("");
-  const [pendingMatchStudentUid, setPendingMatchStudentUid] = useState<string>("");
+  const [pendingMatchStudentDocId, setPendingMatchStudentDocId] = useState<string>("");
   const [fixTarget, setFixTarget] = useState<ReportRecord | null>(null);
   const [fixSearch, setFixSearch] = useState("");
-  const [fixStudentUid, setFixStudentUid] = useState("");
+  const [fixStudentDocId, setFixStudentDocId] = useState("");
   const [savingFix, setSavingFix] = useState(false);
   const [openClaims, setOpenClaims] = useState<ReportClaimTriageRecord[]>([]);
   const [editingReport, setEditingReport] = useState<ReportRecord | null>(null);
@@ -764,8 +764,8 @@ const UploadDashboard = () => {
   };
 
   const handleAssignPending = async (report: ReportRecord) => {
-    const studentUid = pendingSelectedStudent[report.id];
-    if (!studentUid) {
+    const studentDocId = pendingSelectedStudent[report.id];
+    if (!studentDocId) {
       toast({
         variant: "destructive",
         title: "연결 실패",
@@ -774,7 +774,7 @@ const UploadDashboard = () => {
       return;
     }
 
-    const target = students.find((student) => student.uid === studentUid);
+    const target = students.find((student) => student.docId === studentDocId);
     if (!target) {
       toast({
         variant: "destructive",
@@ -819,7 +819,7 @@ const UploadDashboard = () => {
     setPendingMatchSearch(
       `${report.sourceName || ""} ${report.sourceStudentId || report.sourcePhoneSuffix || ""}`.trim(),
     );
-    setPendingMatchStudentUid("");
+    setPendingMatchStudentDocId("");
   };
 
   const handleOpenFixModal = (report: ReportRecord) => {
@@ -831,17 +831,17 @@ const UploadDashboard = () => {
       examDate: report.examDate || report.writtenAt || "",
     });
     setFixSearch(`${report.sourceName || report.studentName || ""} ${report.sourceStudentId || report.sourcePhoneSuffix || ""}`.trim());
-    setFixStudentUid("");
+    setFixStudentDocId("");
   };
 
   const closeFixModal = () => {
     setFixTarget(null);
     setFixSearch("");
-    setFixStudentUid("");
+    setFixStudentDocId("");
   };
 
   const handleApplyFix = async () => {
-    if (!fixTarget || !fixStudentUid) {
+    if (!fixTarget || !fixStudentDocId) {
       toast({
         variant: "destructive",
         title: "수정 및 배정 실패",
@@ -850,7 +850,7 @@ const UploadDashboard = () => {
       return;
     }
 
-    const student = students.find((item) => item.uid === fixStudentUid);
+    const student = students.find((item) => item.docId === fixStudentDocId);
     if (!student) {
       toast({
         variant: "destructive",
@@ -886,7 +886,7 @@ const UploadDashboard = () => {
   };
 
   const handleApplyPendingMatch = async () => {
-    if (!pendingMatchTarget || !pendingMatchStudentUid) {
+    if (!pendingMatchTarget || !pendingMatchStudentDocId) {
       toast({
         variant: "destructive",
         title: "학생 매칭 실패",
@@ -895,7 +895,7 @@ const UploadDashboard = () => {
       return;
     }
 
-    const student = students.find((item) => item.uid === pendingMatchStudentUid);
+    const student = students.find((item) => item.docId === pendingMatchStudentDocId);
     if (!student) {
       toast({
         variant: "destructive",
@@ -921,7 +921,7 @@ const UploadDashboard = () => {
       setPublishedReports(publishedRows);
       setPendingMatchTarget(null);
       setPendingMatchSearch("");
-      setPendingMatchStudentUid("");
+      setPendingMatchStudentDocId("");
       toast({
         title: "학생 매칭 완료",
         description: `${formatStudentLabel(student)} 학생으로 자료를 연결했습니다.`,
@@ -1717,7 +1717,7 @@ const UploadDashboard = () => {
                       <SelectContent>
                         <SelectItem value="none">학생 선택</SelectItem>
                         {options.map((student) => (
-                          <SelectItem key={student.uid} value={student.uid}>
+                          <SelectItem key={student.docId} value={student.docId}>
                             {formatStudentLabel(student)} ({student.email || "이메일 없음"})
                           </SelectItem>
                         ))}
@@ -1840,11 +1840,11 @@ const UploadDashboard = () => {
               <div className="max-h-[300px] space-y-2 overflow-y-auto pr-1">
                 {fixCandidates.map((student) => (
                   <button
-                    key={student.uid}
+                    key={student.docId}
                     type="button"
-                    onClick={() => setFixStudentUid(student.uid)}
+                    onClick={() => setFixStudentDocId(student.docId)}
                     className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${
-                      fixStudentUid === student.uid
+                      fixStudentDocId === student.docId
                         ? "border-primary bg-primary/5"
                         : "border-border bg-background hover:border-primary/30 hover:bg-muted/40"
                     }`}
@@ -1864,7 +1864,7 @@ const UploadDashboard = () => {
               <Button variant="outline" onClick={closeFixModal} disabled={savingFix}>
                 취소
               </Button>
-              <Button onClick={handleApplyFix} disabled={!fixStudentUid || savingFix || !canManageReports}>
+              <Button onClick={handleApplyFix} disabled={!fixStudentDocId || savingFix || !canManageReports}>
                 {savingFix ? "저장 중..." : "확인"}
               </Button>
             </DialogFooter>
@@ -1877,7 +1877,7 @@ const UploadDashboard = () => {
             if (!open) {
               setPendingMatchTarget(null);
               setPendingMatchSearch("");
-              setPendingMatchStudentUid("");
+              setPendingMatchStudentDocId("");
             }
           }}
         >
@@ -1905,11 +1905,11 @@ const UploadDashboard = () => {
               <div className="max-h-[320px] space-y-2 overflow-y-auto pr-1">
                 {pendingMatchCandidates.map((student) => (
                   <button
-                    key={student.uid}
+                    key={student.docId}
                     type="button"
-                    onClick={() => setPendingMatchStudentUid(student.uid)}
+                    onClick={() => setPendingMatchStudentDocId(student.docId)}
                     className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${
-                      pendingMatchStudentUid === student.uid
+                      pendingMatchStudentDocId === student.docId
                         ? "border-primary bg-primary/5"
                         : "border-border bg-background hover:border-primary/30 hover:bg-muted/40"
                     }`}
@@ -1931,13 +1931,13 @@ const UploadDashboard = () => {
                 onClick={() => {
                   setPendingMatchTarget(null);
                   setPendingMatchSearch("");
-                  setPendingMatchStudentUid("");
+                  setPendingMatchStudentDocId("");
                 }}
                 disabled={Boolean(resolvingPendingId)}
               >
                 취소
               </Button>
-              <Button onClick={handleApplyPendingMatch} disabled={!pendingMatchStudentUid || Boolean(resolvingPendingId) || !canManageReports}>
+              <Button onClick={handleApplyPendingMatch} disabled={!pendingMatchStudentDocId || Boolean(resolvingPendingId) || !canManageReports}>
                 {resolvingPendingId ? "처리 중..." : "선택 학생으로 배송"}
               </Button>
             </DialogFooter>

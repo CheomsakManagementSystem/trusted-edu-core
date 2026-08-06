@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { resolveMatchStatus, type StudentLite } from "@/lib/pdfProcessor";
+import { resolveMatchStatus, resolveReportAssignmentClass, type StudentLite } from "@/lib/pdfProcessor";
 
 const student = (overrides: Partial<StudentLite>): StudentLite => ({
+  docId: overrides.docId ?? overrides.uid ?? "doc-id",
   uid: overrides.uid ?? "uid",
   name: overrides.name ?? "홍길동",
   email: overrides.email ?? "",
@@ -63,4 +64,21 @@ describe("resolveMatchStatus", () => {
     expect(result.status).toBe("ready");
     expect(result.selectedStudentUid).toBe("b");
   });
+  it("keeps the report class when manually linking a student", () => {
+    const target = student({
+      docId: "custom-doc",
+      uid: "auth-uid",
+      classId: "student-primary",
+      classIds: ["student-primary"],
+      className: "학생 기존 반",
+    });
+
+    expect(
+      resolveReportAssignmentClass(
+        { classId: "report-class", className: "리포트 업로드 반" },
+        target,
+      ),
+    ).toEqual({ classId: "report-class", className: "리포트 업로드 반" });
+  });
+
 });
