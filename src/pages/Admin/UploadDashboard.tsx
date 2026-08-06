@@ -44,6 +44,7 @@ import {
   formatExamDate,
   fixAndAssignPendingReport,
   getReportExamTitle,
+  getUploadCandidateValidationError,
   movePublishedReportToPending,
   normalizeDateString,
   prepareUploadCandidates,
@@ -468,10 +469,8 @@ const UploadDashboard = () => {
           return row;
         }
         const next = updater(row);
-        const recovered =
-          requiredScoreKeys.every((key) => Number.isFinite(next.parsed.scores[key])) &&
-          next.parsed.feedback.trim().length > 0;
-        return recovered ? { ...next, parseError: undefined } : next;
+        const parseError = getUploadCandidateValidationError(next.parsed) ?? undefined;
+        return { ...next, parseError };
       }),
     );
   };
@@ -511,26 +510,21 @@ const UploadDashboard = () => {
           ...row.parsed.scores,
           [field]: Number.isFinite(numeric) ? numeric : null,
         },
+        scoreParse: {
+          confidence: "manual",
+          method: "manual",
+          warnings: [],
+        },
       },
     }));
   };
 
   const hasAnyInvalidRow = useMemo(
-    () =>
-      rows.some(
-        (row) =>
-          requiredScoreKeys.some((key) => !Number.isFinite(row.parsed.scores[key])) ||
-          !row.parsed.feedback.trim(),
-      ),
+    () => rows.some((row) => Boolean(getUploadCandidateValidationError(row.parsed))),
     [rows],
   );
   const hasAnyReadyRow = useMemo(
-    () =>
-      rows.some(
-        (row) =>
-          requiredScoreKeys.every((key) => Number.isFinite(row.parsed.scores[key])) &&
-          row.parsed.feedback.trim().length > 0,
-      ),
+    () => rows.some((row) => !getUploadCandidateValidationError(row.parsed)),
     [rows],
   );
   const readByReportId = useMemo(
@@ -1244,9 +1238,7 @@ const UploadDashboard = () => {
 
           <div className="space-y-4">
             {rows.map((row) => {
-              const invalidRow =
-                requiredScoreKeys.some((key) => !Number.isFinite(row.parsed.scores[key])) ||
-                !row.parsed.feedback.trim();
+              const invalidRow = Boolean(getUploadCandidateValidationError(row.parsed));
               return (
                 <div
                   key={row.id}
