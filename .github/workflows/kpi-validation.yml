@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - main
+      - develop
   workflow_dispatch:
 
 permissions:
@@ -23,6 +24,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Export source
+        uses: actions/upload-artifact@v4
+        with:
+          name: develop-source
+          path: .
+          include-hidden-files: true
+          retention-days: 1
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
