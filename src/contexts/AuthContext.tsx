@@ -16,6 +16,7 @@ import {
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   limit,
   onSnapshot,
@@ -59,17 +60,14 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
-  // ref로 unsubscribe 관리 → re-subscribe 시 클로저 문제 방지
   const unsubscribeProfileRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
     const subscribeToProfile = async (firebaseUser: User) => {
-      // ① 레거시 직접 조회 (users/{uid})
       const uidRef = doc(db, "users", firebaseUser.uid);
 
-      // ② uid 필드 기반 쿼리 (신형 users/{customId} 문서)
       const resolveRef = async () => {
         try {
           const q = query(
@@ -84,10 +82,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         }
       };
 
-      // 어떤 ref를 구독할지 결정
       let targetRef = uidRef;
       try {
-        const { getDoc } = await import("firebase/firestore");
         const directSnap = await getDoc(uidRef);
         if (!directSnap.exists()) {
           const found = await resolveRef();
@@ -104,7 +100,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         targetRef,
         async (snap) => {
           if (!snap.exists()) {
-            // 마이그레이션 배치로 문서가 삭제된 경우 → 새 문서로 재구독
             if (!cancelled) {
               unsubscribeProfileRef.current?.();
               unsubscribeProfileRef.current = null;
@@ -126,9 +121,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
             needsMigration?: boolean;
           };
 
-          console.log("Loaded user data:", data);
-          console.log("Loaded classIds:", data.classIds);
-
           const inferredStudentId =
             data.studentId ??
             data.phoneSuffix ??
@@ -136,7 +128,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
           const role = normalizeRole(data.role);
           const needsMigration = data.needsMigration === true;
-
           const newClassIds = normalizeClassIds(data.classIds, data.classId);
 
           setUser((prev) => ({
@@ -176,7 +167,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       }
 
       setLoading(true);
-      subscribeToProfile(firebaseUser);
+      void subscribeToProfile(firebaseUser);
     });
 
     return () => {
