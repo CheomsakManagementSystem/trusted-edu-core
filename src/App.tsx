@@ -3,9 +3,20 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import { AuthProvider } from "@/contexts/AuthContext";
-import { RequireAdmin, RequireAuth, RequireStaff } from "@/components/RequireAuth";
+import { BrowserRouter, Outlet, Route, Routes } from "react-router-dom";
+
+const AuthProvider = lazy(() =>
+  import("@/contexts/AuthContext").then((module) => ({ default: module.AuthProvider })),
+);
+const RequireAuth = lazy(() =>
+  import("@/components/RequireAuth").then((module) => ({ default: module.RequireAuth })),
+);
+const RequireStaff = lazy(() =>
+  import("@/components/RequireAuth").then((module) => ({ default: module.RequireStaff })),
+);
+const RequireAdmin = lazy(() =>
+  import("@/components/RequireAuth").then((module) => ({ default: module.RequireAdmin })),
+);
 
 const Login = lazy(() => import("./pages/Login"));
 const Signup = lazy(() => import("./pages/Signup"));
@@ -26,17 +37,24 @@ const RouteFallback = () => (
   </div>
 );
 
+const AuthenticatedLayout = () => (
+  <AuthProvider>
+    <Outlet />
+  </AuthProvider>
+);
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <Toaster />
       <Sonner />
       <BrowserRouter>
-        <AuthProvider>
-          <Suspense fallback={<RouteFallback />}>
-            <Routes>
-              <Route path="/" element={<Landing />} />
-              <Route path="/landing" element={<Landing />} />
+        <Suspense fallback={<RouteFallback />}>
+          <Routes>
+            <Route path="/" element={<Landing />} />
+            <Route path="/landing" element={<Landing />} />
+
+            <Route element={<AuthenticatedLayout />}>
               <Route path="/login" element={<Login />} />
               <Route path="/signup" element={<Signup />} />
               <Route path="/register" element={<Signup />} />
@@ -83,11 +101,11 @@ const App = () => (
                   </RequireAdmin>
                 }
               />
+            </Route>
 
-              <Route path="*" element={<NotFound />} />
-            </Routes>
-          </Suspense>
-        </AuthProvider>
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </Suspense>
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>
