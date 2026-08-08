@@ -29,7 +29,9 @@ jobs:
 
       - name: Apply render performance patch
         if: github.event_name == 'pull_request' && github.head_ref == 'perf/develop-latency-20260808'
-        run: node scripts/apply-render-performance-patch.mjs
+        run: |
+          sed -i 's/^const handleRefreshReadStatus/  const handleRefreshReadStatus/' src/pages/Admin/UploadDashboard.tsx
+          node scripts/apply-render-performance-patch.mjs
 
       - name: Commit render performance patch
         if: github.event_name == 'pull_request' && github.head_ref == 'perf/develop-latency-20260808'
