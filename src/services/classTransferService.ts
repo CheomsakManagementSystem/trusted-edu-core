@@ -3,15 +3,20 @@ import {
   arrayUnion,
   collection,
   doc,
+  documentId,
   getDocFromServer,
+  getDocsFromServer,
+  query,
   serverTimestamp,
   updateDoc,
+  where,
   writeBatch,
   type WriteBatch,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
 const MAX_BATCH_WRITES = 450;
+const MAX_IN_QUERY_VALUES = 30;
 
 export type TransferClassTarget = {
   id: string;
@@ -71,6 +76,11 @@ const sameClassIds = (left: string[], right: string[]) => {
   return JSON.stringify(a) === JSON.stringify(b);
 };
 
+const matchesExpectedClassIds = (
+  classIds: string[],
+  expected: string[] | ((classIds: string[]) => boolean),
+) => (typeof expected === "function" ? expected(classIds) : sameClassIds(classIds, expected));
+
 const verifyStudentClassIds = async (
   student: StudentDocumentTarget,
   expected: string[] | ((classIds: string[]) => boolean),
@@ -82,10 +92,51 @@ const verifyStudentClassIds = async (
 
   const data = snapshot.data() as { classIds?: unknown; classId?: string | null };
   const classIds = normalizeClassIds(data.classIds, data.classId ?? null);
-  const valid = typeof expected === "function" ? expected(classIds) : sameClassIds(classIds, expected);
-  if (!valid) {
+  if (!matchesExpectedClassIds(classIds, expected)) {
     throw new Error("반 정보 저장 후 서버 검증에 실패했습니다. 새로고침 후 다시 시도해주세요.");
   }
+};
+
+const verifyStudentClassIdsInBatches = async (
+  students: StudentDocumentTarget[],
+  expected: string[] | ((classIds: string[]) => boolean),
+): Promise<void> => {
+  if (!students.length) return;
+
+  const uniqueStudents = Array.from(
+    new Map(students.map((student) => [requireStudentDocId(student), student])).values(),
+  );
+  const chunks: StudentDocumentTarget[][] = [];
+  for (let start = 0; start < uniqueStudents.length; start += MAX_IN_QUERY_VALUES) {
+    chunks.push(uniqueStudents.slice(start, start + MAX_IN_QUERY_VALUES));
+  }
+
+  await Promise.all(
+    chunks.map(async (chunk) => {
+      const docIds = chunk.map(requireStudentDocId);
+      const snapshot = await getDocsFromServer(
+        query(collection(db, "users"), where(documentId(), "in", docIds)),
+      );
+      const dataById = new Map(
+        snapshot.docs.map((docSnap) => [
+          docSnap.id,
+          docSnap.data() as { classIds?: unknown; classId?: string | null },
+        ]),
+      );
+
+      for (const student of chunk) {
+        const docId = requireStudentDocId(student);
+        const data = dataById.get(docId);
+        if (!data) {
+          throw new Error(`학생 문서를 찾을 수 없습니다: users/${docId}`);
+        }
+        const classIds = normalizeClassIds(data.classIds, data.classId ?? null);
+        if (!matchesExpectedClassIds(classIds, expected)) {
+          throw new Error("반 정보 저장 후 서버 검증에 실패했습니다. 새로고침 후 다시 시도해주세요.");
+        }
+      }
+    }),
+  );
 };
 
 const commitInChunks = async (
@@ -174,11 +225,7 @@ export const bulkUpdateStudentClassAssignments = async (
   await commitInChunks(students, (batch, student) => {
     batch.update(getStudentRef(student), syncClassFields(targetClass));
   });
-  await Promise.all(
-    students.map((student) =>
-      verifyStudentClassIds(student, targetClass ? [targetClass.id] : []),
-    ),
-  );
+  await verifyStudentClassIdsInBatches(students, targetClass ? [targetClass.id] : []);
 };
 
 // ─── classIds[] 배열 기반 다중 반 지원 ─────────────────────────────────────
@@ -244,10 +291,9 @@ export const bulkAddClassIdToStudents = async (
       updatedAt: serverTimestamp(),
     });
   });
-  await Promise.all(
-    students.map((student) =>
-      verifyStudentClassIds(student, (classIds) => classIds.includes(classId)),
-    ),
+  await verifyStudentClassIdsInBatches(
+    students,
+    (classIds) => classIds.includes(classId),
   );
 };
 
@@ -268,5 +314,5 @@ export const bulkUpdateStudentClassIds = async (
       updatedAt: serverTimestamp(),
     });
   });
-  await Promise.all(students.map((student) => verifyStudentClassIds(student, deduped)));
+  await verifyStudentClassIdsInBatches(students, deduped);
 };
