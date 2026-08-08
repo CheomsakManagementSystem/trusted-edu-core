@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate:
@@ -24,6 +24,24 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - name: Apply render performance patch
+        if: github.event_name == 'pull_request' && github.head_ref == 'perf/develop-latency-20260808'
+        run: node scripts/apply-render-performance-patch.mjs
+
+      - name: Commit render performance patch
+        if: github.event_name == 'pull_request' && github.head_ref == 'perf/develop-latency-20260808'
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/pages/Admin/UploadDashboard.tsx src/pages/Admin/ClassManager.tsx
+          git commit -m "perf: defer archive load and skip offscreen rendering"
+          git push origin HEAD:${{ github.head_ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
