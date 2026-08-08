@@ -684,6 +684,7 @@ const ClassManager = () => {
                 <label
                   key={student.docId}
                   className="flex cursor-pointer items-center justify-between rounded-md border border-border bg-background px-3 py-2"
+                  style={{ contentVisibility: "auto", containIntrinsicSize: "64px" }}
                 >
                   <div className="flex items-center gap-3">
                     <Checkbox
@@ -788,6 +789,7 @@ const ClassManager = () => {
                     <div
                       key={`manage-${student.docId}`}
                       className="rounded-md border border-border bg-background px-3 py-3 space-y-2"
+                      style={{ contentVisibility: "auto", containIntrinsicSize: "112px" }}
                     >
                       <div className="flex items-start gap-3">
                         <div className="flex items-center pt-0.5">
