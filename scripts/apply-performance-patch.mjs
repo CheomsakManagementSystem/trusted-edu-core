@@ -6,9 +6,7 @@ const write = (path, content) => fs.writeFileSync(path, content);
 const replaceOnce = (path, before, after, alreadyMarker) => {
   const source = read(path);
   if (alreadyMarker && source.includes(alreadyMarker)) return;
-  if (!source.includes(before)) {
-    throw new Error(`${path}: replacement target not found`);
-  }
+  if (!source.includes(before)) throw new Error(`${path}: replacement target not found`);
   write(path, source.replace(before, after));
 };
 
@@ -17,9 +15,7 @@ const replaceSection = (path, startMarker, endMarker, replacement, alreadyMarker
   if (alreadyMarker && source.includes(alreadyMarker)) return;
   const start = source.indexOf(startMarker);
   const end = source.indexOf(endMarker, start + startMarker.length);
-  if (start < 0 || end < 0) {
-    throw new Error(`${path}: section markers not found: ${startMarker}`);
-  }
+  if (start < 0 || end < 0) throw new Error(`${path}: section markers not found: ${startMarker}`);
   write(path, `${source.slice(0, start)}${replacement.trim()}\n\n${source.slice(end)}`);
 };
 
@@ -104,89 +100,76 @@ export const publishReportBatch = async (
     onOverallProgress?.(overall);
   };
 
-  await runWithConcurrency(
-    uploadRows,
-    MAX_CONCURRENT_REPORT_UPLOADS,
-    async (row, index) => {
-      try {
-        const validationError = getUploadCandidateValidationError(row.parsed);
-        if (validationError) {
-          throw new Error(validationError);
-        }
+  await runWithConcurrency(uploadRows, MAX_CONCURRENT_REPORT_UPLOADS, async (row, index) => {
+    try {
+      const validationError = getUploadCandidateValidationError(row.parsed);
+      if (validationError) throw new Error(validationError);
 
-        const resolvedStudent = row.selectedStudentUid
-          ? allStudents.find((entry) => entry.uid === row.selectedStudentUid) ?? null
-          : null;
-        const assignmentStatus: ReportAssignmentStatus = resolvedStudent
-          ? "completed"
-          : "unassigned_pending";
-        const storageOwnerUid = resolvedStudent?.uid ?? uid;
+      const resolvedStudent = row.selectedStudentUid
+        ? allStudents.find((entry) => entry.uid === row.selectedStudentUid) ?? null
+        : null;
+      const assignmentStatus: ReportAssignmentStatus = resolvedStudent
+        ? "completed"
+        : "unassigned_pending";
+      const storageOwnerUid = resolvedStudent?.uid ?? uid;
 
-        const url = await uploadPdfToStorage(storageOwnerUid, row.file, (fileProgress) => {
-          updateProgress(index, fileProgress);
-        });
-        const totalScore = resolveParsedTotalScore(row.parsed);
+      const url = await uploadPdfToStorage(storageOwnerUid, row.file, (fileProgress) => {
+        updateProgress(index, fileProgress);
+      });
+      const totalScore = resolveParsedTotalScore(row.parsed);
 
-        const created = await addDoc(collection(db, "reports"), {
-          uid,
-          classId: selectedClass.id,
-          className: selectedClass.name,
-          examDate,
-          fileHash: row.fileHash ?? null,
-          studentUid: resolvedStudent?.uid ?? null,
-          studentId: (resolvedStudent?.studentId ?? "").trim() || null,
-          studentName: (resolvedStudent?.name ?? row.parsed.name ?? "").trim(),
-          assignmentStatus,
-          status: resolvedStudent ? "completed" : "pending",
-          assignedAt: resolvedStudent ? serverTimestamp() : null,
-          sourceName: row.parsed.name || "",
-          sourceStudentId: row.parsed.studentId || null,
-          sourcePhoneSuffix: row.parsed.phoneSuffix || null,
-          sourceClassName: row.parsed.className || null,
-          matchReason: row.matchReason ?? null,
-          writtenAt: row.parsed.writtenAt || "",
-          reviewer: row.parsed.reviewer || "",
-          essayTopic: row.parsed.essayTopic || "",
-          grade: row.parsed.grade || "",
-          feedback: row.parsed.feedback || "",
-          scores: {
-            ...row.parsed.scores,
-            total: totalScore,
-          },
-          averageScores: row.parsed.averageScores,
-          convertedScores: row.parsed.convertedScores,
-          parsedJson: {
-            ...row.parsed,
-            scores: {
-              ...row.parsed.scores,
-              total: totalScore,
-            },
-          },
-          totalScore,
-          isRead: false,
-          fileUrl: url,
-          fileName: row.file.name,
-          sourcePage: row.sourcePage,
-          pageNumber: row.sourcePage,
-          createdAt: serverTimestamp(),
-        });
+      const created = await addDoc(collection(db, "reports"), {
+        uid,
+        classId: selectedClass.id,
+        className: selectedClass.name,
+        examDate,
+        fileHash: row.fileHash ?? null,
+        studentUid: resolvedStudent?.uid ?? null,
+        studentId: (resolvedStudent?.studentId ?? "").trim() || null,
+        studentName: (resolvedStudent?.name ?? row.parsed.name ?? "").trim(),
+        assignmentStatus,
+        status: resolvedStudent ? "completed" : "pending",
+        assignedAt: resolvedStudent ? serverTimestamp() : null,
+        sourceName: row.parsed.name || "",
+        sourceStudentId: row.parsed.studentId || null,
+        sourcePhoneSuffix: row.parsed.phoneSuffix || null,
+        sourceClassName: row.parsed.className || null,
+        matchReason: row.matchReason ?? null,
+        writtenAt: row.parsed.writtenAt || "",
+        reviewer: row.parsed.reviewer || "",
+        essayTopic: row.parsed.essayTopic || "",
+        grade: row.parsed.grade || "",
+        feedback: row.parsed.feedback || "",
+        scores: { ...row.parsed.scores, total: totalScore },
+        averageScores: row.parsed.averageScores,
+        convertedScores: row.parsed.convertedScores,
+        parsedJson: {
+          ...row.parsed,
+          scores: { ...row.parsed.scores, total: totalScore },
+        },
+        totalScore,
+        isRead: false,
+        fileUrl: url,
+        fileName: row.file.name,
+        sourcePage: row.sourcePage,
+        pageNumber: row.sourcePage,
+        createdAt: serverTimestamp(),
+      });
 
-        outcomes[index] = assignmentStatus === "completed" ? "completed" : "pending";
-        results[index] = { candidateId: row.id, success: true, reportId: created.id };
-
-        if (assignmentStatus === "completed" && row.status === "ready" && row.matchReason) {
-          notices[index] = `[${resolvedStudent?.name}] 학생에게 리포트를 전달했습니다`;
-        }
-      } catch (error) {
-        const reason = normalizePublishError(error);
-        outcomes[index] = "failure";
-        failureMessages[index] = `${row.file.name}: ${reason}`;
-        results[index] = { candidateId: row.id, success: false, error: reason };
-      } finally {
-        updateProgress(index, 100);
+      outcomes[index] = assignmentStatus === "completed" ? "completed" : "pending";
+      results[index] = { candidateId: row.id, success: true, reportId: created.id };
+      if (assignmentStatus === "completed" && row.status === "ready" && row.matchReason) {
+        notices[index] = "[" + (resolvedStudent?.name ?? "") + "] 학생에게 리포트를 전달했습니다";
       }
-    },
-  );
+    } catch (error) {
+      const reason = normalizePublishError(error);
+      outcomes[index] = "failure";
+      failureMessages[index] = row.file.name + ": " + reason;
+      results[index] = { candidateId: row.id, success: false, error: reason };
+    } finally {
+      updateProgress(index, 100);
+    }
+  });
 
   const successCount = outcomes.filter((status) => status === "completed").length;
   const pendingCount = outcomes.filter((status) => status === "pending").length;
@@ -208,69 +191,6 @@ export const publishReportBatch = async (
 
 replaceSection(
   pdfPath,
-  "export const fetchMyClassJoinRequests = async (",
-  "export const fetchPendingClassJoinRequests = async",
-  `
-export const fetchMyClassJoinRequests = async (
-  studentUid: string,
-): Promise<ClassJoinRequestRecord[]> => {
-  const snapshot = await getDocs(
-    query(collection(db, "classJoinRequests"), where("studentUid", "==", studentUid)),
-  );
-
-  return snapshot.docs
-    .map((docSnap) => {
-      const data = docSnap.data() as Omit<ClassJoinRequestRecord, "id">;
-      return { id: docSnap.id, ...data };
-    })
-    .sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0));
-};
-`,
-  "const snapshot = await getDocs(\n    query(collection(db, \"classJoinRequests\"), where(\"studentUid\", \"==\", studentUid)),\n  );\n\n  return snapshot.docs",
-);
-
-replaceSection(
-  pdfPath,
-  "export const fetchPendingClassJoinRequests = async",
-  "const resolveStudentDocumentId = async",
-  `
-export const fetchPendingClassJoinRequests = async (): Promise<ClassJoinRequestRecord[]> => {
-  const snapshot = await getDocs(
-    query(collection(db, "classJoinRequests"), where("status", "==", "pending")),
-  );
-
-  return snapshot.docs
-    .map((docSnap) => {
-      const data = docSnap.data() as Omit<ClassJoinRequestRecord, "id">;
-      return { id: docSnap.id, ...data };
-    })
-    .sort((a, b) => (a.createdAt?.toMillis() ?? 0) - (b.createdAt?.toMillis() ?? 0));
-};
-`,
-  ".sort((a, b) => (a.createdAt?.toMillis() ?? 0) - (b.createdAt?.toMillis() ?? 0));",
-);
-
-replaceSection(
-  pdfPath,
-  "export const fetchReportsByStudentUid = async",
-  "export const fetchPendingReports = async",
-  `
-export const fetchReportsByStudentUid = async (studentUid: string): Promise<ReportRecord[]> => {
-  const snapshot = await getDocs(
-    query(collection(db, "reports"), where("studentUid", "==", studentUid)),
-  );
-
-  return snapshot.docs
-    .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-    .filter((row) => row.assignmentStatus !== "duplicate_pending" && row.assignmentStatus !== "unassigned_pending")
-    .sort(compareReportsByExamDateDesc);
-};
-`,
-  "query(collection(db, \"reports\"), where(\"studentUid\", \"==\", studentUid)),",
-);
-
-replaceSection(
-  pdfPath,
   "export const fetchPendingReports = async",
   "export const subscribePendingReports = (",
   `
@@ -285,7 +205,7 @@ export const fetchPendingReports = async (): Promise<ReportRecord[]> => {
     .sort(compareReportsByExamDateDesc);
 };
 `,
-  "const statuses: ReportAssignmentStatus[] = [\"duplicate_pending\", \"unassigned_pending\"];\n  const snapshot = await getDocs",
+  "const snapshot = await getDocs(\n    query(collection(db, \"reports\"), where(\"assignmentStatus\", \"in\", statuses)),",
 );
 
 replaceSection(
@@ -307,7 +227,6 @@ const fetchReportRecordsByIds = async (reportIds: string[]): Promise<Map<string,
       getDocs(query(collection(db, "reports"), where(documentId(), "in", ids))),
     ),
   );
-
   const reports = new Map<string, ReportRecord>();
   snapshots.forEach((snapshot) => {
     snapshot.docs.forEach((docSnap) => {
@@ -346,7 +265,7 @@ export const subscribeOpenReportClaims = (
             id: claimDoc.id,
             reportId: data.reportId ?? "",
             studentUid: data.studentUid ?? "",
-            status: data.status ?? "open" as const,
+            status: (data.status ?? "open") as "open" | "resolved",
             createdAt: data.createdAt ?? null,
             updatedAt: data.updatedAt ?? null,
             resolvedAt: data.resolvedAt ?? null,
@@ -376,40 +295,6 @@ export const subscribeOpenReportClaims = (
   "fetchReportRecordsByIds",
 );
 
-replaceSection(
-  pdfPath,
-  "export const fetchReportsByClassId = async",
-  "export const fetchPublishedReports = async",
-  `
-export const fetchReportsByClassId = async (classId: string): Promise<ReportRecord[]> => {
-  const snapshot = await getDocs(
-    query(collection(db, "reports"), where("classId", "==", classId)),
-  );
-  return snapshot.docs
-    .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-    .sort(compareReportsByExamDateDesc);
-};
-`,
-  "query(collection(db, \"reports\"), where(\"classId\", \"==\", classId)),",
-);
-
-replaceSection(
-  pdfPath,
-  "export const fetchPublishedReports = async",
-  "export const updatePublishedReport = async",
-  `
-export const fetchPublishedReports = async (): Promise<ReportRecord[]> => {
-  const snapshot = await getDocs(
-    query(collection(db, "reports"), where("assignmentStatus", "==", "completed")),
-  );
-  return snapshot.docs
-    .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-    .sort(compareReportsByExamDateDesc);
-};
-`,
-  "query(collection(db, \"reports\"), where(\"assignmentStatus\", \"==\", \"completed\")),",
-);
-
 const adminPath = "src/pages/Admin/UploadDashboard.tsx";
 replaceOnce(
   adminPath,
@@ -435,7 +320,10 @@ replaceSection(
         .sort(compareReportsByExamDateDesc)
         .map((report) => ({
           report,
-          searchText: `${report.studentName} ${report.fileName} ${report.sourceName} ${report.essayTopic}`.toLowerCase(),
+          searchText: [report.studentName, report.fileName, report.sourceName, report.essayTopic]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase(),
         })),
     [publishedReports],
   );
@@ -526,7 +414,7 @@ replaceOnce(
 
 `,
   "",
-  "__removed_class_manager_debug_log__",
+  "__class_manager_debug_removed__",
 );
 replaceOnce(
   classManagerPath,
@@ -595,7 +483,7 @@ export const enqueueReportNotifications = async (
         reportId: reportDoc.id,
         category: "REPORT_COMPLETED",
         title: "첨삭이 도착했습니다",
-        message: `${data.studentName || "학생"}님의 '${data.essayTopic || "리포트"}' 첨삭이 완료되었습니다.`,
+        message: (data.studentName || "학생") + "님의 '" + (data.essayTopic || "리포트") + "' 첨삭이 완료되었습니다.",
         isRead: false,
         createdAt: serverTimestamp(),
         createdBy: actorUid,
