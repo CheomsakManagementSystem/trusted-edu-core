@@ -1,4 +1,4 @@
-import { DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import { Input } from "@/components/ui/input";
@@ -236,8 +236,10 @@ const UploadDashboard = () => {
     });
   };
 
+  const studentByUid = useMemo(() => new Map(students.map((student) => [student.uid, student])), [students]);
+
   const getClaimStudentLabel = (claim: ReportClaimTriageRecord) => {
-    const student = students.find((item) => item.uid === claim.studentUid);
+    const student = studentByUid.get(claim.studentUid);
     return student ? formatStudentLabel(student) : claim.report?.studentName || "기록 없음";
   };
 
@@ -545,29 +547,32 @@ const UploadDashboard = () => {
         .sort(compareReportsByExamDateDesc),
     [pendingReports],
   );
+const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
+  const searchablePublishedReports = useMemo(
+    () =>
+      [...publishedReports]
+        .sort(compareReportsByExamDateDesc)
+        .map((report) => ({
+          report,
+          searchText: [report.studentName, report.fileName, report.sourceName, report.essayTopic]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase(),
+        })),
+    [publishedReports],
+  );
   const filteredPublishedReports = useMemo(() => {
-    return [...publishedReports]
-      .sort(compareReportsByExamDateDesc)
-      .filter((report) => {
-        if (archiveClassFilter !== "all" && report.classId !== archiveClassFilter) {
-          return false;
-        }
-        const keyword = archiveStudentFilter.trim().toLowerCase();
-        if (keyword) {
-          const target = `${report.studentName} ${report.fileName} ${report.sourceName} ${report.essayTopic}`.toLowerCase();
-          if (!target.includes(keyword)) {
-            return false;
-          }
-        }
-        if (archiveReadFilter === "read" && !report.isRead) {
-          return false;
-        }
-        if (archiveReadFilter === "unread" && report.isRead) {
-          return false;
-        }
+    const keyword = deferredArchiveStudentFilter.trim().toLowerCase();
+    return searchablePublishedReports
+      .filter(({ report, searchText }) => {
+        if (archiveClassFilter !== "all" && report.classId !== archiveClassFilter) return false;
+        if (keyword && !searchText.includes(keyword)) return false;
+        if (archiveReadFilter === "read" && !report.isRead) return false;
+        if (archiveReadFilter === "unread" && report.isRead) return false;
         return true;
-      });
-  }, [archiveClassFilter, archiveReadFilter, archiveStudentFilter, publishedReports]);
+      })
+      .map(({ report }) => report);
+  }, [archiveClassFilter, archiveReadFilter, deferredArchiveStudentFilter, searchablePublishedReports]);
 
   const recentClassReports = useMemo(
     () => [...classReports].sort(compareReportsByExamDateDesc).slice(0, 20),
@@ -641,15 +646,17 @@ const UploadDashboard = () => {
     const measurement = startPerformanceTrace("report_publish_batch", { source: "admin_upload" });
 
     try {
-      const result = await publishReportBatch(
-        rows,
-        selectedClass,
-        selectedDateText,
-        students,
-        user.uid,
-        setProgress,
-      );
-      const controls = await getMasterControls();
+      const [result, controls] = await Promise.all([
+        publishReportBatch(
+          rows,
+          selectedClass,
+          selectedDateText,
+          students,
+          user.uid,
+          setProgress,
+        ),
+        getMasterControls(),
+      ]);
 
       setRows((prev) => {
         const mapById = new Map(result.results.map((item) => [item.candidateId, item]));
@@ -713,9 +720,11 @@ const UploadDashboard = () => {
         });
       }
 
-      const reports = await fetchReportsByClassId(selectedClass.id);
+      const [reports, pending] = await Promise.all([
+        fetchReportsByClassId(selectedClass.id),
+        fetchPendingReports(),
+      ]);
       setClassReports(reports);
-      const pending = await fetchPendingReports();
       setPendingReports(pending);
       measurement.stop({
         status: result.failureCount > 0 ? "partial" : "success",
@@ -742,14 +751,14 @@ const UploadDashboard = () => {
     }
   };
 
-  const handleRefreshReadStatus = async () => {
-    const published = await fetchPublishedReports();
+const handleRefreshReadStatus = async () => {
+    const [published, reports, pending] = await Promise.all([
+      fetchPublishedReports(),
+      selectedClass ? fetchReportsByClassId(selectedClass.id) : Promise.resolve(classReports),
+      fetchPendingReports(),
+    ]);
     setPublishedReports(published);
-    if (selectedClass) {
-      const reports = await fetchReportsByClassId(selectedClass.id);
-      setClassReports(reports);
-    }
-    const pending = await fetchPendingReports();
+    setClassReports(reports);
     setPendingReports(pending);
   };
 

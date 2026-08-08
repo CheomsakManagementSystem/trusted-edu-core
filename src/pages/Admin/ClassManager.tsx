@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useDeferredValue, useEffect, useMemo, useState } from "react";
 import {
   addDoc,
   collection,
@@ -132,10 +132,6 @@ const ClassManager = () => {
     loadData();
   }, []);
 
-  useEffect(() => {
-    console.log("데이터 동기화 분석: 현재 로드된 학생 목록", students.map(s => ({ docId: s.docId, uid: s.uid, classIds: s.classIds, status: s.classIds?.length > 0 ? 'assigned' : 'unassigned' })));
-  }, [students]);
-
   const selectedClass = useMemo(
     () => classes.find((item) => item.id === selectedClassId) ?? null,
     [classes, selectedClassId],
@@ -160,20 +156,22 @@ const ClassManager = () => {
     });
   }, [selectedClassId, students]);
 
+  const deferredSearch = useDeferredValue(search);
   const filteredStudents = useMemo(() => {
-    const searchQuery = search.toLowerCase();
+    const searchQuery = deferredSearch.toLowerCase();
     return assignableStudents.filter((student) => {
       const isMatch = (student.name ?? "").toLowerCase().includes(searchQuery);
       return isMatch;
     });
-  }, [assignableStudents, search]);
+  }, [assignableStudents, deferredSearch]);
 
   const classNameById = useMemo(() => {
     return new Map(classes.map((item) => [item.id, item.name]));
   }, [classes]);
 
+  const deferredAdminSearch = useDeferredValue(adminSearch);
   const filteredManageableStudents = useMemo(() => {
-    const keyword = adminSearch.trim().toLowerCase();
+    const keyword = deferredAdminSearch.trim().toLowerCase();
     return students.filter((student) => {
       if (!keyword) {
         return true;
@@ -184,7 +182,7 @@ const ClassManager = () => {
         (student.className ?? "").toLowerCase().includes(keyword)
       );
     });
-  }, [adminSearch, students]);
+  }, [deferredAdminSearch, students]);
 
   const studentsByClassId = useMemo(() => {
     const map = new Map<string, StudentLite[]>();

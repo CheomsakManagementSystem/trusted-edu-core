@@ -255,41 +255,41 @@ export const enqueueReportNotifications = async (
   reportIds: string[],
   actorUid: string,
 ): Promise<number> => {
-  if (!reportIds.length) {
-    return 0;
-  }
+  const uniqueIds = Array.from(new Set(reportIds.filter(Boolean)));
+  if (!uniqueIds.length) return 0;
 
-  let created = 0;
+  const reportSnapshots = await Promise.all(
+    chunkBy(uniqueIds, 30).map((ids) =>
+      getDocs(query(collection(db, "reports"), where(documentId(), "in", ids))),
+    ),
+  );
+  const reportDocs = reportSnapshots.flatMap((snapshot) => snapshot.docs).filter((reportDoc) => {
+    const data = reportDoc.data() as { studentUid?: string | null };
+    return Boolean(data.studentUid);
+  });
 
-  for (const ids of chunkBy(reportIds, 10)) {
-    const reportSnap = await getDocs(
-      query(collection(db, "reports"), where(documentId(), "in", ids)),
-    );
-
-    for (const reportDoc of reportSnap.docs) {
+  for (const docs of chunkBy(reportDocs, 400)) {
+    const batch = writeBatch(db);
+    docs.forEach((reportDoc) => {
       const data = reportDoc.data() as {
         studentUid?: string | null;
         studentName?: string;
         essayTopic?: string;
       };
-
-      if (!data.studentUid) {
-        continue;
-      }
-
-      await addDoc(collection(db, "notifications"), {
+      const notificationRef = doc(collection(db, "notifications"));
+      batch.set(notificationRef, {
         studentUid: data.studentUid,
         reportId: reportDoc.id,
         category: "REPORT_COMPLETED",
         title: "첨삭이 도착했습니다",
-        message: `${data.studentName || "학생"}님의 '${data.essayTopic || "리포트"}' 첨삭이 완료되었습니다.`,
+        message: (data.studentName || "학생") + "님의 '" + (data.essayTopic || "리포트") + "' 첨삭이 완료되었습니다.",
         isRead: false,
         createdAt: serverTimestamp(),
         createdBy: actorUid,
       });
-      created += 1;
-    }
+    });
+    await batch.commit();
   }
 
-  return created;
+  return reportDocs.length;
 };

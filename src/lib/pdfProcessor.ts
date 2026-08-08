@@ -5,6 +5,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  documentId,
   getDoc,
   getDocFromServer,
   getDocs,
@@ -1795,6 +1796,27 @@ const uploadPdfToStorage = async (
   return getDownloadURL(storageRef);
 };
 
+const MAX_CONCURRENT_REPORT_UPLOADS = 3;
+
+const runWithConcurrency = async <T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>,
+): Promise<void> => {
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        await worker(items[index], index);
+      }
+    }),
+  );
+};
+
 export const publishReportBatch = async (
   uploadRows: UploadCandidate[],
   selectedClass: ClassLite,
@@ -1821,35 +1843,35 @@ export const publishReportBatch = async (
     };
   }
 
-  let successCount = 0;
-  let pendingCount = 0;
-  const autoAssignedNotices: string[] = [];
-  const failures: string[] = [];
-  const results: Array<{ candidateId: string; success: boolean; reportId?: string; error?: string }> = [];
+  const results: Array<{ candidateId: string; success: boolean; reportId?: string; error?: string }> =
+    new Array(uploadRows.length);
+  const outcomes: Array<"completed" | "pending" | "failure"> = new Array(uploadRows.length);
+  const notices: Array<string | undefined> = new Array(uploadRows.length);
+  const failureMessages: Array<string | undefined> = new Array(uploadRows.length);
+  const progressByIndex = new Array<number>(uploadRows.length).fill(0);
 
-  for (let i = 0; i < uploadRows.length; i += 1) {
-    const row = uploadRows[i];
+  const updateProgress = (index: number, progress: number) => {
+    progressByIndex[index] = Math.max(progressByIndex[index], Math.min(100, progress));
+    const overall = progressByIndex.reduce((sum, value) => sum + value, 0) / uploadRows.length;
+    onOverallProgress?.(overall);
+  };
 
+  await runWithConcurrency(uploadRows, MAX_CONCURRENT_REPORT_UPLOADS, async (row, index) => {
     try {
       const validationError = getUploadCandidateValidationError(row.parsed);
-      if (validationError) {
-        throw new Error(validationError);
-      }
+      if (validationError) throw new Error(validationError);
 
       const resolvedStudent = row.selectedStudentUid
         ? allStudents.find((entry) => entry.uid === row.selectedStudentUid) ?? null
         : null;
-
-      const completedStudent = resolvedStudent;
-      const assignmentStatus: ReportAssignmentStatus = completedStudent ? "completed" : "unassigned_pending";
-
-      const storageOwnerUid = completedStudent?.uid ?? uid;
+      const assignmentStatus: ReportAssignmentStatus = resolvedStudent
+        ? "completed"
+        : "unassigned_pending";
+      const storageOwnerUid = resolvedStudent?.uid ?? uid;
 
       const url = await uploadPdfToStorage(storageOwnerUid, row.file, (fileProgress) => {
-        const baseProgress = (i / uploadRows.length) * 100;
-        onOverallProgress?.(baseProgress + fileProgress / uploadRows.length);
+        updateProgress(index, fileProgress);
       });
-
       const totalScore = resolveParsedTotalScore(row.parsed);
 
       const created = await addDoc(collection(db, "reports"), {
@@ -1858,14 +1880,12 @@ export const publishReportBatch = async (
         className: selectedClass.name,
         examDate,
         fileHash: row.fileHash ?? null,
-        studentUid: completedStudent?.uid ?? null,
-        // studentId: customId(6~8자) 우선. 레거시 유저는 phoneSuffix(4자리)가 들어옴.
-        // null/undefined/빈문자열 방어 → null 저장 (ReportView where 쿼리 정합성 유지)
-        studentId: (completedStudent?.studentId ?? "").trim() || null,
-        studentName: (completedStudent?.name ?? row.parsed.name ?? "").trim(),
+        studentUid: resolvedStudent?.uid ?? null,
+        studentId: (resolvedStudent?.studentId ?? "").trim() || null,
+        studentName: (resolvedStudent?.name ?? row.parsed.name ?? "").trim(),
         assignmentStatus,
-        status: completedStudent ? "completed" : "pending",
-        assignedAt: completedStudent ? serverTimestamp() : null,
+        status: resolvedStudent ? "completed" : "pending",
+        assignedAt: resolvedStudent ? serverTimestamp() : null,
         sourceName: row.parsed.name || "",
         sourceStudentId: row.parsed.studentId || null,
         sourcePhoneSuffix: row.parsed.phoneSuffix || null,
@@ -1876,18 +1896,12 @@ export const publishReportBatch = async (
         essayTopic: row.parsed.essayTopic || "",
         grade: row.parsed.grade || "",
         feedback: row.parsed.feedback || "",
-        scores: {
-          ...row.parsed.scores,
-          total: totalScore,
-        },
+        scores: { ...row.parsed.scores, total: totalScore },
         averageScores: row.parsed.averageScores,
         convertedScores: row.parsed.convertedScores,
         parsedJson: {
           ...row.parsed,
-          scores: {
-            ...row.parsed.scores,
-            total: totalScore,
-          },
+          scores: { ...row.parsed.scores, total: totalScore },
         },
         totalScore,
         isRead: false,
@@ -1898,22 +1912,25 @@ export const publishReportBatch = async (
         createdAt: serverTimestamp(),
       });
 
-      if (assignmentStatus === "completed") {
-        successCount += 1;
-        if (row.status === "ready" && row.matchReason) {
-          autoAssignedNotices.push(`[${completedStudent?.name}] 학생에게 리포트를 전달했습니다`);
-        }
-      } else {
-        pendingCount += 1;
+      outcomes[index] = assignmentStatus === "completed" ? "completed" : "pending";
+      results[index] = { candidateId: row.id, success: true, reportId: created.id };
+      if (assignmentStatus === "completed" && row.status === "ready" && row.matchReason) {
+        notices[index] = "[" + (resolvedStudent?.name ?? "") + "] 학생에게 리포트를 전달했습니다";
       }
-      results.push({ candidateId: row.id, success: true, reportId: created.id });
-      onOverallProgress?.(((i + 1) / uploadRows.length) * 100);
     } catch (error) {
       const reason = normalizePublishError(error);
-      failures.push(`${row.file.name}: ${reason}`);
-      results.push({ candidateId: row.id, success: false, error: reason });
+      outcomes[index] = "failure";
+      failureMessages[index] = row.file.name + ": " + reason;
+      results[index] = { candidateId: row.id, success: false, error: reason };
+    } finally {
+      updateProgress(index, 100);
     }
-  }
+  });
+
+  const successCount = outcomes.filter((status) => status === "completed").length;
+  const pendingCount = outcomes.filter((status) => status === "pending").length;
+  const failures = failureMessages.filter((message): message is string => Boolean(message));
+  const autoAssignedNotices = notices.filter((message): message is string => Boolean(message));
 
   return {
     successCount,
@@ -2154,27 +2171,14 @@ export const fetchReportsByStudentUid = async (studentUid: string): Promise<Repo
 };
 
 export const fetchPendingReports = async (): Promise<ReportRecord[]> => {
-  const reportsRef = collection(db, "reports");
   const statuses: ReportAssignmentStatus[] = ["duplicate_pending", "unassigned_pending"];
+  const snapshot = await getDocs(
+    query(collection(db, "reports"), where("assignmentStatus", "in", statuses)),
+  );
 
-  const fetchByStatus = async (status: ReportAssignmentStatus) => {
-    try {
-      const snapshot = await getDocs(
-        query(reportsRef, where("assignmentStatus", "==", status), orderBy("createdAt", "desc")),
-      );
-      return snapshot.docs
-        .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-        .sort(compareReportsByExamDateDesc);
-    } catch {
-      const snapshot = await getDocs(query(reportsRef, where("assignmentStatus", "==", status)));
-      return snapshot.docs
-        .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-        .sort(compareReportsByExamDateDesc);
-    }
-  };
-
-  const rows = (await Promise.all(statuses.map((status) => fetchByStatus(status)))).flat();
-  return rows.sort(compareReportsByExamDateDesc);
+  return snapshot.docs
+    .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
+    .sort(compareReportsByExamDateDesc);
 };
 
 export const subscribePendingReports = (
@@ -2399,17 +2403,45 @@ export const fixAndAssignPendingReport = async (
 };
 
 
+const fetchReportRecordsByIds = async (reportIds: string[]): Promise<Map<string, ReportRecord>> => {
+  const uniqueIds = Array.from(new Set(reportIds.filter(Boolean)));
+  if (!uniqueIds.length) return new Map();
+
+  const chunks: string[][] = [];
+  for (let start = 0; start < uniqueIds.length; start += 30) {
+    chunks.push(uniqueIds.slice(start, start + 30));
+  }
+
+  const snapshots = await Promise.all(
+    chunks.map((ids) =>
+      getDocs(query(collection(db, "reports"), where(documentId(), "in", ids))),
+    ),
+  );
+  const reports = new Map<string, ReportRecord>();
+  snapshots.forEach((snapshot) => {
+    snapshot.docs.forEach((docSnap) => {
+      reports.set(
+        docSnap.id,
+        hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">),
+      );
+    });
+  });
+  return reports;
+};
+
 export const subscribeOpenReportClaims = (
   onChange: (claims: ReportClaimTriageRecord[]) => void,
   onError?: (error: Error) => void,
 ) => {
   const claimsQuery = query(collection(db, "report_claims"), where("status", "==", "open"));
+  let snapshotVersion = 0;
 
   return onSnapshot(
     claimsQuery,
     async (snapshot) => {
-      const claims = await Promise.all(
-        snapshot.docs.map(async (claimDoc) => {
+      const version = ++snapshotVersion;
+      try {
+        const rows = snapshot.docs.map((claimDoc) => {
           const data = claimDoc.data() as {
             reportId?: string;
             studentUid?: string;
@@ -2419,31 +2451,34 @@ export const subscribeOpenReportClaims = (
             resolvedAt?: Timestamp | null;
             resolvedBy?: string | null;
           };
-          const reportId = data.reportId ?? "";
-          const reportSnap = reportId ? await getDoc(doc(db, "reports", reportId)) : null;
-          const report = reportSnap?.exists()
-            ? hydrateReportRecord(reportSnap.id, reportSnap.data() as Omit<ReportRecord, "id">)
-            : null;
-
           return {
             id: claimDoc.id,
-            reportId,
+            reportId: data.reportId ?? "",
             studentUid: data.studentUid ?? "",
-            status: data.status ?? "open",
+            status: (data.status ?? "open") as "open" | "resolved",
             createdAt: data.createdAt ?? null,
             updatedAt: data.updatedAt ?? null,
             resolvedAt: data.resolvedAt ?? null,
             resolvedBy: data.resolvedBy ?? null,
-            report,
           };
-        }),
-      );
+        });
+        const reportsById = await fetchReportRecordsByIds(rows.map((row) => row.reportId));
+        if (version !== snapshotVersion) return;
 
-      onChange(
-        claims.sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0)),
-      );
+        onChange(
+          rows
+            .map((row) => ({ ...row, report: reportsById.get(row.reportId) ?? null }))
+            .sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0)),
+        );
+      } catch (error) {
+        if (version !== snapshotVersion) return;
+        onError?.(error instanceof Error ? error : new Error("오배송 신고 리포트를 불러오지 못했습니다."));
+      }
     },
-    (error) => onError?.(error),
+    (error) => {
+      snapshotVersion += 1;
+      onError?.(error);
+    },
   );
 };
 
