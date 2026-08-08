@@ -13,11 +13,40 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     env:
-      PREVIEW_URL: https://trusted-edu-core-dkmi-git-perf-de-771267-kims-projects-15b8f64b.vercel.app
       PROD_URL: https://www.cheomsak.com
+      LOCAL_URL: http://127.0.0.1:4173
+      VITE_FIREBASE_API_KEY: AIzaSyDUMMY000000000000000000000000000000
+      VITE_FIREBASE_AUTH_DOMAIN: test.firebaseapp.com
+      VITE_FIREBASE_PROJECT_ID: test-project
+      VITE_FIREBASE_STORAGE_BUCKET: test-project.appspot.com
+      VITE_FIREBASE_MESSAGING_SENDER_ID: 123456789012
+      VITE_FIREBASE_APP_ID: 1:123456789012:web:0123456789abcdef012345
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install and build PR
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Start production preview
+        run: |
+          nohup npm run preview -- --host 127.0.0.1 --port 4173 >/tmp/vite-preview.log 2>&1 &
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:4173/ >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/vite-preview.log
+          exit 1
 
       - name: Install Playwright in isolated directory
         run: |
@@ -27,12 +56,12 @@ jobs:
           npm install --silent @playwright/test@1.55.0
           npx playwright install --with-deps chromium
 
-      - name: Run browser smoke tests
+      - name: Run Chromium smoke tests
         run: |
           cat >/tmp/live-smoke/smoke.cjs <<'EOF'
           const { chromium } = require('@playwright/test');
 
-          const preview = process.env.PREVIEW_URL;
+          const local = process.env.LOCAL_URL;
           const prod = process.env.PROD_URL;
           const failures = [];
           const results = [];
@@ -54,29 +83,19 @@ jobs:
             });
 
             const started = Date.now();
-            let response;
-            try {
-              response = await page.goto(base + path, { waitUntil: 'domcontentloaded', timeout: 30000 });
-              await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
-              await page.waitForTimeout(600);
-            } catch (error) {
-              failures.push(`${label} ${path}: navigation failed: ${error.message}`);
-              await page.close();
-              return;
-            }
+            const response = await page.goto(base + path, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+            await page.waitForTimeout(400);
 
             const body = await page.locator('body').innerText().catch(() => '');
             const status = response?.status() ?? 0;
-            const finalUrl = page.url();
             const metrics = await page.evaluate(() => {
               const nav = performance.getEntriesByType('navigation')[0];
               const paint = performance.getEntriesByType('paint');
               const fcp = paint.find((entry) => entry.name === 'first-contentful-paint');
-              const resources = performance.getEntriesByType('resource');
-              const scripts = resources.filter((entry) => entry.initiatorType === 'script');
+              const scripts = performance.getEntriesByType('resource').filter((entry) => entry.initiatorType === 'script');
               return {
                 domContentLoaded: nav ? Math.round(nav.domContentLoadedEventEnd) : null,
-                loadEventEnd: nav ? Math.round(nav.loadEventEnd) : null,
                 fcp: fcp ? Math.round(fcp.startTime) : null,
                 scriptCount: scripts.length,
                 scriptTransferBytes: Math.round(scripts.reduce((sum, entry) => sum + (entry.transferSize || 0), 0)),
@@ -86,15 +105,9 @@ jobs:
             });
 
             const record = {
-              label,
-              path,
-              viewport: `${viewport.width}x${viewport.height}`,
-              status,
-              finalUrl,
-              wallMs: Date.now() - started,
-              ...metrics,
-              pageErrors,
-              consoleErrors,
+              label, path, viewport: `${viewport.width}x${viewport.height}`, status,
+              finalUrl: page.url(), wallMs: Date.now() - started, ...metrics,
+              pageErrors, consoleErrors,
             };
             results.push(record);
             console.log('SMOKE_RESULT ' + JSON.stringify(record));
@@ -103,30 +116,42 @@ jobs:
             if (!body.includes(expected)) failures.push(`${label} ${path}: expected text not found: ${expected}`);
             if (pageErrors.length) failures.push(`${label} ${path}: page errors: ${pageErrors.join(' | ')}`);
             if (metrics.scrollWidth > metrics.innerWidth + 2) failures.push(`${label} ${path}: horizontal overflow ${metrics.scrollWidth} > ${metrics.innerWidth}`);
-
             await page.close();
           }
 
-          async function inspectProtected(browser, base, label, path) {
+          async function inspectProtected(browser, base, path) {
             const page = await browser.newPage({ viewport: { width: 1365, height: 768 } });
             const pageErrors = [];
             page.on('pageerror', (error) => pageErrors.push(String(error.message || error)));
-            try {
-              await page.goto(base + path, { waitUntil: 'domcontentloaded', timeout: 30000 });
-              await page.waitForTimeout(1200);
-            } catch (error) {
-              failures.push(`${label} ${path}: protected navigation failed: ${error.message}`);
-              await page.close();
-              return;
-            }
-            const finalUrl = page.url();
+            await page.goto(base + path, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.waitForTimeout(1000);
             const body = await page.locator('body').innerText().catch(() => '');
+            const finalUrl = page.url();
             const redirected = finalUrl.includes('/login') || body.includes('로그인');
-            const record = { label, path, finalUrl, redirected, pageErrors };
+            const record = { label: 'local-protected', path, finalUrl, redirected, pageErrors };
             results.push(record);
             console.log('PROTECTED_RESULT ' + JSON.stringify(record));
-            if (!redirected) failures.push(`${label} ${path}: unauthenticated user was not redirected to login`);
-            if (pageErrors.length) failures.push(`${label} ${path}: page errors: ${pageErrors.join(' | ')}`);
+            if (!redirected) failures.push(`local ${path}: unauthenticated user was not redirected to login`);
+            if (pageErrors.length) failures.push(`local ${path}: page errors: ${pageErrors.join(' | ')}`);
+            await page.close();
+          }
+
+          async function inspectProductionInvalidLogin(browser) {
+            const page = await browser.newPage({ viewport: { width: 1365, height: 768 } });
+            const pageErrors = [];
+            page.on('pageerror', (error) => pageErrors.push(String(error.message || error)));
+            await page.goto(prod + '/login', { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.locator('input[type="email"]').fill(`smoke-${Date.now()}@example.invalid`);
+            await page.locator('input[type="password"]').fill('SmokeTest-NotARealPassword-2026');
+            await page.getByRole('button', { name: '로그인' }).click();
+            await page.waitForTimeout(1800);
+            const body = await page.locator('body').innerText();
+            const showedError = body.includes('비밀번호가 일치하지 않습니다') || body.includes('로그인 중 오류가 발생했습니다');
+            const record = { label: 'prod-invalid-login', showedError, pageErrors };
+            results.push(record);
+            console.log('LOGIN_RESULT ' + JSON.stringify(record));
+            if (!showedError) failures.push('production invalid login did not show a user-facing error');
+            if (pageErrors.length) failures.push(`production invalid login page errors: ${pageErrors.join(' | ')}`);
             await page.close();
           }
 
@@ -134,18 +159,18 @@ jobs:
             const browser = await chromium.launch({ headless: true });
             try {
               for (const [path, expected] of routeCases) {
-                await inspectPage(browser, preview, 'preview-desktop', path, expected, { width: 1365, height: 768 });
+                await inspectPage(browser, local, 'pr-build-desktop', path, expected, { width: 1365, height: 768 });
               }
               for (const [path, expected] of [['/', 'SMART REPORT SYSTEM'], ['/login', '로그인']]) {
-                await inspectPage(browser, preview, 'preview-mobile', path, expected, { width: 390, height: 844 });
+                await inspectPage(browser, local, 'pr-build-mobile', path, expected, { width: 390, height: 844 });
               }
               for (const path of ['/dashboard', '/admin', '/admin/class-manager', '/admin/master']) {
-                await inspectProtected(browser, preview, 'preview-protected', path);
+                await inspectProtected(browser, local, path);
               }
-
               for (const [path, expected] of [['/', 'SMART REPORT SYSTEM'], ['/login', '로그인']]) {
                 await inspectPage(browser, prod, 'prod-baseline', path, expected, { width: 1365, height: 768 });
               }
+              await inspectProductionInvalidLogin(browser);
 
               console.log('SMOKE_SUMMARY ' + JSON.stringify({ totalChecks: results.length, failureCount: failures.length, failures }));
               if (failures.length) {
