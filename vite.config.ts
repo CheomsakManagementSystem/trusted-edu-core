@@ -18,4 +18,20 @@ export default defineConfig(({ mode }) => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalizedId = id.replaceAll("\\", "/");
+          if (
+            normalizedId.includes("/node_modules/firebase/") ||
+            normalizedId.includes("/node_modules/@firebase/")
+          ) {
+            return "firebase-vendor";
+          }
+          return undefined;
+        },
+      },
+    },
+  },
 }));

@@ -1,4 +1,4 @@
-import { DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import { Input } from "@/components/ui/input";
@@ -109,6 +109,8 @@ const UploadDashboard = () => {
   const { user } = useAuth();
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const archiveSectionRef = useRef<HTMLDivElement | null>(null);
+  const publishedLoadStateRef = useRef<"idle" | "loading" | "loaded">("idle");
   const toastRef = useRef(toast);
   const canManageReports = isStaffRole(user?.role);
 
@@ -116,6 +118,8 @@ const UploadDashboard = () => {
   const [students, setStudents] = useState<StudentLite[]>([]);
   const [classReports, setClassReports] = useState<ReportRecord[]>([]);
   const [publishedReports, setPublishedReports] = useState<ReportRecord[]>([]);
+  const [publishedReportsLoading, setPublishedReportsLoading] = useState(false);
+  const [publishedReportsLoaded, setPublishedReportsLoaded] = useState(false);
   const [pendingReports, setPendingReports] = useState<ReportRecord[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string>("none");
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(() => new Date());
@@ -236,8 +240,10 @@ const UploadDashboard = () => {
     });
   };
 
+  const studentByUid = useMemo(() => new Map(students.map((student) => [student.uid, student])), [students]);
+
   const getClaimStudentLabel = (claim: ReportClaimTriageRecord) => {
-    const student = students.find((item) => item.uid === claim.studentUid);
+    const student = studentByUid.get(claim.studentUid);
     return student ? formatStudentLabel(student) : claim.report?.studentName || "기록 없음";
   };
 
@@ -301,20 +307,55 @@ const UploadDashboard = () => {
     };
   }, []);
 
-  useEffect(() => {
+  const loadPublishedReports = useCallback(async (force = false): Promise<ReportRecord[]> => {
+    if (!force && publishedLoadStateRef.current !== "idle") {
+      return publishedReports;
+    }
+
+    publishedLoadStateRef.current = "loading";
+    setPublishedReportsLoading(true);
     const measurement = startPerformanceTrace("admin_published_load");
-    const run = async () => {
-      try {
-        const reports = await fetchPublishedReports();
-        setPublishedReports(reports);
-        measurement.stop({ status: "success", metrics: { report_count: reports.length } });
-      } catch (error) {
-        measurement.stop({ status: "error" });
-        throw error;
-      }
-    };
-    void run();
-  }, []);
+    try {
+      const reports = await fetchPublishedReports();
+      setPublishedReports(reports);
+      setPublishedReportsLoaded(true);
+      publishedLoadStateRef.current = "loaded";
+      measurement.stop({ status: "success", metrics: { report_count: reports.length } });
+      return reports;
+    } catch (error) {
+      publishedLoadStateRef.current = "idle";
+      measurement.stop({ status: "error" });
+      toastRef.current({
+        variant: "destructive",
+        title: "리포트 보관함 조회 실패",
+        description: error instanceof Error ? error.message : "배포된 리포트를 불러오지 못했습니다.",
+      });
+      return [];
+    } finally {
+      setPublishedReportsLoading(false);
+    }
+  }, [publishedReports]);
+
+  useEffect(() => {
+    if (publishedReportsLoaded) return;
+    const target = archiveSectionRef.current;
+    if (!target || typeof IntersectionObserver === "undefined") {
+      void loadPublishedReports();
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          void loadPublishedReports();
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "800px 0px" },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [loadPublishedReports, publishedReportsLoaded]);
 
   useEffect(() => {
     const unsubscribe = subscribeOpenReportClaims(
@@ -545,29 +586,32 @@ const UploadDashboard = () => {
         .sort(compareReportsByExamDateDesc),
     [pendingReports],
   );
+const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
+  const searchablePublishedReports = useMemo(
+    () =>
+      [...publishedReports]
+        .sort(compareReportsByExamDateDesc)
+        .map((report) => ({
+          report,
+          searchText: [report.studentName, report.fileName, report.sourceName, report.essayTopic]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase(),
+        })),
+    [publishedReports],
+  );
   const filteredPublishedReports = useMemo(() => {
-    return [...publishedReports]
-      .sort(compareReportsByExamDateDesc)
-      .filter((report) => {
-        if (archiveClassFilter !== "all" && report.classId !== archiveClassFilter) {
-          return false;
-        }
-        const keyword = archiveStudentFilter.trim().toLowerCase();
-        if (keyword) {
-          const target = `${report.studentName} ${report.fileName} ${report.sourceName} ${report.essayTopic}`.toLowerCase();
-          if (!target.includes(keyword)) {
-            return false;
-          }
-        }
-        if (archiveReadFilter === "read" && !report.isRead) {
-          return false;
-        }
-        if (archiveReadFilter === "unread" && report.isRead) {
-          return false;
-        }
+    const keyword = deferredArchiveStudentFilter.trim().toLowerCase();
+    return searchablePublishedReports
+      .filter(({ report, searchText }) => {
+        if (archiveClassFilter !== "all" && report.classId !== archiveClassFilter) return false;
+        if (keyword && !searchText.includes(keyword)) return false;
+        if (archiveReadFilter === "read" && !report.isRead) return false;
+        if (archiveReadFilter === "unread" && report.isRead) return false;
         return true;
-      });
-  }, [archiveClassFilter, archiveReadFilter, archiveStudentFilter, publishedReports]);
+      })
+      .map(({ report }) => report);
+  }, [archiveClassFilter, archiveReadFilter, deferredArchiveStudentFilter, searchablePublishedReports]);
 
   const recentClassReports = useMemo(
     () => [...classReports].sort(compareReportsByExamDateDesc).slice(0, 20),
@@ -641,15 +685,17 @@ const UploadDashboard = () => {
     const measurement = startPerformanceTrace("report_publish_batch", { source: "admin_upload" });
 
     try {
-      const result = await publishReportBatch(
-        rows,
-        selectedClass,
-        selectedDateText,
-        students,
-        user.uid,
-        setProgress,
-      );
-      const controls = await getMasterControls();
+      const [result, controls] = await Promise.all([
+        publishReportBatch(
+          rows,
+          selectedClass,
+          selectedDateText,
+          students,
+          user.uid,
+          setProgress,
+        ),
+        getMasterControls(),
+      ]);
 
       setRows((prev) => {
         const mapById = new Map(result.results.map((item) => [item.candidateId, item]));
@@ -713,9 +759,11 @@ const UploadDashboard = () => {
         });
       }
 
-      const reports = await fetchReportsByClassId(selectedClass.id);
+      const [reports, pending] = await Promise.all([
+        fetchReportsByClassId(selectedClass.id),
+        fetchPendingReports(),
+      ]);
       setClassReports(reports);
-      const pending = await fetchPendingReports();
       setPendingReports(pending);
       measurement.stop({
         status: result.failureCount > 0 ? "partial" : "success",
@@ -743,13 +791,13 @@ const UploadDashboard = () => {
   };
 
   const handleRefreshReadStatus = async () => {
-    const published = await fetchPublishedReports();
+    const [published, reports, pending] = await Promise.all([
+      loadPublishedReports(true),
+      selectedClass ? fetchReportsByClassId(selectedClass.id) : Promise.resolve(classReports),
+      fetchPendingReports(),
+    ]);
     setPublishedReports(published);
-    if (selectedClass) {
-      const reports = await fetchReportsByClassId(selectedClass.id);
-      setClassReports(reports);
-    }
-    const pending = await fetchPendingReports();
+    setClassReports(reports);
     setPendingReports(pending);
   };
 
@@ -1513,10 +1561,12 @@ const UploadDashboard = () => {
           )}
         </div>
 
-        <div className="rounded-lg border border-border bg-card p-5 shadow-card">
+        <div ref={archiveSectionRef} className="rounded-lg border border-border bg-card p-5 shadow-card">
           <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <h3 className="text-sm font-semibold text-card-foreground">배포된 리포트 보관함</h3>
-            <p className="text-xs text-muted-foreground">총 {filteredPublishedReports.length}건</p>
+            <p className="text-xs text-muted-foreground">
+              {publishedReportsLoading && !publishedReportsLoaded ? "불러오는 중..." : `총 ${filteredPublishedReports.length}건`}
+            </p>
           </div>
 
           <div className="mb-4 grid grid-cols-1 gap-2 md:grid-cols-3">
@@ -1556,6 +1606,7 @@ const UploadDashboard = () => {
                 <div
                   key={report.id}
                   className="grid grid-cols-1 gap-2 rounded-lg border border-border bg-background px-3 py-2.5 md:grid-cols-[1.2fr_1fr_0.7fr_0.7fr_auto]"
+                  style={{ contentVisibility: "auto", containIntrinsicSize: "96px" }}
                 >
                   <div>
                     <div className="flex flex-wrap items-center gap-1.5">
@@ -1609,9 +1660,11 @@ const UploadDashboard = () => {
                 </div>
               );
             })}
-            {filteredPublishedReports.length === 0 && (
+            {publishedReportsLoading && !publishedReportsLoaded ? (
+              <p className="text-sm text-muted-foreground">리포트 보관함을 불러오는 중입니다...</p>
+            ) : filteredPublishedReports.length === 0 ? (
               <p className="text-sm text-muted-foreground">검색 결과가 없습니다</p>
-            )}
+            ) : null}
           </div>
         </div>
 
@@ -1635,7 +1688,11 @@ const UploadDashboard = () => {
               const options = getPendingCandidates(report);
               const isDuplicate = report.assignmentStatus === "duplicate_pending";
               return (
-                <div key={report.id} className="rounded-lg border border-border bg-background p-3">
+                <div
+                  key={report.id}
+                  className="rounded-lg border border-border bg-background p-3"
+                  style={{ contentVisibility: "auto", containIntrinsicSize: "180px" }}
+                >
                   <div className="mb-2 flex flex-wrap items-center gap-2">
                     <p className="text-sm font-semibold text-card-foreground">
                       {report.sourceName || "기록 없음"} | {report.fileName}
