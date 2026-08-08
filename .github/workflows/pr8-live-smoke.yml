@@ -1,0 +1,161 @@
+name: PR 8 live smoke
+
+on:
+  push:
+    branches:
+      - perf/develop-latency-20260808
+
+permissions:
+  contents: read
+
+jobs:
+  live-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      PREVIEW_URL: https://trusted-edu-core-dkmi-git-perf-de-771267-kims-projects-15b8f64b.vercel.app
+      PROD_URL: https://www.cheomsak.com
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Playwright in isolated directory
+        run: |
+          mkdir -p /tmp/live-smoke
+          cd /tmp/live-smoke
+          npm init -y >/dev/null 2>&1
+          npm install --silent @playwright/test@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Run browser smoke tests
+        run: |
+          cat >/tmp/live-smoke/smoke.cjs <<'EOF'
+          const { chromium } = require('@playwright/test');
+
+          const preview = process.env.PREVIEW_URL;
+          const prod = process.env.PROD_URL;
+          const failures = [];
+          const results = [];
+
+          const routeCases = [
+            ['/', 'SMART REPORT SYSTEM'],
+            ['/login', '로그인'],
+            ['/signup', '회원가입'],
+            ['/guide', '이용 가이드'],
+          ];
+
+          async function inspectPage(browser, base, label, path, expected, viewport) {
+            const page = await browser.newPage({ viewport });
+            const pageErrors = [];
+            const consoleErrors = [];
+            page.on('pageerror', (error) => pageErrors.push(String(error.message || error)));
+            page.on('console', (message) => {
+              if (message.type() === 'error') consoleErrors.push(message.text());
+            });
+
+            const started = Date.now();
+            let response;
+            try {
+              response = await page.goto(base + path, { waitUntil: 'domcontentloaded', timeout: 30000 });
+              await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+              await page.waitForTimeout(600);
+            } catch (error) {
+              failures.push(`${label} ${path}: navigation failed: ${error.message}`);
+              await page.close();
+              return;
+            }
+
+            const body = await page.locator('body').innerText().catch(() => '');
+            const status = response?.status() ?? 0;
+            const finalUrl = page.url();
+            const metrics = await page.evaluate(() => {
+              const nav = performance.getEntriesByType('navigation')[0];
+              const paint = performance.getEntriesByType('paint');
+              const fcp = paint.find((entry) => entry.name === 'first-contentful-paint');
+              const resources = performance.getEntriesByType('resource');
+              const scripts = resources.filter((entry) => entry.initiatorType === 'script');
+              return {
+                domContentLoaded: nav ? Math.round(nav.domContentLoadedEventEnd) : null,
+                loadEventEnd: nav ? Math.round(nav.loadEventEnd) : null,
+                fcp: fcp ? Math.round(fcp.startTime) : null,
+                scriptCount: scripts.length,
+                scriptTransferBytes: Math.round(scripts.reduce((sum, entry) => sum + (entry.transferSize || 0), 0)),
+                scrollWidth: document.documentElement.scrollWidth,
+                innerWidth: window.innerWidth,
+              };
+            });
+
+            const record = {
+              label,
+              path,
+              viewport: `${viewport.width}x${viewport.height}`,
+              status,
+              finalUrl,
+              wallMs: Date.now() - started,
+              ...metrics,
+              pageErrors,
+              consoleErrors,
+            };
+            results.push(record);
+            console.log('SMOKE_RESULT ' + JSON.stringify(record));
+
+            if (status >= 400 || status === 0) failures.push(`${label} ${path}: HTTP ${status}`);
+            if (!body.includes(expected)) failures.push(`${label} ${path}: expected text not found: ${expected}`);
+            if (pageErrors.length) failures.push(`${label} ${path}: page errors: ${pageErrors.join(' | ')}`);
+            if (metrics.scrollWidth > metrics.innerWidth + 2) failures.push(`${label} ${path}: horizontal overflow ${metrics.scrollWidth} > ${metrics.innerWidth}`);
+
+            await page.close();
+          }
+
+          async function inspectProtected(browser, base, label, path) {
+            const page = await browser.newPage({ viewport: { width: 1365, height: 768 } });
+            const pageErrors = [];
+            page.on('pageerror', (error) => pageErrors.push(String(error.message || error)));
+            try {
+              await page.goto(base + path, { waitUntil: 'domcontentloaded', timeout: 30000 });
+              await page.waitForTimeout(1200);
+            } catch (error) {
+              failures.push(`${label} ${path}: protected navigation failed: ${error.message}`);
+              await page.close();
+              return;
+            }
+            const finalUrl = page.url();
+            const body = await page.locator('body').innerText().catch(() => '');
+            const redirected = finalUrl.includes('/login') || body.includes('로그인');
+            const record = { label, path, finalUrl, redirected, pageErrors };
+            results.push(record);
+            console.log('PROTECTED_RESULT ' + JSON.stringify(record));
+            if (!redirected) failures.push(`${label} ${path}: unauthenticated user was not redirected to login`);
+            if (pageErrors.length) failures.push(`${label} ${path}: page errors: ${pageErrors.join(' | ')}`);
+            await page.close();
+          }
+
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            try {
+              for (const [path, expected] of routeCases) {
+                await inspectPage(browser, preview, 'preview-desktop', path, expected, { width: 1365, height: 768 });
+              }
+              for (const [path, expected] of [['/', 'SMART REPORT SYSTEM'], ['/login', '로그인']]) {
+                await inspectPage(browser, preview, 'preview-mobile', path, expected, { width: 390, height: 844 });
+              }
+              for (const path of ['/dashboard', '/admin', '/admin/class-manager', '/admin/master']) {
+                await inspectProtected(browser, preview, 'preview-protected', path);
+              }
+
+              for (const [path, expected] of [['/', 'SMART REPORT SYSTEM'], ['/login', '로그인']]) {
+                await inspectPage(browser, prod, 'prod-baseline', path, expected, { width: 1365, height: 768 });
+              }
+
+              console.log('SMOKE_SUMMARY ' + JSON.stringify({ totalChecks: results.length, failureCount: failures.length, failures }));
+              if (failures.length) {
+                console.error(failures.join('\n'));
+                process.exitCode = 1;
+              }
+            } finally {
+              await browser.close();
+            }
+          })();
+          EOF
+          cd /tmp/live-smoke
+          node smoke.cjs
