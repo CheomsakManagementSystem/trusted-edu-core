@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import WithdrawalDialog from "@/components/WithdrawalDialog";
 import NonsulfitIntegrationSection from "@/components/student/NonsulfitIntegrationSection";
@@ -31,20 +31,16 @@ import {
   deleteCurrentUserAccount,
   getAccountDeletionErrorMessage,
 } from "@/services/accountDeletionService";
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  PolarAngleAxis,
-  PolarGrid,
-  PolarRadiusAxis,
-  Radar,
-  RadarChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+const RadarScoreChart = lazy(() =>
+  import("@/components/student/ReportCharts").then((module) => ({
+    default: module.RadarScoreChart,
+  })),
+);
+const TrendScoreChart = lazy(() =>
+  import("@/components/student/ReportCharts").then((module) => ({
+    default: module.TrendScoreChart,
+  })),
+);
 
 const cleanFeedbackText = (value: string): string => {
   return value
@@ -478,10 +474,6 @@ const ReportView = () => {
     [reportData, selectedReport],
   );
 
-  const chartAxisColor = "#111827";
-  const chartGridColor = "#d1d5db";
-  const chartLineColor = "#2563eb";
-
   const handleWithdrawAccount = async () => {
     if (!user?.uid) {
       toast({
@@ -604,38 +596,15 @@ const ReportView = () => {
                 <div className="grid grid-cols-1 gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_220px] md:p-5">
                   <div className="rounded-2xl border border-slate-200 bg-[radial-gradient(circle_at_top,_rgba(59,130,246,0.08),_transparent_55%),linear-gradient(to_right,_rgba(148,163,184,0.12)_1px,_transparent_1px),linear-gradient(to_bottom,_rgba(148,163,184,0.12)_1px,_transparent_1px)] bg-[size:auto,28px_28px,28px_28px] bg-center p-2">
                     <div className="aspect-[4/3] min-h-[280px] w-full sm:min-h-[320px]">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <RadarChart data={radarData} outerRadius="76%">
-                          <PolarGrid stroke={chartGridColor} />
-                          <PolarAngleAxis
-                            dataKey="subject"
-                            tick={{ fontSize: isMobile ? 11 : 12, fill: chartAxisColor }}
-                          />
-                          <PolarRadiusAxis
-                            domain={[0, 100]}
-                            tick={{ fontSize: isMobile ? 10 : 11, fill: chartAxisColor }}
-                            axisLine={false}
-                            tickLine={false}
-                          />
-                          <Radar
-                            name="나의점수"
-                            dataKey="myScore"
-                            stroke="#eab308"
-                            fill="#eab308"
-                            fillOpacity={0.14}
-                            strokeWidth={3}
-                          />
-                          <Radar
-                            name="전체평균"
-                            dataKey="avgScore"
-                            stroke="#6b7280"
-                            fillOpacity={0}
-                            strokeDasharray="8 6"
-                            strokeWidth={2}
-                          />
-                          <Tooltip />
-                        </RadarChart>
-                      </ResponsiveContainer>
+                      <Suspense
+                        fallback={
+                          <div className="flex h-full items-center justify-center text-sm text-slate-500">
+                            차트 불러오는 중...
+                          </div>
+                        }
+                      >
+                        <RadarScoreChart data={radarData} isMobile={isMobile} />
+                      </Suspense>
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
@@ -728,39 +697,15 @@ const ReportView = () => {
               <div className="order-1 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:order-2 md:p-5">
                 <h3 className="mb-3 text-lg font-semibold text-slate-900 md:text-base">날짜별 점수 변화 그래프</h3>
                 <div className="h-64 sm:h-72">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={trendData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke={chartGridColor} />
-                      <XAxis
-                        dataKey="examDateLabel"
-                        tick={{ fontSize: isMobile ? 11 : 12, fill: chartAxisColor }}
-                        angle={isMobile ? -18 : 0}
-                        textAnchor={isMobile ? "end" : "middle"}
-                        height={isMobile ? 44 : 32}
-                        stroke={chartGridColor}
-                      />
-                      <YAxis
-                        domain={[0, 100]}
-                        tick={{ fontSize: isMobile ? 11 : 12, fill: chartAxisColor }}
-                        stroke={chartGridColor}
-                      />
-                      <Tooltip
-                        contentStyle={{
-                          borderColor: chartGridColor,
-                          backgroundColor: "#ffffff",
-                          color: chartAxisColor,
-                        }}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="score"
-                        stroke={chartLineColor}
-                        strokeWidth={3}
-                        dot={{ r: 4 }}
-                        activeDot={{ r: 6 }}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
+                  <Suspense
+                    fallback={
+                      <div className="flex h-full items-center justify-center text-sm text-slate-500">
+                        차트 불러오는 중...
+                      </div>
+                    }
+                  >
+                    <TrendScoreChart data={trendData} isMobile={isMobile} />
+                  </Suspense>
                 </div>
               </div>
 
