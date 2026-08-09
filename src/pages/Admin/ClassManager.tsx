@@ -4,7 +4,6 @@ import {
   collection,
   deleteDoc,
   doc,
-  getDocs,
   getDocsFromServer,
   orderBy,
   query,
@@ -35,6 +34,10 @@ import {
   removeClassIdFromStudent,
   updateStudentClassIds,
 } from "@/services/classTransferService";
+import {
+  removeClassReferences,
+  renameClassReferences,
+} from "@/services/classIntegrityService";
 
 type ClassFormState = {
   id: string | null;
@@ -282,18 +285,7 @@ const ClassManager = () => {
           name,
           updatedAt: serverTimestamp(),
         });
-        await getDocs(query(collection(db, "users"), where("classIds", "array-contains", classForm.id))).then(
-          async (snap) => {
-            await Promise.all(
-              snap.docs.map((studentDoc) =>
-                updateDoc(studentDoc.ref, {
-                  className: name,
-                  updatedAt: serverTimestamp(),
-                }),
-              ),
-            );
-          },
-        );
+        await renameClassReferences(classForm.id, name);
         setMessage("반 정보가 수정되었습니다.");
       } else {
         await addDoc(collection(db, "classes"), {
@@ -322,26 +314,7 @@ const ClassManager = () => {
     setMessage("");
 
     try {
-      const studentsInClass = await getDocs(
-        query(collection(db, "users"), where("classIds", "array-contains", classDoc.id)),
-      );
-
-      await Promise.all(
-        studentsInClass.docs.map((studentDoc) => {
-          const data = studentDoc.data() as { classIds?: unknown };
-          const prevIds = normalizeClassIds(data.classIds);
-          const nextIds = prevIds.filter((id) => id !== classDoc.id);
-          return updateDoc(studentDoc.ref, {
-            classIds: nextIds,
-            classId: nextIds.length > 0 ? nextIds[0] : null,
-            className: nextIds.length > 0 ? null : null, // className은 loadData 후 재조회
-            isEnrolled: nextIds.length > 0,
-            enrollmentStatus: nextIds.length > 0 ? "active" : null,
-            updatedAt: serverTimestamp(),
-          });
-        }),
-      );
-
+      await removeClassReferences(classDoc.id, classes);
       await deleteDoc(doc(db, "classes", classDoc.id));
 
       if (selectedClassId === classDoc.id) {
