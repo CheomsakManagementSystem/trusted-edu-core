@@ -11,6 +11,9 @@ import {
   updateDoc,
   where,
   writeBatch,
+  type DocumentData,
+  type DocumentReference,
+  type QueryDocumentSnapshot,
   type WriteBatch,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
@@ -20,8 +23,13 @@ const MAX_IN_QUERY_VALUES = 30;
 
 export type TransferClassTarget = {
   id: string;
-  name: string;
+  name: string | null;
 } | null;
+
+export type ClassReference = {
+  id: string;
+  name: string;
+};
 
 export type StudentDocumentTarget = {
   docId: string;
@@ -54,6 +62,52 @@ export const normalizeClassIds = (
   }
 
   return legacyClassId ? [legacyClassId] : [];
+};
+
+export const resolvePrimaryClassId = (
+  classIds: unknown,
+  legacyClassId?: string | null,
+): string | null => {
+  const normalized = normalizeClassIds(classIds, legacyClassId);
+  if (legacyClassId && normalized.includes(legacyClassId)) {
+    return legacyClassId;
+  }
+  return normalized[0] ?? null;
+};
+
+export const shouldSyncRenamedPrimaryClassName = (
+  classIds: unknown,
+  legacyClassId: string | null | undefined,
+  renamedClassId: string,
+) => resolvePrimaryClassId(classIds, legacyClassId) === renamedClassId;
+
+export const resolveClassStateAfterRemoval = (
+  classIds: unknown,
+  legacyClassId: string | null | undefined,
+  removedClassId: string,
+  classes: ClassReference[],
+): { classIds: string[]; primaryClass: TransferClassTarget } => {
+  const remainingClassIds = normalizeClassIds(classIds, legacyClassId).filter(
+    (classId) => classId !== removedClassId,
+  );
+  const currentPrimaryClassId = resolvePrimaryClassId(classIds, legacyClassId);
+  const primaryClassId =
+    currentPrimaryClassId && remainingClassIds.includes(currentPrimaryClassId)
+      ? currentPrimaryClassId
+      : remainingClassIds[0] ?? null;
+
+  if (!primaryClassId) {
+    return { classIds: remainingClassIds, primaryClass: null };
+  }
+
+  const matchedClass = classes.find((item) => item.id === primaryClassId);
+  return {
+    classIds: remainingClassIds,
+    primaryClass: {
+      id: primaryClassId,
+      name: matchedClass?.name ?? null,
+    },
+  };
 };
 
 const requireStudentDocId = (student: StudentDocumentTarget): string => {
@@ -151,6 +205,106 @@ const commitInChunks = async (
   }
 };
 
+const commitDocumentRefsInChunks = async (
+  refs: DocumentReference[],
+  addWrites: (batch: WriteBatch, ref: DocumentReference) => void,
+): Promise<void> => {
+  for (let start = 0; start < refs.length; start += MAX_BATCH_WRITES) {
+    const batch = writeBatch(db);
+    refs.slice(start, start + MAX_BATCH_WRITES).forEach((ref) => addWrites(batch, ref));
+    await batch.commit();
+  }
+};
+
+const getUserDocumentsForClass = async (
+  classId: string,
+): Promise<QueryDocumentSnapshot<DocumentData>[]> => {
+  const [arraySnapshot, primarySnapshot] = await Promise.all([
+    getDocsFromServer(query(collection(db, "users"), where("classIds", "array-contains", classId))),
+    getDocsFromServer(query(collection(db, "users"), where("classId", "==", classId))),
+  ]);
+
+  const unique = new Map<string, QueryDocumentSnapshot<DocumentData>>();
+  [...arraySnapshot.docs, ...primarySnapshot.docs].forEach((docSnap) => {
+    unique.set(docSnap.id, docSnap);
+  });
+  return Array.from(unique.values());
+};
+
+export const syncRenamedClassReferences = async (
+  classId: string,
+  className: string,
+): Promise<{ studentCount: number; memberCount: number }> => {
+  const [studentDocs, memberSnapshot] = await Promise.all([
+    getUserDocumentsForClass(classId),
+    getDocsFromServer(query(collection(db, "class_members"), where("classId", "==", classId))),
+  ]);
+
+  const primaryStudentRefs = studentDocs
+    .filter((studentDoc) => {
+      const data = studentDoc.data() as { classIds?: unknown; classId?: string | null };
+      return shouldSyncRenamedPrimaryClassName(data.classIds, data.classId, classId);
+    })
+    .map((studentDoc) => studentDoc.ref);
+
+  await Promise.all([
+    commitDocumentRefsInChunks(primaryStudentRefs, (batch, ref) => {
+      batch.update(ref, {
+        className,
+        updatedAt: serverTimestamp(),
+      });
+    }),
+    commitDocumentRefsInChunks(memberSnapshot.docs.map((docSnap) => docSnap.ref), (batch, ref) => {
+      batch.update(ref, {
+        className,
+        updatedAt: serverTimestamp(),
+      });
+    }),
+  ]);
+
+  return {
+    studentCount: primaryStudentRefs.length,
+    memberCount: memberSnapshot.docs.length,
+  };
+};
+
+export const removeDeletedClassReferences = async (
+  classId: string,
+  classes: ClassReference[],
+): Promise<{ studentCount: number; memberCount: number }> => {
+  const [studentDocs, memberSnapshot] = await Promise.all([
+    getUserDocumentsForClass(classId),
+    getDocsFromServer(query(collection(db, "class_members"), where("classId", "==", classId))),
+  ]);
+
+  for (let start = 0; start < studentDocs.length; start += MAX_BATCH_WRITES) {
+    const batch = writeBatch(db);
+    studentDocs.slice(start, start + MAX_BATCH_WRITES).forEach((studentDoc) => {
+      const data = studentDoc.data() as { classIds?: unknown; classId?: string | null };
+      const next = resolveClassStateAfterRemoval(data.classIds, data.classId, classId, classes);
+      const isEnrolled = next.classIds.length > 0;
+      batch.update(studentDoc.ref, {
+        classIds: next.classIds,
+        classId: next.primaryClass?.id ?? null,
+        className: next.primaryClass?.name ?? null,
+        isEnrolled,
+        enrollmentStatus: isEnrolled ? "active" : null,
+        updatedAt: serverTimestamp(),
+      });
+    });
+    await batch.commit();
+  }
+
+  await commitDocumentRefsInChunks(memberSnapshot.docs.map((docSnap) => docSnap.ref), (batch, ref) => {
+    batch.delete(ref);
+  });
+
+  return {
+    studentCount: studentDocs.length,
+    memberCount: memberSnapshot.docs.length,
+  };
+};
+
 export const joinClass = async (
   student: JoinClassStudent,
   targetClass: JoinClassTarget,
@@ -195,8 +349,6 @@ export const joinClass = async (
   await verifyStudentClassIds(student, (classIds) => classIds.includes(targetClass.id));
 };
 
-// ─── 단일 대표 반 기반 하위 호환 필드 동기화 ───────────────────────────────
-
 export const syncClassFields = (targetClass: TransferClassTarget) => {
   const classIds = targetClass ? [targetClass.id] : [];
   return {
@@ -227,8 +379,6 @@ export const bulkUpdateStudentClassAssignments = async (
   });
   await verifyStudentClassIdsInBatches(students, targetClass ? [targetClass.id] : []);
 };
-
-// ─── classIds[] 배열 기반 다중 반 지원 ─────────────────────────────────────
 
 export const addClassIdToStudent = async (
   student: StudentDocumentTarget,
