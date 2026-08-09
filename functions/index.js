@@ -1,6 +1,9 @@
 const functions = require("firebase-functions");
+const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const cors = require("cors")({ origin: true });
+const crypto = require("crypto");
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -8,6 +11,116 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 const ADMIN_ROLE = "ADMIN";
+const MASTER_ADMIN_CODE = defineSecret("MASTER_ADMIN_CODE");
+const INSTRUCTOR_SIGNUP_CODE = defineSecret("INSTRUCTOR_SIGNUP_CODE");
+
+const secureEquals = (input, expected) => {
+  const left = Buffer.from(String(input || ""));
+  const right = Buffer.from(String(expected || ""));
+  return left.length > 0 && left.length === right.length && crypto.timingSafeEqual(left, right);
+};
+
+const resolveSignupRole = ({ masterCode, instructorCode }) => {
+  if (secureEquals(masterCode, MASTER_ADMIN_CODE.value())) {
+    return ADMIN_ROLE;
+  }
+  if (secureEquals(instructorCode, INSTRUCTOR_SIGNUP_CODE.value())) {
+    return "INSTRUCTOR";
+  }
+  return "STUDENT";
+};
+
+const assertStudentIdAvailable = async (uid, phoneSuffix) => {
+  const usersRef = db.collection("users");
+  const [suffixSnap, studentIdSnap] = await Promise.all([
+    usersRef.where("phoneSuffix", "==", phoneSuffix).limit(5).get(),
+    usersRef.where("studentId", "==", phoneSuffix).limit(5).get(),
+  ]);
+
+  const conflicts = new Map();
+  [...suffixSnap.docs, ...studentIdSnap.docs].forEach((docSnap) => {
+    const existingUid = String(docSnap.data()?.uid || docSnap.id);
+    if (existingUid !== uid) {
+      conflicts.set(docSnap.id, docSnap);
+    }
+  });
+
+  if (conflicts.size > 0) {
+    throw new HttpsError("already-exists", "이미 사용 중인 4자리 ID입니다.");
+  }
+};
+
+exports.completeSignupProfile = onCall(
+  { secrets: [MASTER_ADMIN_CODE, INSTRUCTOR_SIGNUP_CODE] },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) {
+      throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
+    }
+
+    const name = String(request.data?.name || "").trim();
+    const phoneSuffix = String(request.data?.phoneSuffix || "").trim();
+    const instructorCode = String(request.data?.instructorCode || "").trim();
+    const masterCode = String(request.data?.masterCode || "").trim();
+    const email = String(request.auth?.token?.email || request.data?.email || "").trim();
+
+    if (!name) {
+      throw new HttpsError("invalid-argument", "이름을 확인해주세요.");
+    }
+    if (!/^\d{4}$/.test(phoneSuffix)) {
+      throw new HttpsError("invalid-argument", "학생 ID는 숫자 4자리여야 합니다.");
+    }
+
+    await assertStudentIdAvailable(uid, phoneSuffix);
+    const role = resolveSignupRole({ masterCode, instructorCode });
+
+    const reservationRef = db.collection("student_id_reservations").doc(phoneSuffix);
+    const userRef = db.collection("users").doc(uid);
+
+    const savedRole = await db.runTransaction(async (transaction) => {
+      const reservationSnap = await transaction.get(reservationRef);
+      const userSnap = await transaction.get(userRef);
+
+      const reservedUid = String(reservationSnap.data()?.uid || "");
+      if (reservationSnap.exists && reservedUid && reservedUid !== uid) {
+        throw new HttpsError("already-exists", "이미 사용 중인 4자리 ID입니다.");
+      }
+
+      const existingData = userSnap.data() || {};
+      const existingRole = String(existingData.role || "").toUpperCase();
+      const effectiveRole = ["ADMIN", "INSTRUCTOR", "STUDENT"].includes(existingRole)
+        ? existingRole
+        : role;
+
+      transaction.set(
+        reservationRef,
+        {
+          uid,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+      transaction.set(
+        userRef,
+        {
+          uid,
+          name,
+          email: email || existingData.email || null,
+          role: effectiveRole,
+          studentId: phoneSuffix,
+          studentKey: `${name}_${phoneSuffix}`,
+          phoneSuffix,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      return effectiveRole;
+    });
+
+    return { role: savedRole };
+  },
+);
 
 const withGlobalCors = (handler) => {
   return async (req, res) => {
