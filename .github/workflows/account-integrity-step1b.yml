@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - fix/account-security-integrity-20260809
+  pull_request:
+    branches:
+      - develop
 
 jobs:
   validate:
