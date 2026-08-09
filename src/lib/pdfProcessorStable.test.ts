@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { stabilizeParsedScores, type ParsedPdfData, type ScoreBreakdown } from "./pdfProcessorStable";
+import {
+  hydrateReportRecord,
+  stabilizeParsedScores,
+  type ParsedPdfData,
+  type ScoreBreakdown,
+} from "./pdfProcessorStable";
 
 const scores = (
   reading: number | null,
@@ -63,5 +68,15 @@ describe("stable PDF score recovery", () => {
     };
 
     expect(stabilizeParsedScores(parsed)).toBe(parsed);
+  });
+
+  it("recovers totalScore for legacy reports that only stored score rows", () => {
+    const report = hydrateReportRecord("legacy-report", {
+      scores: scores(92, 92, 92, 94, 94),
+      convertedScores: scores(18, 28, 18, 19, 9),
+      totalScore: undefined,
+    } as never);
+
+    expect(report.totalScore).toBe(92.6);
   });
 });
