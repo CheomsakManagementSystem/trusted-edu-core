@@ -25,29 +25,34 @@ const sumScores = (scores: ScoreBreakdown) =>
 
 const roundTenth = (value: number) => Math.round(value * 10) / 10;
 
+const normalizedWeightedTotal = (scores: ScoreBreakdown | null | undefined): number | null => {
+  if (!scores || !hasCompleteScores(scores)) return null;
+  if (!SCORE_KEYS.some((key) => (scores[key] ?? 0) > 30)) return null;
+
+  return roundTenth(
+    (scores.reading ?? 0) * 0.2 +
+      (scores.comprehension ?? 0) * 0.3 +
+      (scores.problemUnderstanding ?? 0) * 0.2 +
+      (scores.organization ?? 0) * 0.2 +
+      (scores.expression ?? 0) * 0.1,
+  );
+};
+
 export const resolveReportTotalScore = (
   explicitTotal: unknown,
   scores: ScoreBreakdown | null | undefined,
   convertedScores?: ScoreBreakdown | null,
 ): number | null => {
   const direct = finiteNonNegative(explicitTotal);
-  if (direct !== null) return direct;
-
   const embeddedTotal = finiteNonNegative(scores?.total);
-  if (embeddedTotal !== null) return embeddedTotal;
 
-  if (scores && hasCompleteScores(scores)) {
-    const usesNormalizedScale = SCORE_KEYS.some((key) => (scores[key] ?? 0) > 30);
-    if (usesNormalizedScale) {
-      return roundTenth(
-        (scores.reading ?? 0) * 0.2 +
-          (scores.comprehension ?? 0) * 0.3 +
-          (scores.problemUnderstanding ?? 0) * 0.2 +
-          (scores.organization ?? 0) * 0.2 +
-          (scores.expression ?? 0) * 0.1,
-      );
-    }
-  }
+  // Non-zero persisted totals are authoritative. A zero can be a legacy hydration
+  // fallback, so score rows are checked before accepting zero as the final total.
+  if (direct !== null && direct !== 0) return direct;
+  if (embeddedTotal !== null && embeddedTotal !== 0) return embeddedTotal;
+
+  const weightedTotal = normalizedWeightedTotal(scores);
+  if (weightedTotal !== null) return weightedTotal;
 
   if (convertedScores && hasCompleteScores(convertedScores)) {
     return roundTenth(sumScores(convertedScores));
@@ -57,7 +62,7 @@ export const resolveReportTotalScore = (
     return roundTenth(sumScores(scores));
   }
 
-  return null;
+  return direct ?? embeddedTotal;
 };
 
 export type RecentScoreTrend = "up" | "down" | null;
