@@ -1,0 +1,151 @@
+name: PDF parser emergency hotfix
+
+on:
+  push:
+    branches:
+      - hotfix/pdf-parser-stability-20260809
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Pin PDF.js locally
+        run: npm install pdfjs-dist@4.10.38 --save-exact
+
+      - name: Apply parser hotfix
+        shell: bash
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path('src/lib/pdfProcessor.ts')
+          text = path.read_text()
+
+          def replace_once(old: str, new: str, label: str):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, got {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              'const PDFJS_VERSION = "4.10.38";\n',
+              '',
+              'remove CDN version',
+          )
+
+          replace_once(
+              'const STUDENT_SECTION_MARKER = /김윤환\\s*class\\s*첨삭\\s*채점표/i;\n',
+              'const STUDENT_SECTION_MARKER_COMPACT = "김윤환class첨삭채점표";\n',
+              'student marker',
+          )
+
+          replace_once(
+              '''      const compact = compactTokenText(sorted.slice(start, end + 1).map((token) => token.text).join(""));\n      if (compactAliases.includes(compact)) {\n        return {\n''',
+              '''      const compact = compactTokenText(sorted.slice(start, end + 1).map((token) => token.text).join(""));\n      if (compactAliases.some((alias) => compact === alias || compact.startsWith(alias))) {\n        return {\n''',
+              'label prefix matching',
+          )
+
+          replace_once(
+              '''const normalizeMetricValue = (\n  value: number | null,\n  maximum: number | null,\n): number | null => {\n  if (!Number.isFinite(value) || (value ?? 0) < 0) {\n    return null;\n  }\n  if (Number.isFinite(maximum) && (value ?? 0) > (maximum ?? 0) + 0.001) {\n    return null;\n  }\n  return value;\n};\n''',
+              '''const normalizeMetricValue = (value: number | null): number | null => {\n  if (!Number.isFinite(value) || (value ?? 0) < 0 || (value ?? 0) > 100) {\n    return null;\n  }\n  return value;\n};\n\nconst normalizeConvertedMetricValue = (\n  value: number | null,\n  maximum: number | null,\n): number | null => {\n  if (!Number.isFinite(value) || (value ?? 0) < 0) {\n    return null;\n  }\n  if (Number.isFinite(maximum) && (value ?? 0) > (maximum ?? 0) + 0.001) {\n    return null;\n  }\n  return value;\n};\n''',
+              'score normalization',
+          )
+
+          replace_once(
+              '''    const normalizedMine = normalizeMetricValue(mine, row?.maximum ?? null);\n    if (Number.isFinite(mine) && normalizedMine === null) {\n      warnings.push(`${label} 점수가 만점 범위를 벗어났습니다.`);\n    }\n\n    scores[key] = normalizedMine;\n    averageScores[key] = Number.isFinite(average) && (average ?? 0) >= 0 ? average : null;\n    convertedScores[key] = Number.isFinite(converted) && (converted ?? 0) >= 0 ? converted : null;\n''',
+              '''    const normalizedMine = normalizeMetricValue(mine);\n    const normalizedAverage = normalizeMetricValue(average);\n    const normalizedConverted = normalizeConvertedMetricValue(converted, row?.maximum ?? null);\n    if (Number.isFinite(mine) && normalizedMine === null) {\n      warnings.push(`${label} 나의 점수가 0~100 범위를 벗어났습니다.`);\n    }\n    if (Number.isFinite(average) && normalizedAverage === null) {\n      warnings.push(`${label} 전체 평균이 0~100 범위를 벗어났습니다.`);\n    }\n    if (Number.isFinite(converted) && normalizedConverted === null) {\n      warnings.push(`${label} 환산 점수가 허용 범위를 벗어났습니다.`);\n    }\n\n    scores[key] = normalizedMine;\n    averageScores[key] = normalizedAverage;\n    convertedScores[key] = normalizedConverted;\n''',
+              'score assignment',
+          )
+
+          old_loader_start = text.index('const loadPdfJs = async (): Promise<PdfJsModule> => {')
+          old_loader_end = text.index('\n\nexport const extractPdfData = async', old_loader_start)
+          text = text[:old_loader_start] + '''const loadPdfJs = async (): Promise<PdfJsModule> => {\n  const [pdfjs, workerModule] = await Promise.all([\n    import("pdfjs-dist"),\n    import("pdfjs-dist/build/pdf.worker.min.mjs?url"),\n  ]);\n  pdfjs.GlobalWorkerOptions.workerSrc = workerModule.default;\n  return pdfjs as unknown as PdfJsModule;\n};''' + text[old_loader_end:]
+
+          replace_once(
+              '''  const markerPages = pageScopes.filter((scope) => STUDENT_SECTION_MARKER.test(scope.rawText));\n  const targetPages = markerPages.length > 0 ? markerPages : pageScopes.filter((scope) => scope.normalizedText);\n\n  return targetPages.map((scope) => ({\n''',
+              '''  const textPages = pageScopes.filter((scope) => scope.normalizedText && scope.tokens.length > 0);\n  if (textPages.length === 0) {\n    throw new Error("[PDF_NO_TEXT_LAYER] PDF에서 읽을 수 있는 텍스트 레이어를 찾지 못했습니다.");\n  }\n\n  const markerPages = textPages.filter((scope) =>\n    compactTokenText(scope.rawText).includes(STUDENT_SECTION_MARKER_COMPACT),\n  );\n  const fallbackPages = textPages.filter((scope) => {\n    const compact = compactTokenText(scope.rawText);\n    const signals = ["나의점수", "전체평균", "환산점수", "첨삭총평", "총점", "등급"];\n    return signals.filter((signal) => compact.includes(signal)).length >= 4;\n  });\n  const targetPages = markerPages.length > 0 ? markerPages : fallbackPages;\n\n  if (targetPages.length === 0) {\n    throw new Error("[PDF_REPORT_PAGE_NOT_FOUND] 첨삭 채점표 페이지를 찾지 못했습니다.");\n  }\n\n  return targetPages.map((scope) => ({\n''',
+              'target page selection',
+          )
+
+          replace_once(
+              '''      const chunks = await extractPdfDataByStudent(file);\n      for (const chunk of chunks) {\n''',
+              '''      const chunks = await extractPdfDataByStudent(file);\n      if (chunks.length === 0) {\n        throw new Error("[PDF_PARSE_EMPTY] PDF에서 파싱 가능한 학생 리포트를 찾지 못했습니다.");\n      }\n      for (const chunk of chunks) {\n''',
+              'empty chunk guard',
+          )
+
+          replace_once(
+              '''const sumRequiredScores = (scores: ScoreBreakdown) =>\n  REQUIRED_SCORE_KEYS.reduce((acc, key) => acc + (scores[key] ?? 0), 0);\n\nconst hasCompleteConvertedScores = (scores: ScoreBreakdown) =>\n''',
+              '''const sumRequiredScores = (scores: ScoreBreakdown) =>\n  REQUIRED_SCORE_KEYS.reduce((acc, key) => acc + (scores[key] ?? 0), 0);\n\nconst calculateWeightedNormalizedTotal = (scores: ScoreBreakdown) =>\n  (scores.reading ?? 0) * 0.2 +\n  (scores.comprehension ?? 0) * 0.3 +\n  (scores.problemUnderstanding ?? 0) * 0.2 +\n  (scores.organization ?? 0) * 0.2 +\n  (scores.expression ?? 0) * 0.1;\n\nconst looksLikeNormalizedScoreScale = (scores: ScoreBreakdown) =>\n  REQUIRED_SCORE_KEYS.some((key) => (scores[key] ?? 0) > 30);\n\nconst roundScoreToTenth = (value: number) => Math.round(value * 10) / 10;\n\nconst resolveFallbackTotalScore = (scores: ScoreBreakdown) =>\n  hasScoreIntegrity(scores) && looksLikeNormalizedScoreScale(scores)\n    ? roundScoreToTenth(calculateWeightedNormalizedTotal(scores))\n    : sumRequiredScores(scores);\n\nconst hasCompleteConvertedScores = (scores: ScoreBreakdown) =>\n''',
+              'weighted total helpers',
+          )
+
+          replace_once(
+              '''  if (hasCompleteConvertedScores(parsed.convertedScores)) {\n    return sumRequiredScores(parsed.convertedScores);\n  }\n  return sumRequiredScores(parsed.scores);\n};\n''',
+              '''  if (hasScoreIntegrity(parsed.scores) && looksLikeNormalizedScoreScale(parsed.scores)) {\n    return resolveFallbackTotalScore(parsed.scores);\n  }\n  if (hasCompleteConvertedScores(parsed.convertedScores)) {\n    return sumRequiredScores(parsed.convertedScores);\n  }\n  return sumRequiredScores(parsed.scores);\n};\n''',
+              'resolve total fallback',
+          )
+
+          replace_once(
+              '''  const mineTotal = sumRequiredScores(parsed.scores);\n  const convertedTotal = hasCompleteConvertedScores(parsed.convertedScores)\n    ? sumRequiredScores(parsed.convertedScores)\n    : null;\n  const matchesMine = totalsMatch(total as number, mineTotal);\n  const matchesConverted = convertedTotal !== null && totalsMatch(total as number, convertedTotal);\n\n  if (!matchesMine && !matchesConverted) {\n    const expected = convertedTotal === null\n      ? `${mineTotal}`\n      : `${mineTotal} 또는 환산점수 합계 ${convertedTotal}`;\n    return `총점 ${total}점이 항목 합계(${expected})와 일치하지 않습니다.`;\n  }\n''',
+              '''  const mineTotal = sumRequiredScores(parsed.scores);\n  const weightedTotal = looksLikeNormalizedScoreScale(parsed.scores)\n    ? roundScoreToTenth(calculateWeightedNormalizedTotal(parsed.scores))\n    : null;\n  const convertedTotal = hasCompleteConvertedScores(parsed.convertedScores)\n    ? sumRequiredScores(parsed.convertedScores)\n    : null;\n  const matchesWeighted = weightedTotal !== null && totalsMatch(total as number, weightedTotal);\n  const matchesMine = totalsMatch(total as number, mineTotal);\n  const matchesConverted = convertedTotal !== null && totalsMatch(total as number, convertedTotal);\n\n  if (!matchesWeighted && !matchesMine && !matchesConverted) {\n    const expected = [\n      weightedTotal !== null ? `가중 총점 ${weightedTotal}` : null,\n      `항목 합계 ${mineTotal}`,\n      convertedTotal !== null ? `환산점수 합계 ${convertedTotal}` : null,\n    ].filter(Boolean).join(" 또는 ");\n    return `총점 ${total}점이 계산 결과(${expected})와 일치하지 않습니다.`;\n  }\n''',
+              'total validation',
+          )
+
+          replace_once(
+              '''  const normalizedScores = {\n    ...payload.scores,\n    total: payload.scores.total ?? sumRequiredScores(payload.scores),\n  };\n''',
+              '''  const normalizedScores = {\n    ...payload.scores,\n    total: payload.scores.total ?? resolveFallbackTotalScore(payload.scores),\n  };\n''',
+              'manual edit total',
+          )
+
+          path.write_text(text)
+
+          test_path = Path('src/lib/pdfProcessor.test.ts')
+          tests = test_path.read_text()
+          anchor = '''  it("rejects a total that matches neither score sum", () => {\n    expect(\n      getParsedScoreValidationError({\n        scores: { ...scores, total: 99 },\n        convertedScores,\n      }),\n    ).toContain("일치하지 않습니다");\n  });\n'''
+          addition = anchor + '''\n  it("accepts the real report weighted total even when rounded converted scores differ", () => {\n    const reportScores: ScoreBreakdown = {\n      reading: 92,\n      comprehension: 92,\n      problemUnderstanding: 92,\n      organization: 94,\n      expression: 94,\n      total: 92.6,\n    };\n    const reportConverted: ScoreBreakdown = {\n      reading: 18,\n      comprehension: 28,\n      problemUnderstanding: 18,\n      organization: 19,\n      expression: 9,\n      total: 92,\n    };\n\n    expect(\n      getParsedScoreValidationError({ scores: reportScores, convertedScores: reportConverted }),\n    ).toBeNull();\n  });\n\n  it("uses the weighted 20/30/20/20/10 total when a normalized report has no explicit total", () => {\n    const reportScores: ScoreBreakdown = {\n      reading: 89,\n      comprehension: 90,\n      problemUnderstanding: 88,\n      organization: 85,\n      expression: 87,\n      total: null,\n    };\n    const reportConverted: ScoreBreakdown = {\n      reading: 18,\n      comprehension: 27,\n      problemUnderstanding: 18,\n      organization: 17,\n      expression: 9,\n      total: 89,\n    };\n\n    expect(resolveParsedTotalScore({ scores: reportScores, convertedScores: reportConverted })).toBe(88.1);\n  });\n'''
+          if tests.count(anchor) != 1:
+              raise SystemExit('test insertion anchor mismatch')
+          tests = tests.replace(anchor, addition, 1)
+
+          old_test = '''  it("rejects a score that exceeds the row maximum", () => {\n    const result = parseScoreTableFromTokens(completeLayoutTokens(25));\n\n    expect(result.scores.reading).toBeNull();\n    expect(result.meta.confidence).toBe("low");\n    expect(result.meta.warnings).toContain("독해력 점수가 만점 범위를 벗어났습니다.");\n  });\n'''
+          new_test = '''  it("treats the raw score column as a 0-100 normalized score rather than the rubric weight", () => {\n    const result = parseScoreTableFromTokens(completeLayoutTokens(88));\n\n    expect(result.scores.reading).toBe(88);\n    expect(result.meta.confidence).toBe("high");\n  });\n'''
+          if tests.count(old_test) != 1:
+              raise SystemExit('score-range test anchor mismatch')
+          tests = tests.replace(old_test, new_test, 1)
+          test_path.write_text(tests)
+          PY
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Commit verified hotfix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json src/lib/pdfProcessor.ts src/lib/pdfProcessor.test.ts
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "fix: stabilize PDF parsing and score validation [skip ci]"
+          git push origin HEAD:hotfix/pdf-parser-stability-20260809
