@@ -17,7 +17,7 @@ export default defineConfig(({ mode }) => ({
     alias: [
       {
         find: "@/lib/pdfProcessor",
-        replacement: path.resolve(__dirname, "./src/lib/pdfProcessorHotfix.ts"),
+        replacement: path.resolve(__dirname, "./src/lib/pdfProcessorStable.ts"),
       },
       {
         find: "@",
