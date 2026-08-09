@@ -3,7 +3,7 @@ import {
   getParsedScoreValidationError,
   resolveParsedTotalScore,
   type ScoreBreakdown,
-} from "@/lib/pdfProcessor";
+} from "./pdfProcessorHotfix";
 
 const converted = (values: [number, number, number, number, number]): ScoreBreakdown => ({
   reading: values[0],
