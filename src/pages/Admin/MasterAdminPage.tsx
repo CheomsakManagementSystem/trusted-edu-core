@@ -22,6 +22,10 @@ import {
 } from "@/lib/pdfProcessor";
 import { normalizeRole } from "@/lib/authz";
 import {
+  detectRecentScoreTrend,
+  resolveReportTotalScore,
+} from "@/lib/reportScoreIntegrity";
+import {
   clearClientSession,
   deleteCurrentUserAccount,
   getAccountDeletionErrorMessage,
@@ -52,36 +56,8 @@ const safeNumber = (value: unknown): number | null => {
   return Number.isFinite(next) ? next : null;
 };
 
-const reportTotal = (report: ReportRecord): number | null => {
-  const direct = safeNumber(report.totalScore);
-  if (direct !== null) {
-    return direct;
-  }
-
-  const scores = report.scores;
-  if (!scores) {
-    return null;
-  }
-
-  const fromTotal = safeNumber(scores.total);
-  if (fromTotal !== null) {
-    return fromTotal;
-  }
-
-  const partial = [
-    safeNumber(scores.reading),
-    safeNumber(scores.comprehension),
-    safeNumber(scores.problemUnderstanding),
-    safeNumber(scores.organization),
-    safeNumber(scores.expression),
-  ].filter((value): value is number => value !== null);
-
-  if (!partial.length) {
-    return null;
-  }
-
-  return partial.reduce((sum, value) => sum + value, 0);
-};
+const reportTotal = (report: ReportRecord): number | null =>
+  resolveReportTotalScore(report.totalScore, report.scores, report.convertedScores);
 
 const avg = (rows: number[]) => {
   if (!rows.length) {
@@ -324,13 +300,11 @@ const MasterAdminPage = () => {
         .map((report) => reportTotal(report))
         .filter((value): value is number => value !== null);
 
-      if (totals.length >= 3) {
-        const last3 = totals.slice(-3);
-        if (last3[0] < last3[1] && last3[1] < last3[2]) {
-          messages.push("📈 성적 우상향 중");
-        } else if (last3[0] > last3[1] && last3[1] > last3[2]) {
-          messages.push("⚠️ 슬럼프 점검 상담 권장");
-        }
+      const recentTrend = detectRecentScoreTrend(totals);
+      if (recentTrend === "up") {
+        messages.push("📈 성적 우상향 중");
+      } else if (recentTrend === "down") {
+        messages.push("⚠️ 슬럼프 점검 상담 권장");
       }
 
       const latest = sorted[0];

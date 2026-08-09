@@ -1,10 +1,12 @@
 import * as hotfix from "./pdfProcessorHotfix";
 import type {
   ParsedPdfData,
+  ReportRecord,
   ScoreBreakdown,
   StudentLite,
   UploadCandidate,
 } from "./pdfProcessorHotfix";
+import { resolveReportTotalScore } from "./reportScoreIntegrity";
 
 export * from "./pdfProcessorHotfix";
 
@@ -110,6 +112,23 @@ export const stabilizeParsedScores = (parsed: ParsedPdfData): ParsedPdfData => {
         ]),
       ],
     },
+  };
+};
+
+export const hydrateReportRecord = (
+  id: string,
+  data: Omit<ReportRecord, "id" | "examDate"> & Record<string, unknown> & { examDate?: string | null },
+): ReportRecord => {
+  const hydrated = hotfix.hydrateReportRecord(id, data);
+  const recoveredTotal = resolveReportTotalScore(
+    data.totalScore,
+    hydrated.scores,
+    hydrated.convertedScores,
+  );
+
+  return {
+    ...hydrated,
+    totalScore: recoveredTotal ?? hydrated.totalScore,
   };
 };
 
