@@ -9,12 +9,13 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDoc,
   getDocs,
   query,
   serverTimestamp,
-  updateDoc,
   where,
   writeBatch,
+  type DocumentReference,
   type Query,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -46,6 +47,34 @@ const getAuthErrorCode = (error: unknown) => {
   return typeof error === "object" && error !== null && "code" in error
     ? String((error as AuthError).code)
     : "";
+};
+
+const resolveUniqueUserProfileRef = async (uid: string): Promise<DocumentReference> => {
+  const normalizedUid = uid.trim();
+  if (!normalizedUid) {
+    throw new Error("사용자 식별값을 확인할 수 없습니다.");
+  }
+
+  const directRef = doc(db, "users", normalizedUid);
+  const [directSnap, uidSnap] = await Promise.all([
+    getDoc(directRef),
+    getDocs(query(collection(db, "users"), where("uid", "==", normalizedUid))),
+  ]);
+
+  const refs = new Map<string, DocumentReference>();
+  if (directSnap.exists()) {
+    refs.set(directSnap.id, directSnap.ref);
+  }
+  uidSnap.docs.forEach((docSnap) => refs.set(docSnap.id, docSnap.ref));
+
+  if (refs.size === 0) {
+    throw new Error("사용자 프로필 문서를 찾을 수 없습니다.");
+  }
+  if (refs.size > 1) {
+    throw new Error("동일한 인증 UID의 사용자 문서가 여러 개여서 자동 삭제를 중단했습니다.");
+  }
+
+  return Array.from(refs.values())[0];
 };
 
 const deleteDocumentsInQuery = async (targetQuery: Query) => {
@@ -171,15 +200,18 @@ export const reauthenticateCurrentUserForDeletion = async (password: string): Pr
 
 export const purgeUserFirestoreData = async (uid: string): Promise<void> => {
   try {
+    const profileRef = await resolveUniqueUserProfileRef(uid);
+
     await Promise.all([
       isolateStudentReports(uid),
-      deleteDocumentsInQuery(query(collection(db, "reports"), where("uid", "==", uid))),
       deleteDocumentsInQuery(query(collection(db, "classJoinRequests"), where("studentUid", "==", uid))),
       deleteDocumentsInQuery(query(collection(db, "submissions"), where("studentUid", "==", uid))),
       deleteDocumentsInQuery(query(collection(db, "notifications"), where("studentUid", "==", uid))),
+      deleteDocumentsInQuery(query(collection(db, "class_members"), where("uid", "==", uid))),
+      deleteDocumentsInQuery(query(collection(db, "enrollment_events"), where("uid", "==", uid))),
     ]);
 
-    await deleteDoc(doc(db, "users", uid));
+    await deleteDoc(profileRef);
   } catch (error) {
     throw mapFirestoreDeletionError(error);
   }
@@ -209,6 +241,7 @@ const extractFunctionErrorText = async (response: Response) => {
 const invokeOnRequestFunction = async (fnName: string, uid: string): Promise<void> => {
   const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
   const region = import.meta.env.VITE_FIREBASE_FUNCTIONS_REGION || "us-central1";
+  const currentUser = auth.currentUser;
 
   if (!projectId) {
     throw new AccountDeletionError(
@@ -216,13 +249,21 @@ const invokeOnRequestFunction = async (fnName: string, uid: string): Promise<voi
       "auth",
     );
   }
+  if (!currentUser) {
+    throw new AccountDeletionError(
+      "관리자 로그인 정보를 확인할 수 없습니다.",
+      "auth",
+    );
+  }
 
+  const idToken = await currentUser.getIdToken();
   const endpoint = `https://${region}-${projectId}.cloudfunctions.net/${fnName}`;
 
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      Authorization: `Bearer ${idToken}`,
     },
     body: JSON.stringify({ uid, action: "delete" }),
   });
@@ -245,7 +286,7 @@ export const deleteAuthUserByUid = async (uid: string): Promise<void> => {
       await invokeOnRequestFunction(fnName, uid);
       return;
     } catch {
-      // onRequest 함수가 없거나 호출 실패하면 callable도 시도
+      // 배포 환경 차이를 위해 callable 형식도 이어서 시도한다.
     }
 
     try {
@@ -267,8 +308,8 @@ export const deleteAuthUserByUid = async (uid: string): Promise<void> => {
 };
 
 export const deleteManagedUserCompletely = async (uid: string): Promise<void> => {
-  await purgeUserFirestoreData(uid);
   await deleteAuthUserByUid(uid);
+  await purgeUserFirestoreData(uid);
 };
 
 export const clearClientSession = async (signOut?: () => Promise<void>) => {

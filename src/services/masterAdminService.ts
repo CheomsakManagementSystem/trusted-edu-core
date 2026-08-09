@@ -11,6 +11,7 @@ import {
   setDoc,
   where,
   writeBatch,
+  type DocumentReference,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { normalizeRole, type CanonicalRole } from "@/lib/authz";
@@ -25,6 +26,7 @@ const DEFAULT_INSTRUCTOR_SIGNUP_CODE =
   "A8z#mQ92!vXp7@K3nR5$tW6*bYc9uL1&qJ4^sE7%hG2(V0)Nf8_mZ1+pQ5#kR9";
 const SYSTEM_SETTINGS_COLLECTION = "systemSettings";
 const MASTER_CONTROLS_DOC_ID = "masterControls";
+const MAX_BATCH_WRITES = 400;
 
 export type MasterControls = {
   instructorSignupCode: string;
@@ -48,6 +50,34 @@ const chunkBy = <T>(rows: T[], size: number): T[][] => {
     chunks.push(rows.slice(index, index + size));
   }
   return chunks;
+};
+
+const resolveUniqueManagedUserRef = async (uid: string): Promise<DocumentReference> => {
+  const normalizedUid = uid.trim();
+  if (!normalizedUid) {
+    throw new Error("사용자 식별값을 확인할 수 없습니다.");
+  }
+
+  const directRef = doc(db, "users", normalizedUid);
+  const [directSnap, uidSnap] = await Promise.all([
+    getDoc(directRef),
+    getDocs(query(collection(db, "users"), where("uid", "==", normalizedUid))),
+  ]);
+
+  const refs = new Map<string, DocumentReference>();
+  if (directSnap.exists()) {
+    refs.set(directSnap.id, directSnap.ref);
+  }
+  uidSnap.docs.forEach((docSnap) => refs.set(docSnap.id, docSnap.ref));
+
+  if (refs.size === 0) {
+    throw new Error("사용자 문서를 찾을 수 없습니다.");
+  }
+  if (refs.size > 1) {
+    throw new Error("동일한 인증 UID를 가진 사용자 문서가 여러 개여서 안전하게 수정할 수 없습니다.");
+  }
+
+  return Array.from(refs.values())[0];
 };
 
 const controlsRef = doc(db, SYSTEM_SETTINGS_COLLECTION, MASTER_CONTROLS_DOC_ID);
@@ -142,7 +172,8 @@ export const updateManagedUserRole = async (
   uid: string,
   role: Extract<CanonicalRole, "STUDENT" | "INSTRUCTOR">,
 ): Promise<void> => {
-  await setDoc(doc(db, "users", uid), {
+  const userRef = await resolveUniqueManagedUserRef(uid);
+  await setDoc(userRef, {
     role,
     updatedAt: serverTimestamp(),
   }, { merge: true });
@@ -152,39 +183,43 @@ export const updateManagedUserPhoneSuffix = async (
   uid: string,
   phoneSuffix: string,
 ): Promise<void> => {
-  await setDoc(doc(db, "users", uid), {
+  const userRef = await resolveUniqueManagedUserRef(uid);
+  await setDoc(userRef, {
     phoneSuffix: phoneSuffix.trim() || null,
     updatedAt: serverTimestamp(),
   }, { merge: true });
 };
 
-/** 학생 식별 ID 강제 수정 + 연동 리포트 일괄 cascade update (단일 writeBatch) */
 export const cascadeUpdateStudentId = async (
   uid: string,
   oldStudentId: string,
   newStudentId: string,
 ): Promise<number> => {
-  const batch = writeBatch(db);
+  const userRef = await resolveUniqueManagedUserRef(uid);
   const normalized = newStudentId.trim() || null;
-
-  batch.set(doc(db, "users", uid), {
-    phoneSuffix: normalized,
-    studentId: normalized,
-    updatedAt: serverTimestamp(),
-  }, { merge: true });
 
   let updatedCount = 0;
   if (oldStudentId) {
     const snap = await getDocs(
       query(collection(db, "reports"), where("studentId", "==", oldStudentId)),
     );
-    snap.docs.forEach((docSnap) => {
-      batch.update(docSnap.ref, { studentId: normalized });
-    });
+
+    for (const docs of chunkBy(snap.docs, MAX_BATCH_WRITES)) {
+      const batch = writeBatch(db);
+      docs.forEach((docSnap) => {
+        batch.update(docSnap.ref, { studentId: normalized });
+      });
+      await batch.commit();
+    }
     updatedCount = snap.docs.length;
   }
 
-  await batch.commit();
+  await setDoc(userRef, {
+    phoneSuffix: normalized,
+    studentId: normalized,
+    updatedAt: serverTimestamp(),
+  }, { merge: true });
+
   return updatedCount;
 };
 
@@ -197,7 +232,6 @@ export const notifyDuplicatePhoneSuffixUsers = async (
 ): Promise<{ notified: number; skipped: number }> => {
   const snap = await getDocs(collection(db, "users"));
 
-  // phoneSuffix별 uid 목록 집계
   const suffixMap = new Map<string, { uid: string; name: string; docId: string }[]>();
   for (const docSnap of snap.docs) {
     const data = docSnap.data() as {
@@ -222,7 +256,6 @@ export const notifyDuplicatePhoneSuffixUsers = async (
 
     for (const u of users) {
       try {
-        // 이미 발송된 유저 스킵
         const userSnap = await getDoc(doc(db, "users", u.docId));
         if (userSnap.data()?.isNotificationSent === true) {
           skipped++;
