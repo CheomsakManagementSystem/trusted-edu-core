@@ -77,7 +77,7 @@ export const TrendScoreChart = ({
   isMobile: boolean;
 }) => (
   <ResponsiveContainer width="100%" height="100%">
-    <LineChart data={data}>
+    <LineChart data={[...data].reverse()}>
       <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} />
       <XAxis
         dataKey="examDateLabel"
