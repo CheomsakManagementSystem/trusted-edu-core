@@ -9,6 +9,10 @@ const SCORE_KEYS: Array<Exclude<keyof ScoreBreakdown, "total">> = [
 ];
 
 const finiteNonNegative = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : null;
 };
