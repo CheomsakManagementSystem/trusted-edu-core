@@ -1,0 +1,56 @@
+name: Step2 class integrity patch
+
+on:
+  push:
+    branches:
+      - fix/class-name-integrity-20260809
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.head_commit.message != 'fix: wire class integrity service'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/class-name-integrity-20260809
+      - name: Patch ClassManager safely
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path('src/pages/Admin/ClassManager.tsx')
+          text = path.read_text()
+
+          text = text.replace('  getDocs,\n', '', 1)
+
+          old_import = '''} from "@/services/classTransferService";\n'''
+          new_import = '''} from "@/services/classTransferService";\nimport {\n  removeClassReferences,\n  renameClassReferences,\n} from "@/services/classIntegrityService";\n'''
+          if old_import not in text:
+              raise SystemExit('classTransferService import anchor not found')
+          text = text.replace(old_import, new_import, 1)
+
+          old_rename = '''        await getDocs(query(collection(db, "users"), where("classIds", "array-contains", classForm.id))).then(\n          async (snap) => {\n            await Promise.all(\n              snap.docs.map((studentDoc) =>\n                updateDoc(studentDoc.ref, {\n                  className: name,\n                  updatedAt: serverTimestamp(),\n                }),\n              ),\n            );\n          },\n        );\n'''
+          new_rename = '''        await renameClassReferences(classForm.id, name);\n'''
+          if old_rename not in text:
+              raise SystemExit('rename block not found')
+          text = text.replace(old_rename, new_rename, 1)
+
+          old_delete = '''      const studentsInClass = await getDocs(\n        query(collection(db, "users"), where("classIds", "array-contains", classDoc.id)),\n      );\n\n      await Promise.all(\n        studentsInClass.docs.map((studentDoc) => {\n          const data = studentDoc.data() as { classIds?: unknown };\n          const prevIds = normalizeClassIds(data.classIds);\n          const nextIds = prevIds.filter((id) => id !== classDoc.id);\n          return updateDoc(studentDoc.ref, {\n            classIds: nextIds,\n            classId: nextIds.length > 0 ? nextIds[0] : null,\n            className: nextIds.length > 0 ? null : null, // className은 loadData 후 재조회\n            isEnrolled: nextIds.length > 0,\n            enrollmentStatus: nextIds.length > 0 ? "active" : null,\n            updatedAt: serverTimestamp(),\n          });\n        }),\n      );\n\n'''
+          new_delete = '''      await removeClassReferences(classDoc.id, classes);\n\n'''
+          if old_delete not in text:
+              raise SystemExit('delete block not found')
+          text = text.replace(old_delete, new_delete, 1)
+
+          path.write_text(text)
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/pages/Admin/ClassManager.tsx
+          git diff --cached --check
+          git commit -m "fix: wire class integrity service"
+          git push origin HEAD:fix/class-name-integrity-20260809
