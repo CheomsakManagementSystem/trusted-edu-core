@@ -37,6 +37,21 @@ describe("report score integrity", () => {
     ).toBe(90);
   });
 
+  it("does not turn missing score rows into a zero total", () => {
+    expect(
+      resolveReportTotalScore(
+        undefined,
+        scores(null, null, null, null, null),
+      ),
+    ).toBeNull();
+    expect(
+      resolveReportTotalScore(
+        undefined,
+        scores(90, 89, null, 88, 87),
+      ),
+    ).toBeNull();
+  });
+
   it("detects trend from the latest three reports in chronological direction", () => {
     expect(detectRecentScoreTrend([90, 80, 70, 20])).toBe("up");
     expect(detectRecentScoreTrend([70, 80, 90, 100])).toBe("down");
