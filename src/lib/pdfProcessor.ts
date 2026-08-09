@@ -5,7 +5,9 @@ import {
   collection,
   deleteDoc,
   doc,
+  documentId,
   getDoc,
+  getDocFromServer,
   getDocs,
   onSnapshot,
   orderBy,
@@ -14,6 +16,7 @@ import {
   serverTimestamp,
   updateDoc,
   where,
+  type WriteBatch,
 } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 import { db, storage } from "@/lib/firebase";
@@ -28,6 +31,9 @@ export type JoinRequestStatus = "pending" | "approved" | "rejected";
 export type ReportAssignmentStatus = "completed" | "duplicate_pending" | "unassigned_pending";
 
 export type StudentLite = {
+  /** Firestore users 문서의 실제 Document ID */
+  docId: string;
+  /** Firebase Auth UID */
   uid: string;
   name: string;
   email: string;
@@ -58,6 +64,14 @@ export type ScoreBreakdown = {
   total: number | null;
 };
 
+export type ScoreParseConfidence = "high" | "medium" | "low" | "manual";
+
+export type ScoreParseMeta = {
+  confidence: ScoreParseConfidence;
+  method: "layout-columns" | "layout-order" | "text-fallback" | "manual";
+  warnings: string[];
+};
+
 export type ParsedPdfData = {
   name: string;
   className: string;
@@ -71,6 +85,7 @@ export type ParsedPdfData = {
   scores: ScoreBreakdown;
   averageScores: ScoreBreakdown;
   convertedScores: ScoreBreakdown;
+  scoreParse?: ScoreParseMeta;
   rawText: string;
 };
 
@@ -130,6 +145,7 @@ export type ReportRecord = {
 
 export type ClassJoinRequestRecord = {
   id: string;
+  studentDocId?: string | null;
   studentUid: string;
   studentName: string;
   studentEmail: string;
@@ -171,6 +187,14 @@ const METRIC_ALIASES: Record<MetricLabel, string[]> = {
   "문제 이해력": ["문제 이해력", "문제이해력", "문제 이해 력"],
   구성력: ["구성력", "구성 력"],
   표현력: ["표현력", "표현 력"],
+};
+
+const METRIC_SCORE_KEYS: Record<MetricLabel, Exclude<keyof ScoreBreakdown, "total">> = {
+  독해력: "reading",
+  "내용 이해력": "comprehension",
+  "문제 이해력": "problemUnderstanding",
+  구성력: "organization",
+  표현력: "expression",
 };
 
 const EMPTY_PARSED: ParsedPdfData = {
@@ -334,7 +358,9 @@ const parseFileNameHint = (
 ): { name?: string; total?: number | null; studentId?: string; phoneSuffix?: string } => {
   const base = fileName.replace(/\.pdf$/i, "");
   const nameMatch = base.match(/([가-힣]{2,5})/);
-  const scoreMatch = base.match(/(\d+(?:\.\d+)?)\s*점?/);
+  const scoreMatch =
+    base.match(/(?:총점|점수)\D*(\d+(?:\.\d+)?)\s*점?/i) ??
+    base.match(/(?:^|[_\-\s])(\d+(?:\.\d+)?)\s*점(?:[_\-\s]|$)/i);
   const phoneSuffixMatch = base.match(/[가-힣]{2,5}\D*(\d{4})(?:\D|$)/);
 
   // 명시적 레이블(학생코드/학번/student_id) 우선
@@ -557,17 +583,16 @@ const getMetricSegment = (text: string, label: MetricLabel) => {
 };
 
 const parseMetricTriple = (segment: string): [number | null, number | null, number | null] => {
-  const values = (segment.match(/-?\d+(?:\.\d+)?/g) ?? []).map((value) => Number(value));
+  const withoutMax = segment.replace(/\(?\s*-?\d+(?:\.\d+)?\s*점\s*만점\s*\)?/gi, " ");
+  const values = (withoutMax.match(/-?\d+(?:\.\d+)?/g) ?? [])
+    .map((value) => Number(value))
+    .filter(Number.isFinite);
   if (values.length < 3) {
     return [null, null, null];
   }
 
-  const lastThree = values.slice(-3);
-  return [
-    Number.isFinite(lastThree[0]) ? lastThree[0] : null,
-    Number.isFinite(lastThree[1]) ? lastThree[1] : null,
-    Number.isFinite(lastThree[2]) ? lastThree[2] : null,
-  ];
+  const firstThree = values.slice(0, 3);
+  return [firstThree[0] ?? null, firstThree[1] ?? null, firstThree[2] ?? null];
 };
 
 const sanitizeFeedback = (input: string, studentName = "", className = ""): string => {
@@ -656,9 +681,10 @@ const parsePdfText = (rawText: string): ParsedPdfData => {
   const [expMine, expAvg, expConverted] = parseMetricTriple(expressionSegment);
 
   const totalByBox = parseNumber(text.match(/총점\s*[:：]?\s*(-?\d+(?:\.\d+)?)/i)?.[1]);
-  const totalByConverted = [readingConverted, compConverted, problemConverted, orgConverted, expConverted]
-    .filter((value): value is number => Number.isFinite(value))
-    .reduce((acc, value) => acc + value, 0);
+  const convertedValues = [readingConverted, compConverted, problemConverted, orgConverted, expConverted];
+  const totalByConverted = convertedValues.every(Number.isFinite)
+    ? convertedValues.reduce((acc, value) => acc + (value ?? 0), 0)
+    : 0;
 
   return {
     name: extractField(text, ["이름", "성명", "학생명"]),
@@ -694,6 +720,11 @@ const parsePdfText = (rawText: string): ParsedPdfData => {
       expression: expConverted,
       total: totalByConverted > 0 ? totalByConverted : null,
     },
+    scoreParse: {
+      confidence: "low",
+      method: "text-fallback",
+      warnings: ["PDF 좌표 정보를 사용하지 못해 텍스트 순서로 점수를 읽었습니다."],
+    },
     rawText: text,
   };
 };
@@ -716,7 +747,7 @@ type PdfJsModule = {
   };
 };
 
-type PageToken = {
+export type PageToken = {
   text: string;
   x: number;
   y: number;
@@ -847,50 +878,302 @@ const extractReviewerFromScope = (scope: PageScope): string => {
   return sanitizeReviewerName(chunks.join(" ")) || extractReviewerFromRawText(scope.rawText);
 };
 
-const findScoreColumnX = (tokens: PageToken[]): number | null => {
-  const rowToken = tokens.find((token) => /나의\s*점수/i.test(token.text));
-  if (!rowToken) {
-    return null;
-  }
-  return rowToken.x + rowToken.width / 2;
+const compactTokenText = (value: string) =>
+  value.normalize("NFKC").replace(/[\s:：|]/g, "").toLowerCase();
+
+type TokenRange = {
+  startX: number;
+  endX: number;
 };
 
-const getMetricMineScore = (
-  scope: PageScope,
+type ScoreColumns = {
+  mine: number;
+  average: number;
+  converted: number;
+};
+
+type NumericCandidate = {
+  id: string;
+  value: number;
+  x: number;
+  tokenIndex: number;
+};
+
+type MetricRowResult = {
+  mine: number | null;
+  average: number | null;
+  converted: number | null;
+  maximum: number | null;
+  method: ScoreParseMeta["method"];
+};
+
+export type ParsedScoreTable = {
+  scores: ScoreBreakdown;
+  averageScores: ScoreBreakdown;
+  convertedScores: ScoreBreakdown;
+  meta: ScoreParseMeta;
+};
+
+const findPhraseRange = (line: PageToken[], aliases: string[]): TokenRange | null => {
+  const sorted = line.slice().sort((a, b) => a.x - b.x);
+  const compactAliases = aliases.map(compactTokenText);
+
+  for (let start = 0; start < sorted.length; start += 1) {
+    for (let end = start; end < Math.min(sorted.length, start + 5); end += 1) {
+      const compact = compactTokenText(sorted.slice(start, end + 1).map((token) => token.text).join(""));
+      if (compactAliases.includes(compact)) {
+        return {
+          startX: sorted[start].x,
+          endX: sorted[end].x + sorted[end].width,
+        };
+      }
+    }
+  }
+
+  return null;
+};
+
+const findScoreColumns = (tokens: PageToken[]): ScoreColumns | null => {
+  const headerAliases = {
+    mine: ["나의 점수", "나의점수", "내 점수"],
+    average: ["전체 평균", "전체평균"],
+    converted: ["환산 점수", "환산점수"],
+  } as const;
+
+  const candidates = groupTokensByLine(tokens, 11)
+    .map((line) => {
+      const ranges = {
+        mine: findPhraseRange(line, [...headerAliases.mine]),
+        average: findPhraseRange(line, [...headerAliases.average]),
+        converted: findPhraseRange(line, [...headerAliases.converted]),
+      };
+      const count = Object.values(ranges).filter(Boolean).length;
+      return { ranges, count };
+    })
+    .sort((a, b) => b.count - a.count);
+
+  const best = candidates[0];
+  if (!best || best.count < 3 || !best.ranges.mine || !best.ranges.average || !best.ranges.converted) {
+    return null;
+  }
+
+  return {
+    mine: (best.ranges.mine.startX + best.ranges.mine.endX) / 2,
+    average: (best.ranges.average.startX + best.ranges.average.endX) / 2,
+    converted: (best.ranges.converted.startX + best.ranges.converted.endX) / 2,
+  };
+};
+
+const extractNumericCandidates = (line: PageToken[], labelEndX: number): NumericCandidate[] => {
+  const sorted = line.slice().sort((a, b) => a.x - b.x);
+  const maxMarkerIndex = sorted.findIndex((token) => /만점/i.test(token.text));
+
+  return sorted.flatMap((token, tokenIndex) => {
+    if (token.x + token.width / 2 <= labelEndX) {
+      return [];
+    }
+
+    const matches = [...token.text.matchAll(/-?\d+(?:\.\d+)?/g)];
+    return matches.flatMap((match, matchIndex) => {
+      const value = Number(match[0]);
+      if (!Number.isFinite(value)) {
+        return [];
+      }
+
+      const belongsToMaximum =
+        /만점/i.test(token.text) ||
+        (maxMarkerIndex >= 0 && tokenIndex === maxMarkerIndex - 1 && token.x < sorted[maxMarkerIndex].x);
+      if (belongsToMaximum) {
+        return [];
+      }
+
+      const textLength = Math.max(token.text.length, 1);
+      const matchCenter = (match.index ?? 0) + match[0].length / 2;
+      return [{
+        id: `${tokenIndex}-${matchIndex}`,
+        value,
+        x: token.x + token.width * (matchCenter / textLength),
+        tokenIndex,
+      }];
+    });
+  });
+};
+
+const selectColumnValues = (
+  candidates: NumericCandidate[],
+  columns: ScoreColumns,
+): [number | null, number | null, number | null] => {
+  const orderedColumns = [columns.mine, columns.average, columns.converted];
+  const boundaries = [
+    Number.NEGATIVE_INFINITY,
+    (columns.mine + columns.average) / 2,
+    (columns.average + columns.converted) / 2,
+    Number.POSITIVE_INFINITY,
+  ];
+
+  const selected = orderedColumns.map((columnX, index) => {
+    const inColumn = candidates
+      .filter((candidate) => candidate.x >= boundaries[index] && candidate.x < boundaries[index + 1])
+      .sort((a, b) => Math.abs(a.x - columnX) - Math.abs(b.x - columnX));
+    return inColumn[0] ?? null;
+  });
+
+  if (selected.some((candidate) => candidate === null)) {
+    return [null, null, null];
+  }
+
+  return [selected[0]!.value, selected[1]!.value, selected[2]!.value];
+};
+
+const extractMetricMaximum = (line: PageToken[]): number | null => {
+  const match = toLineText(line).match(/\(?\s*(\d+(?:\.\d+)?)\s*점\s*만점\s*\)?/i);
+  return match ? parseNumber(match[1]) : null;
+};
+
+const parseMetricRow = (
+  lines: PageToken[][],
   label: MetricLabel,
-  scoreColumnX: number | null,
+  columns: ScoreColumns | null,
+): MetricRowResult | null => {
+  for (const line of lines) {
+    const labelRange = findPhraseRange(line, METRIC_ALIASES[label]);
+    if (!labelRange) {
+      continue;
+    }
+
+    const candidates = extractNumericCandidates(line, labelRange.endX);
+    const maximum = extractMetricMaximum(line);
+
+    if (columns) {
+      const [mine, average, converted] = selectColumnValues(candidates, columns);
+      if ([mine, average, converted].every(Number.isFinite)) {
+        return { mine, average, converted, maximum, method: "layout-columns" };
+      }
+    }
+
+    const ordered = candidates.slice().sort((a, b) => a.x - b.x).slice(0, 3);
+    if (ordered.length === 3) {
+      return {
+        mine: ordered[0].value,
+        average: ordered[1].value,
+        converted: ordered[2].value,
+        maximum,
+        method: "layout-order",
+      };
+    }
+
+    return { mine: null, average: null, converted: null, maximum, method: "text-fallback" };
+  }
+
+  return null;
+};
+
+const normalizeMetricValue = (
+  value: number | null,
+  maximum: number | null,
 ): number | null => {
-  const labelToken = scope.tokens.find((token) =>
-    METRIC_ALIASES[label].some((alias) => new RegExp(`^${escapeRegex(alias)}\\s*$`, "i").test(token.text)),
-  );
-
-  if (!labelToken) {
+  if (!Number.isFinite(value) || (value ?? 0) < 0) {
     return null;
   }
-
-  const rowCandidates = scope.tokens
-    .filter(
-      (token) =>
-        Math.abs(token.y - labelToken.y) <= 8 &&
-        token.x > labelToken.x &&
-        /-?\d+(?:\.\d+)?/.test(token.text),
-    )
-    .map((token) => ({
-      token,
-      value: parseTokenNumber(token.text),
-      distance:
-        scoreColumnX === null
-          ? token.x - labelToken.x
-          : Math.abs(token.x + token.width / 2 - scoreColumnX),
-    }))
-    .filter((candidate) => Number.isFinite(candidate.value));
-
-  if (rowCandidates.length === 0) {
+  if (Number.isFinite(maximum) && (value ?? 0) > (maximum ?? 0) + 0.001) {
     return null;
   }
+  return value;
+};
 
-  rowCandidates.sort((a, b) => a.distance - b.distance);
-  return rowCandidates[0].value;
+export const parseScoreTableFromTokens = (
+  tokens: PageToken[],
+  normalizedText = "",
+): ParsedScoreTable => {
+  const columns = findScoreColumns(tokens);
+  const lines = groupTokensByLine(tokens, 8);
+  const scores: ScoreBreakdown = { ...EMPTY_PARSED.scores };
+  const averageScores: ScoreBreakdown = { ...EMPTY_PARSED.averageScores };
+  const convertedScores: ScoreBreakdown = { ...EMPTY_PARSED.convertedScores };
+  const warnings: string[] = [];
+  const methods: ScoreParseMeta["method"][] = [];
+
+  for (const label of METRIC_LABELS) {
+    const key = METRIC_SCORE_KEYS[label];
+    const row = parseMetricRow(lines, label, columns);
+    let mine = row?.mine ?? null;
+    let average = row?.average ?? null;
+    let converted = row?.converted ?? null;
+    let method = row?.method ?? "text-fallback";
+
+    if (![mine, average, converted].every(Number.isFinite)) {
+      const [fallbackMine, fallbackAverage, fallbackConverted] = parseMetricTriple(
+        getMetricSegment(normalizedText, label),
+      );
+      mine ??= fallbackMine;
+      average ??= fallbackAverage;
+      converted ??= fallbackConverted;
+      method = "text-fallback";
+    }
+
+    const normalizedMine = normalizeMetricValue(mine, row?.maximum ?? null);
+    if (Number.isFinite(mine) && normalizedMine === null) {
+      warnings.push(`${label} 점수가 만점 범위를 벗어났습니다.`);
+    }
+
+    scores[key] = normalizedMine;
+    averageScores[key] = Number.isFinite(average) && (average ?? 0) >= 0 ? average : null;
+    convertedScores[key] = Number.isFinite(converted) && (converted ?? 0) >= 0 ? converted : null;
+    methods.push(method);
+
+    if (![scores[key], averageScores[key], convertedScores[key]].every(Number.isFinite)) {
+      warnings.push(`${label} 점수 열을 완전히 읽지 못했습니다.`);
+    }
+  }
+
+  const allMineScores = REQUIRED_SCORE_KEYS.every((key) => Number.isFinite(scores[key]));
+  const confidence: ScoreParseConfidence =
+    allMineScores && methods.every((method) => method === "layout-columns")
+      ? "high"
+      : allMineScores && methods.every((method) => method !== "text-fallback")
+        ? "medium"
+        : "low";
+
+  return {
+    scores,
+    averageScores,
+    convertedScores,
+    meta: {
+      confidence,
+      method:
+        confidence === "high"
+          ? "layout-columns"
+          : confidence === "medium"
+            ? "layout-order"
+            : "text-fallback",
+      warnings: [...new Set(warnings)],
+    },
+  };
+};
+
+const extractTotalScoreFromScope = (scope: PageScope): number | null => {
+  const columns = findScoreColumns(scope.tokens);
+  const lines = groupTokensByLine(scope.tokens, 8);
+
+  for (const line of lines) {
+    const totalRange = findPhraseRange(line, ["총점", "총 점"]);
+    if (!totalRange) {
+      continue;
+    }
+    const candidates = extractNumericCandidates(line, totalRange.endX);
+    if (columns) {
+      const [mine] = selectColumnValues(candidates, columns);
+      if (Number.isFinite(mine) && (mine ?? 0) >= 0) {
+        return mine;
+      }
+    }
+    const first = candidates.slice().sort((a, b) => a.x - b.x)[0]?.value ?? null;
+    if (Number.isFinite(first) && (first ?? 0) >= 0) {
+      return first;
+    }
+  }
+
+  return null;
 };
 
 const extractBoxValueNearKeyword = (
@@ -969,37 +1252,21 @@ const parsePdfPage = (scope: PageScope): ParsedPdfData => {
     extractReviewerFromScope(scope) ||
     extractReviewerFromFeedbackFirstLine(scope.rawText) ||
     sanitizeReviewerName(extractField(text, ["첨삭자", "채점자"]));
-  const scoreColumnX = findScoreColumnX(scope.tokens);
+  const scoreTable = parseScoreTableFromTokens(scope.tokens, text);
 
-  const readingSegment = getMetricSegment(text, "독해력");
-  const comprehensionSegment = getMetricSegment(text, "내용 이해력");
-  const problemSegment = getMetricSegment(text, "문제 이해력");
-  const organizationSegment = getMetricSegment(text, "구성력");
-  const expressionSegment = getMetricSegment(text, "표현력");
-
-  const [readingMineByText, readingAvg, readingConverted] = parseMetricTriple(readingSegment);
-  const [compMineByText, compAvg, compConverted] = parseMetricTriple(comprehensionSegment);
-  const [problemMineByText, problemAvg, problemConverted] = parseMetricTriple(problemSegment);
-  const [orgMineByText, orgAvg, orgConverted] = parseMetricTriple(organizationSegment);
-  const [expMineByText, expAvg, expConverted] = parseMetricTriple(expressionSegment);
-
-  const readingMine = getMetricMineScore(scope, "독해력", scoreColumnX) ?? readingMineByText;
-  const compMine = getMetricMineScore(scope, "내용 이해력", scoreColumnX) ?? compMineByText;
-  const problemMine = getMetricMineScore(scope, "문제 이해력", scoreColumnX) ?? problemMineByText;
-  const orgMine = getMetricMineScore(scope, "구성력", scoreColumnX) ?? orgMineByText;
-  const expMine = getMetricMineScore(scope, "표현력", scoreColumnX) ?? expMineByText;
-
-  const totalByBox = parseNumber(
-    extractBoxValueNearKeyword(scope, /총점/, /-?\d+(?:\.\d+)?/i) ||
-      text.match(/총점\s*[:：]?\s*(-?\d+(?:\.\d+)?)/i)?.[1],
-  );
+  const totalByBox =
+    extractTotalScoreFromScope(scope) ??
+    parseNumber(
+      extractBoxValueNearKeyword(scope, /총점/, /-?\d+(?:\.\d+)?/i) ||
+        text.match(/총점\s*[:：]?\s*(-?\d+(?:\.\d+)?)/i)?.[1],
+    );
   const gradeByBox =
     extractBoxValueNearKeyword(scope, /등급/, /[A-Za-z가-힣][A-Za-z0-9+\-가-힣]*/i) ||
     extractField(text, ["등급"]);
 
-  const totalByConverted = [readingConverted, compConverted, problemConverted, orgConverted, expConverted]
-    .filter((value): value is number => Number.isFinite(value))
-    .reduce((acc, value) => acc + value, 0);
+  const totalByConverted = REQUIRED_SCORE_KEYS.every((key) => Number.isFinite(scoreTable.convertedScores[key]))
+    ? REQUIRED_SCORE_KEYS.reduce((acc, key) => acc + (scoreTable.convertedScores[key] ?? 0), 0)
+    : 0;
 
   return {
     name,
@@ -1012,29 +1279,15 @@ const parsePdfPage = (scope: PageScope): ParsedPdfData => {
     reviewer,
     feedback,
     scores: {
-      reading: readingMine,
-      comprehension: compMine,
-      problemUnderstanding: problemMine,
-      organization: orgMine,
-      expression: expMine,
+      ...scoreTable.scores,
       total: totalByBox,
     },
-    averageScores: {
-      reading: readingAvg,
-      comprehension: compAvg,
-      problemUnderstanding: problemAvg,
-      organization: orgAvg,
-      expression: expAvg,
-      total: null,
-    },
+    averageScores: scoreTable.averageScores,
     convertedScores: {
-      reading: readingConverted,
-      comprehension: compConverted,
-      problemUnderstanding: problemConverted,
-      organization: orgConverted,
-      expression: expConverted,
+      ...scoreTable.convertedScores,
       total: totalByConverted > 0 ? totalByConverted : null,
     },
+    scoreParse: scoreTable.meta,
     rawText: text,
   };
 };
@@ -1371,6 +1624,7 @@ export const prepareUploadCandidates = async (
           },
         };
         const match = resolveMatchStatus(merged, classStudents, allStudents);
+        const parseError = getUploadCandidateValidationError(merged) ?? undefined;
         candidates.push({
           id: createUploadCandidateId(),
           file,
@@ -1378,6 +1632,7 @@ export const prepareUploadCandidates = async (
           sourcePageLabel: `${chunk.sourcePage}p`,
           parsed: merged,
           ...match,
+          parseError,
         });
       }
     } catch (error) {
@@ -1408,10 +1663,74 @@ export const prepareUploadCandidates = async (
 };
 
 const hasScoreIntegrity = (scores: ScoreBreakdown) =>
-  REQUIRED_SCORE_KEYS.every((key) => Number.isFinite(scores[key]));
+  REQUIRED_SCORE_KEYS.every((key) => Number.isFinite(scores[key]) && (scores[key] ?? 0) >= 0);
 
 const sumRequiredScores = (scores: ScoreBreakdown) =>
   REQUIRED_SCORE_KEYS.reduce((acc, key) => acc + (scores[key] ?? 0), 0);
+
+const hasCompleteConvertedScores = (scores: ScoreBreakdown) =>
+  REQUIRED_SCORE_KEYS.every((key) => Number.isFinite(scores[key]) && (scores[key] ?? 0) >= 0);
+
+const totalsMatch = (left: number, right: number) => Math.abs(left - right) <= 0.51;
+
+export const resolveParsedTotalScore = (parsed: Pick<ParsedPdfData, "scores" | "convertedScores">) => {
+  if (Number.isFinite(parsed.scores.total) && (parsed.scores.total ?? 0) >= 0) {
+    return parsed.scores.total as number;
+  }
+  if (hasCompleteConvertedScores(parsed.convertedScores)) {
+    return sumRequiredScores(parsed.convertedScores);
+  }
+  return sumRequiredScores(parsed.scores);
+};
+
+export const getParsedScoreValidationError = (
+  parsed: Pick<ParsedPdfData, "scores" | "convertedScores" | "scoreParse">,
+): string | null => {
+  if (!hasScoreIntegrity(parsed.scores)) {
+    return "파싱 실패: 점수 5개(독해력/내용 이해력/문제 이해력/구성력/표현력)를 모두 확인해주세요.";
+  }
+
+  if (parsed.scoreParse?.confidence === "low") {
+    return "점수표의 열 위치를 확실하게 식별하지 못했습니다. 점수 5개와 총점을 직접 확인해주세요.";
+  }
+
+  const total = parsed.scores.total;
+  if (!Number.isFinite(total)) {
+    return null;
+  }
+  if ((total ?? 0) < 0) {
+    return "총점은 0점 이상이어야 합니다.";
+  }
+
+  const mineTotal = sumRequiredScores(parsed.scores);
+  const convertedTotal = hasCompleteConvertedScores(parsed.convertedScores)
+    ? sumRequiredScores(parsed.convertedScores)
+    : null;
+  const matchesMine = totalsMatch(total as number, mineTotal);
+  const matchesConverted = convertedTotal !== null && totalsMatch(total as number, convertedTotal);
+
+  if (!matchesMine && !matchesConverted) {
+    const expected = convertedTotal === null
+      ? `${mineTotal}`
+      : `${mineTotal} 또는 환산점수 합계 ${convertedTotal}`;
+    return `총점 ${total}점이 항목 합계(${expected})와 일치하지 않습니다.`;
+  }
+
+  return null;
+};
+
+export const getUploadCandidateValidationError = (
+  parsed: Pick<ParsedPdfData, "scores" | "convertedScores" | "scoreParse" | "feedback">,
+): string | null => {
+  const scoreError = getParsedScoreValidationError(parsed);
+  if (scoreError) {
+    return scoreError;
+  }
+  if (!parsed.feedback.trim()) {
+    return "파싱 실패: 첨삭 총평이 비어 있습니다.";
+  }
+  return null;
+};
 
 const isPermissionDeniedError = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error ?? "");
@@ -1477,6 +1796,27 @@ const uploadPdfToStorage = async (
   return getDownloadURL(storageRef);
 };
 
+const MAX_CONCURRENT_REPORT_UPLOADS = 3;
+
+const runWithConcurrency = async <T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>,
+): Promise<void> => {
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        await worker(items[index], index);
+      }
+    }),
+  );
+};
+
 export const publishReportBatch = async (
   uploadRows: UploadCandidate[],
   selectedClass: ClassLite,
@@ -1503,41 +1843,36 @@ export const publishReportBatch = async (
     };
   }
 
-  let successCount = 0;
-  let pendingCount = 0;
-  const autoAssignedNotices: string[] = [];
-  const failures: string[] = [];
-  const results: Array<{ candidateId: string; success: boolean; reportId?: string; error?: string }> = [];
+  const results: Array<{ candidateId: string; success: boolean; reportId?: string; error?: string }> =
+    new Array(uploadRows.length);
+  const outcomes: Array<"completed" | "pending" | "failure"> = new Array(uploadRows.length);
+  const notices: Array<string | undefined> = new Array(uploadRows.length);
+  const failureMessages: Array<string | undefined> = new Array(uploadRows.length);
+  const progressByIndex = new Array<number>(uploadRows.length).fill(0);
 
-  for (let i = 0; i < uploadRows.length; i += 1) {
-    const row = uploadRows[i];
+  const updateProgress = (index: number, progress: number) => {
+    progressByIndex[index] = Math.max(progressByIndex[index], Math.min(100, progress));
+    const overall = progressByIndex.reduce((sum, value) => sum + value, 0) / uploadRows.length;
+    onOverallProgress?.(overall);
+  };
 
+  await runWithConcurrency(uploadRows, MAX_CONCURRENT_REPORT_UPLOADS, async (row, index) => {
     try {
-      if (!hasScoreIntegrity(row.parsed.scores)) {
-        throw new Error(
-          "파싱 실패: 점수 5개(독해력/내용 이해력/문제 이해력/구성력/표현력)를 모두 입력해주세요.",
-        );
-      }
-
-      if (!row.parsed.feedback.trim()) {
-        throw new Error("파싱 실패: 첨삭 총평이 비어 있습니다.");
-      }
+      const validationError = getUploadCandidateValidationError(row.parsed);
+      if (validationError) throw new Error(validationError);
 
       const resolvedStudent = row.selectedStudentUid
         ? allStudents.find((entry) => entry.uid === row.selectedStudentUid) ?? null
         : null;
-
-      const completedStudent = resolvedStudent;
-      const assignmentStatus: ReportAssignmentStatus = completedStudent ? "completed" : "unassigned_pending";
-
-      const storageOwnerUid = completedStudent?.uid ?? uid;
+      const assignmentStatus: ReportAssignmentStatus = resolvedStudent
+        ? "completed"
+        : "unassigned_pending";
+      const storageOwnerUid = resolvedStudent?.uid ?? uid;
 
       const url = await uploadPdfToStorage(storageOwnerUid, row.file, (fileProgress) => {
-        const baseProgress = (i / uploadRows.length) * 100;
-        onOverallProgress?.(baseProgress + fileProgress / uploadRows.length);
+        updateProgress(index, fileProgress);
       });
-
-      const totalScore = row.parsed.scores.total ?? sumRequiredScores(row.parsed.scores);
+      const totalScore = resolveParsedTotalScore(row.parsed);
 
       const created = await addDoc(collection(db, "reports"), {
         uid,
@@ -1545,14 +1880,12 @@ export const publishReportBatch = async (
         className: selectedClass.name,
         examDate,
         fileHash: row.fileHash ?? null,
-        studentUid: completedStudent?.uid ?? null,
-        // studentId: customId(6~8자) 우선. 레거시 유저는 phoneSuffix(4자리)가 들어옴.
-        // null/undefined/빈문자열 방어 → null 저장 (ReportView where 쿼리 정합성 유지)
-        studentId: (completedStudent?.studentId ?? "").trim() || null,
-        studentName: (completedStudent?.name ?? row.parsed.name ?? "").trim(),
+        studentUid: resolvedStudent?.uid ?? null,
+        studentId: (resolvedStudent?.studentId ?? "").trim() || null,
+        studentName: (resolvedStudent?.name ?? row.parsed.name ?? "").trim(),
         assignmentStatus,
-        status: completedStudent ? "completed" : "pending",
-        assignedAt: completedStudent ? serverTimestamp() : null,
+        status: resolvedStudent ? "completed" : "pending",
+        assignedAt: resolvedStudent ? serverTimestamp() : null,
         sourceName: row.parsed.name || "",
         sourceStudentId: row.parsed.studentId || null,
         sourcePhoneSuffix: row.parsed.phoneSuffix || null,
@@ -1563,18 +1896,12 @@ export const publishReportBatch = async (
         essayTopic: row.parsed.essayTopic || "",
         grade: row.parsed.grade || "",
         feedback: row.parsed.feedback || "",
-        scores: {
-          ...row.parsed.scores,
-          total: totalScore,
-        },
+        scores: { ...row.parsed.scores, total: totalScore },
         averageScores: row.parsed.averageScores,
         convertedScores: row.parsed.convertedScores,
         parsedJson: {
           ...row.parsed,
-          scores: {
-            ...row.parsed.scores,
-            total: totalScore,
-          },
+          scores: { ...row.parsed.scores, total: totalScore },
         },
         totalScore,
         isRead: false,
@@ -1585,22 +1912,25 @@ export const publishReportBatch = async (
         createdAt: serverTimestamp(),
       });
 
-      if (assignmentStatus === "completed") {
-        successCount += 1;
-        if (row.status === "ready" && row.matchReason) {
-          autoAssignedNotices.push(`[${completedStudent?.name}] 학생에게 리포트를 전달했습니다`);
-        }
-      } else {
-        pendingCount += 1;
+      outcomes[index] = assignmentStatus === "completed" ? "completed" : "pending";
+      results[index] = { candidateId: row.id, success: true, reportId: created.id };
+      if (assignmentStatus === "completed" && row.status === "ready" && row.matchReason) {
+        notices[index] = "[" + (resolvedStudent?.name ?? "") + "] 학생에게 리포트를 전달했습니다";
       }
-      results.push({ candidateId: row.id, success: true, reportId: created.id });
-      onOverallProgress?.(((i + 1) / uploadRows.length) * 100);
     } catch (error) {
       const reason = normalizePublishError(error);
-      failures.push(`${row.file.name}: ${reason}`);
-      results.push({ candidateId: row.id, success: false, error: reason });
+      outcomes[index] = "failure";
+      failureMessages[index] = row.file.name + ": " + reason;
+      results[index] = { candidateId: row.id, success: false, error: reason };
+    } finally {
+      updateProgress(index, 100);
     }
-  }
+  });
+
+  const successCount = outcomes.filter((status) => status === "completed").length;
+  const pendingCount = outcomes.filter((status) => status === "pending").length;
+  const failures = failureMessages.filter((message): message is string => Boolean(message));
+  const autoAssignedNotices = notices.filter((message): message is string => Boolean(message));
 
   return {
     successCount,
@@ -1613,39 +1943,40 @@ export const publishReportBatch = async (
 };
 
 export const fetchStudents = async (): Promise<StudentLite[]> => {
-  try {
-    const snap = await getDocs(query(collection(db, "users"), where("role", "in", ["student", "STUDENT"])));
-    return snap.docs.map((docSnap) => {
-      const data = docSnap.data() as {
-        uid?: string;
-        name?: string;
-        email?: string;
-        classId?: string;
-        classIds?: unknown;
-        className?: string;
-        studentId?: string;
-        phoneNumber?: string;
-        phoneSuffix?: string;
-      };
-      const phoneDigits = (data.phoneNumber ?? "").replace(/\D/g, "");
-      const phoneLast4 = phoneDigits.length >= 4 ? phoneDigits.slice(-4) : null;
-      const studentId = data.studentId ?? data.phoneSuffix ?? phoneLast4 ?? null;
-      const classIds = normalizeClassIds(data.classIds, data.classId ?? null);
-      return {
-        uid: data.uid ?? docSnap.id,
-        name: data.name ?? "이름없음",
-        email: data.email ?? "",
-        classId: data.classId ?? null,
-        classIds,
-        className: data.className ?? null,
-        studentId,
-        phoneNumber: data.phoneNumber ?? null,
-        phoneSuffix: data.phoneSuffix ?? null,
-      };
-    });
-  } catch {
-    return [];
-  }
+  const snap = await getDocs(
+    query(collection(db, "users"), where("role", "in", ["student", "STUDENT"])),
+  );
+
+  return snap.docs.map((docSnap) => {
+    const data = docSnap.data() as {
+      uid?: string;
+      name?: string;
+      email?: string;
+      classId?: string;
+      classIds?: unknown;
+      className?: string;
+      studentId?: string;
+      phoneNumber?: string;
+      phoneSuffix?: string;
+    };
+    const phoneDigits = (data.phoneNumber ?? "").replace(/\D/g, "");
+    const phoneLast4 = phoneDigits.length >= 4 ? phoneDigits.slice(-4) : null;
+    const studentId = data.studentId ?? data.phoneSuffix ?? phoneLast4 ?? null;
+    const classIds = normalizeClassIds(data.classIds, data.classId ?? null);
+
+    return {
+      docId: docSnap.id,
+      uid: data.uid ?? docSnap.id,
+      name: data.name ?? "이름없음",
+      email: data.email ?? "",
+      classId: data.classId ?? null,
+      classIds,
+      className: data.className ?? null,
+      studentId,
+      phoneNumber: data.phoneNumber ?? null,
+      phoneSuffix: data.phoneSuffix ?? null,
+    };
+  });
 };
 
 export const fetchClasses = async (): Promise<ClassLite[]> => {
@@ -1661,10 +1992,10 @@ export const fetchClasses = async (): Promise<ClassLite[]> => {
 };
 
 export const submitClassJoinRequest = async (
-  student: Pick<StudentLite, "uid" | "name" | "email">,
+  student: Pick<StudentLite, "docId" | "uid" | "name" | "email">,
   classInfo: ClassLite,
 ): Promise<void> => {
-  const studentRef = doc(db, "users", student.uid);
+  const studentRef = doc(db, "users", student.docId);
   const studentSnap = await getDoc(studentRef);
 
   if (!studentSnap.exists()) {
@@ -1744,6 +2075,39 @@ export const fetchPendingClassJoinRequests = async (): Promise<ClassJoinRequestR
   }
 };
 
+const resolveStudentDocumentId = async (
+  studentUid: string,
+  preferredDocId?: string | null,
+): Promise<string> => {
+  const candidateIds = [...new Set([preferredDocId, studentUid].filter((value): value is string => Boolean(value)))];
+
+  for (const candidateId of candidateIds) {
+    const snapshot = await getDoc(doc(db, "users", candidateId));
+    if (!snapshot.exists()) {
+      continue;
+    }
+    const data = snapshot.data() as { uid?: string; role?: string };
+    const resolvedUid = data.uid ?? snapshot.id;
+    if (resolvedUid === studentUid && (data.role === "student" || data.role === "STUDENT")) {
+      return snapshot.id;
+    }
+  }
+
+  const snapshot = await getDocs(query(collection(db, "users"), where("uid", "==", studentUid)));
+  const studentProfiles = snapshot.docs.filter((entry) => {
+    const data = entry.data() as { role?: string };
+    return data.role === "student" || data.role === "STUDENT";
+  });
+
+  if (studentProfiles.length === 1) {
+    return studentProfiles[0].id;
+  }
+  if (studentProfiles.length > 1) {
+    throw new Error("동일한 UID의 학생 문서가 여러 개여서 가입 승인을 처리할 수 없습니다.");
+  }
+  throw new Error("가입 신청 학생의 실제 프로필 문서를 찾을 수 없습니다.");
+};
+
 export const approveClassJoinRequest = async (
   requestId: string,
   adminUid: string,
@@ -1760,7 +2124,13 @@ export const approveClassJoinRequest = async (
     throw new Error("이미 처리된 신청입니다.");
   }
 
-  await updateDoc(doc(db, "users", requestData.studentUid), {
+  const studentDocId = await resolveStudentDocumentId(
+    requestData.studentUid,
+    requestData.studentDocId,
+  );
+  const batch = writeBatch(db);
+
+  batch.update(doc(db, "users", studentDocId), {
     classId: requestData.classId,
     classIds: arrayUnion(requestData.classId),
     className: requestData.className,
@@ -1769,12 +2139,15 @@ export const approveClassJoinRequest = async (
     updatedAt: serverTimestamp(),
   });
 
-  await updateDoc(requestRef, {
+  batch.update(requestRef, {
+    studentDocId,
     status: "approved",
     approvedBy: adminUid,
     approvedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
+
+  await batch.commit();
 };
 
 export const fetchReportsByStudentUid = async (studentUid: string): Promise<ReportRecord[]> => {
@@ -1798,27 +2171,14 @@ export const fetchReportsByStudentUid = async (studentUid: string): Promise<Repo
 };
 
 export const fetchPendingReports = async (): Promise<ReportRecord[]> => {
-  const reportsRef = collection(db, "reports");
   const statuses: ReportAssignmentStatus[] = ["duplicate_pending", "unassigned_pending"];
+  const snapshot = await getDocs(
+    query(collection(db, "reports"), where("assignmentStatus", "in", statuses)),
+  );
 
-  const fetchByStatus = async (status: ReportAssignmentStatus) => {
-    try {
-      const snapshot = await getDocs(
-        query(reportsRef, where("assignmentStatus", "==", status), orderBy("createdAt", "desc")),
-      );
-      return snapshot.docs
-        .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-        .sort(compareReportsByExamDateDesc);
-    } catch {
-      const snapshot = await getDocs(query(reportsRef, where("assignmentStatus", "==", status)));
-      return snapshot.docs
-        .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-        .sort(compareReportsByExamDateDesc);
-    }
-  };
-
-  const rows = (await Promise.all(statuses.map((status) => fetchByStatus(status)))).flat();
-  return rows.sort(compareReportsByExamDateDesc);
+  return snapshot.docs
+    .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
+    .sort(compareReportsByExamDateDesc);
 };
 
 export const subscribePendingReports = (
@@ -1842,30 +2202,93 @@ export const subscribePendingReports = (
   );
 };
 
+type ReportAssignmentStudent = Pick<
+  StudentLite,
+  "docId" | "uid" | "name" | "studentId" | "classIds" | "className"
+>;
+
+export const resolveReportAssignmentClass = (
+  report: Partial<ReportRecord>,
+  student: ReportAssignmentStudent,
+) => {
+  const classId = report.classId ?? resolvePrimaryClassId(student);
+  const className = report.className ?? (report.classId ? null : student.className ?? null);
+  return { classId, className };
+};
+
+const queueMissingStudentClass = (
+  batch: WriteBatch,
+  student: ReportAssignmentStudent,
+  classId: string | null,
+  className: string | null,
+): boolean => {
+  if (!classId || normalizeClassIds(student.classIds).includes(classId)) {
+    return false;
+  }
+
+  const hasExistingClass = normalizeClassIds(student.classIds).length > 0;
+  batch.update(doc(db, "users", student.docId), {
+    classIds: arrayUnion(classId),
+    isEnrolled: true,
+    enrollmentStatus: "active",
+    updatedAt: serverTimestamp(),
+    ...(hasExistingClass ? {} : { classId, className }),
+  });
+  return true;
+};
+
+const verifyStudentHasClass = async (
+  student: ReportAssignmentStudent,
+  classId: string | null,
+): Promise<void> => {
+  if (!classId) return;
+  const snapshot = await getDocFromServer(doc(db, "users", student.docId));
+  if (!snapshot.exists()) {
+    throw new Error("연결 대상 학생 문서를 찾을 수 없습니다.");
+  }
+  const data = snapshot.data() as { classIds?: unknown; classId?: string | null };
+  if (!normalizeClassIds(data.classIds, data.classId ?? null).includes(classId)) {
+    throw new Error("리포트 연결 후 학생 반 배정 검증에 실패했습니다.");
+  }
+};
+
 export const assignPendingReportToStudent = async (
   reportId: string,
-  student: Pick<StudentLite, "uid" | "name" | "studentId" | "classIds" | "className">,
+  student: ReportAssignmentStudent,
 ): Promise<void> => {
-  // studentId: customId(6~8자) 우선. 없으면 null → ReportView where("studentId") 쿼리와 정합
-  const resolvedStudentId = (student.studentId ?? "").trim() || null;
-  const primaryClassId = resolvePrimaryClassId(student);
-  await updateDoc(doc(db, "reports", reportId), {
+  const reportRef = doc(db, "reports", reportId);
+  const reportSnap = await getDocFromServer(reportRef);
+  if (!reportSnap.exists()) {
+    throw new Error("연결할 리포트를 찾을 수 없습니다.");
+  }
+
+  const previous = reportSnap.data() as Partial<ReportRecord>;
+  const { classId, className } = resolveReportAssignmentClass(previous, student);
+  const batch = writeBatch(db);
+  const classAdded = queueMissingStudentClass(batch, student, classId, className);
+
+  batch.update(reportRef, {
     studentUid: student.uid,
-    studentId: resolvedStudentId,
+    studentId: (student.studentId ?? "").trim() || null,
     studentName: student.name ?? "",
-    classId: primaryClassId,
-    className: student.className ?? null,
+    classId,
+    className,
     assignmentStatus: "completed",
     status: "completed",
     assignedAt: serverTimestamp(),
-    matchReason: "관리자가 수동으로 학생을 연결했습니다.",
+    matchReason: classAdded
+      ? "관리자가 학생을 반에 추가하고 리포트를 연결했습니다."
+      : "관리자가 수동으로 학생을 연결했습니다.",
     updatedAt: serverTimestamp(),
   });
+
+  await batch.commit();
+  if (classAdded) await verifyStudentHasClass(student, classId);
 };
 
 export const assignReportToStudentOverride = async (
   reportId: string,
-  student: Pick<StudentLite, "uid" | "name" | "studentId" | "classIds" | "className">,
+  student: ReportAssignmentStudent,
   actorRole?: string | null,
   actorUid?: string | null,
 ): Promise<void> => {
@@ -1874,23 +2297,30 @@ export const assignReportToStudentOverride = async (
   }
 
   const reportRef = doc(db, "reports", reportId);
-  const reportSnap = await getDoc(reportRef);
-  const previous = (reportSnap.data() ?? {}) as Partial<ReportRecord>;
+  const reportSnap = await getDocFromServer(reportRef);
+  if (!reportSnap.exists()) {
+    throw new Error("연결할 리포트를 찾을 수 없습니다.");
+  }
+
+  const previous = reportSnap.data() as Partial<ReportRecord>;
   const claimRef = previous.studentUid ? doc(db, "report_claims", `${reportId}_${previous.studentUid}`) : null;
   const claimSnap = claimRef ? await getDoc(claimRef) : null;
+  const { classId, className } = resolveReportAssignmentClass(previous, student);
   const batch = writeBatch(db);
-  const primaryClassId = resolvePrimaryClassId(student);
+  const classAdded = queueMissingStudentClass(batch, student, classId, className);
 
   batch.update(reportRef, {
     studentUid: student.uid,
     studentName: student.name ?? "",
     studentId: (student.studentId ?? "").trim() || null,
-    classId: primaryClassId,
-    className: student.className ?? null,
+    classId,
+    className,
     assignmentStatus: "completed",
     status: "completed",
     matchMethod: "admin_manual_override",
-    matchReason: "관리자가 수동으로 학생을 변경했습니다.",
+    matchReason: classAdded
+      ? "관리자가 학생을 반에 추가하고 리포트를 변경했습니다."
+      : "관리자가 수동으로 학생을 변경했습니다.",
     assignedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
@@ -1905,11 +2335,12 @@ export const assignReportToStudentOverride = async (
   }
 
   await batch.commit();
+  if (classAdded) await verifyStudentHasClass(student, classId);
 };
 
 export const fixAndAssignPendingReport = async (
   reportId: string,
-  student: Pick<StudentLite, "uid" | "name" | "studentId" | "classIds" | "className">,
+  student: ReportAssignmentStudent,
   source: {
     sourceName: string;
     sourceStudentId: string;
@@ -1924,8 +2355,12 @@ export const fixAndAssignPendingReport = async (
   }
 
   const reportRef = doc(db, "reports", reportId);
-  const snap = await getDoc(reportRef);
-  const prev = (snap.data() ?? {}) as Partial<ReportRecord>;
+  const snap = await getDocFromServer(reportRef);
+  if (!snap.exists()) {
+    throw new Error("수정할 리포트를 찾을 수 없습니다.");
+  }
+
+  const prev = snap.data() as Partial<ReportRecord>;
   const parsedJson = prev.parsedJson
     ? {
         ...prev.parsedJson,
@@ -1935,15 +2370,16 @@ export const fixAndAssignPendingReport = async (
         writtenAt: source.examDate.trim(),
       }
     : undefined;
+  const { classId, className } = resolveReportAssignmentClass(prev, student);
   const batch = writeBatch(db);
-  const primaryClassId = resolvePrimaryClassId(student);
+  const classAdded = queueMissingStudentClass(batch, student, classId, className);
 
   batch.update(reportRef, {
     studentUid: student.uid,
     studentName: student.name ?? "",
     studentId: (student.studentId ?? "").trim() || null,
-    classId: primaryClassId,
-    className: student.className ?? null,
+    classId,
+    className,
     sourceName: source.sourceName.trim(),
     sourceStudentId: source.sourceStudentId.trim() || null,
     sourcePhoneSuffix: source.sourcePhoneSuffix.trim() || null,
@@ -1952,7 +2388,9 @@ export const fixAndAssignPendingReport = async (
     assignmentStatus: "completed",
     status: "completed",
     matchMethod: "admin_manual_fix",
-    matchReason: "관리자가 원본 정보를 수정하고 학생을 배정했습니다.",
+    matchReason: classAdded
+      ? "관리자가 원본 정보를 수정하고 학생을 반에 추가한 뒤 배정했습니다."
+      : "관리자가 원본 정보를 수정하고 학생을 배정했습니다.",
     assignedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
     fixedBy: actorUid ?? null,
@@ -1961,6 +2399,34 @@ export const fixAndAssignPendingReport = async (
   });
 
   await batch.commit();
+  if (classAdded) await verifyStudentHasClass(student, classId);
+};
+
+
+const fetchReportRecordsByIds = async (reportIds: string[]): Promise<Map<string, ReportRecord>> => {
+  const uniqueIds = Array.from(new Set(reportIds.filter(Boolean)));
+  if (!uniqueIds.length) return new Map();
+
+  const chunks: string[][] = [];
+  for (let start = 0; start < uniqueIds.length; start += 30) {
+    chunks.push(uniqueIds.slice(start, start + 30));
+  }
+
+  const snapshots = await Promise.all(
+    chunks.map((ids) =>
+      getDocs(query(collection(db, "reports"), where(documentId(), "in", ids))),
+    ),
+  );
+  const reports = new Map<string, ReportRecord>();
+  snapshots.forEach((snapshot) => {
+    snapshot.docs.forEach((docSnap) => {
+      reports.set(
+        docSnap.id,
+        hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">),
+      );
+    });
+  });
+  return reports;
 };
 
 export const subscribeOpenReportClaims = (
@@ -1968,12 +2434,14 @@ export const subscribeOpenReportClaims = (
   onError?: (error: Error) => void,
 ) => {
   const claimsQuery = query(collection(db, "report_claims"), where("status", "==", "open"));
+  let snapshotVersion = 0;
 
   return onSnapshot(
     claimsQuery,
     async (snapshot) => {
-      const claims = await Promise.all(
-        snapshot.docs.map(async (claimDoc) => {
+      const version = ++snapshotVersion;
+      try {
+        const rows = snapshot.docs.map((claimDoc) => {
           const data = claimDoc.data() as {
             reportId?: string;
             studentUid?: string;
@@ -1983,31 +2451,34 @@ export const subscribeOpenReportClaims = (
             resolvedAt?: Timestamp | null;
             resolvedBy?: string | null;
           };
-          const reportId = data.reportId ?? "";
-          const reportSnap = reportId ? await getDoc(doc(db, "reports", reportId)) : null;
-          const report = reportSnap?.exists()
-            ? hydrateReportRecord(reportSnap.id, reportSnap.data() as Omit<ReportRecord, "id">)
-            : null;
-
           return {
             id: claimDoc.id,
-            reportId,
+            reportId: data.reportId ?? "",
             studentUid: data.studentUid ?? "",
-            status: data.status ?? "open",
+            status: (data.status ?? "open") as "open" | "resolved",
             createdAt: data.createdAt ?? null,
             updatedAt: data.updatedAt ?? null,
             resolvedAt: data.resolvedAt ?? null,
             resolvedBy: data.resolvedBy ?? null,
-            report,
           };
-        }),
-      );
+        });
+        const reportsById = await fetchReportRecordsByIds(rows.map((row) => row.reportId));
+        if (version !== snapshotVersion) return;
 
-      onChange(
-        claims.sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0)),
-      );
+        onChange(
+          rows
+            .map((row) => ({ ...row, report: reportsById.get(row.reportId) ?? null }))
+            .sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0)),
+        );
+      } catch (error) {
+        if (version !== snapshotVersion) return;
+        onError?.(error instanceof Error ? error : new Error("오배송 신고 리포트를 불러오지 못했습니다."));
+      }
     },
-    (error) => onError?.(error),
+    (error) => {
+      snapshotVersion += 1;
+      onError?.(error);
+    },
   );
 };
 
