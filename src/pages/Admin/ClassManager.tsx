@@ -336,12 +336,22 @@ const ClassManager = () => {
     const assignedStudents = students.filter((student) =>
       checkedStudentDocIds.includes(student.docId),
     );
+    const firstAssignments = assignedStudents.filter(
+      (student) => normalizeClassIds(student.classIds, student.classId).length === 0,
+    );
+    const additionalAssignments = assignedStudents.filter(
+      (student) => normalizeClassIds(student.classIds, student.classId).length > 0,
+    );
+
     setLoading(true);
     setIsSyncing(true);
     setMessage("");
 
     try {
-      await bulkAddClassIdToStudents(assignedStudents, selectedClass.id);
+      await Promise.all([
+        bulkUpdateStudentClassIds(firstAssignments, [selectedClass.id], selectedClass),
+        bulkAddClassIdToStudents(additionalAssignments, selectedClass.id),
+      ]);
       await forceSync();
       setCheckedStudentDocIds([]);
       setMessage(`${assignedStudents.length}명의 학생을 '${selectedClass.name}'에 배정했습니다.`);
@@ -364,19 +374,22 @@ const ClassManager = () => {
       return;
     }
 
+    const primaryClassId =
+      student.classId && deduped.includes(student.classId) ? student.classId : deduped[0] ?? null;
+    const primaryClass = classes.find((item) => item.id === primaryClassId) ?? null;
+
     setLoading(true);
     setMessage("");
     try {
-      const firstClass = classes.find((c) => c.id === deduped[0]) ?? null;
-      await updateStudentClassIds(student, deduped, firstClass);
+      await updateStudentClassIds(student, deduped, primaryClass);
       setStudents((prev) =>
         prev.map((item) =>
           item.docId === student.docId
             ? {
                 ...item,
                 classIds: deduped,
-                classId: firstClass?.id ?? null,
-                className: firstClass?.name ?? null,
+                classId: primaryClass?.id ?? null,
+                className: primaryClass?.name ?? null,
               }
             : item,
         ),
