@@ -1,9 +1,8 @@
 import { useState } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
 import { sendPasswordResetEmail, signInWithEmailAndPassword, type AuthError } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
 import { Loader2 } from "lucide-react";
-import { auth, db } from "@/lib/firebase";
+import { auth } from "@/lib/firebase";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -17,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/sonner";
 import { normalizeRole } from "@/lib/authz";
+import { resolveUserProfileSnapshot } from "@/services/userProfileResolver";
 
 const Login = () => {
   const navigate = useNavigate();
@@ -53,17 +53,8 @@ const Login = () => {
 
     try {
       const credential = await signInWithEmailAndPassword(auth, email, password);
-      const uid = credential.user.uid;
-
-      const userRef = doc(db, "users", uid);
-      const snap = await getDoc(userRef);
-
-      let role = "STUDENT";
-
-      if (snap.exists()) {
-        const data = snap.data() as { role?: string };
-        role = normalizeRole(data.role);
-      }
+      const resolvedProfile = await resolveUserProfileSnapshot(credential.user.uid);
+      const role = normalizeRole(resolvedProfile?.snapshot.data()?.role);
 
       const redirectTo =
         (location.state?.from as unknown as { pathname?: string } | undefined)?.pathname ??

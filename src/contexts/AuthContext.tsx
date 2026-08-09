@@ -14,18 +14,18 @@ import {
   signOut as firebaseSignOut,
 } from "firebase/auth";
 import {
-  collection,
   doc,
-  getDoc,
-  getDocs,
-  limit,
   onSnapshot,
-  query,
-  where,
+  type DocumentData,
+  type DocumentSnapshot,
 } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 import { normalizeRole, type CanonicalRole } from "@/lib/authz";
 import { normalizeClassIds } from "@/services/classTransferService";
+import {
+  invalidateUserProfileResolution,
+  resolveUserProfileSnapshot,
+} from "@/services/userProfileResolver";
 
 type Role = CanonicalRole;
 
@@ -65,86 +65,108 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     let cancelled = false;
 
-    const subscribeToProfile = async (firebaseUser: User) => {
-      const uidRef = doc(db, "users", firebaseUser.uid);
+    const applyProfile = (
+      firebaseUser: User,
+      snap: DocumentSnapshot<DocumentData>,
+    ) => {
+      if (!snap.exists() || cancelled) return false;
 
-      const resolveRef = async () => {
-        try {
-          const q = query(
-            collection(db, "users"),
-            where("uid", "==", firebaseUser.uid),
-            limit(1),
-          );
-          const qs = await getDocs(q);
-          return qs.empty ? null : qs.docs[0].ref;
-        } catch {
-          return null;
-        }
+      const data = snap.data() as {
+        name?: string;
+        email?: string;
+        role?: string;
+        studentId?: string;
+        studentKey?: string;
+        phoneSuffix?: string;
+        classId?: string | null;
+        classIds?: unknown;
+        className?: string | null;
+        needsMigration?: boolean;
       };
 
-      let targetRef = uidRef;
+      const inferredStudentId =
+        data.studentId ??
+        data.phoneSuffix ??
+        data.studentKey?.match(/_(\d{4})$/)?.[1];
+
+      setUser({
+        uid: firebaseUser.uid,
+        name: data.name ?? firebaseUser.displayName ?? "사용자",
+        email: data.email ?? firebaseUser.email,
+        role: normalizeRole(data.role),
+        studentId: inferredStudentId,
+        studentKey: data.studentKey,
+        phoneSuffix: data.phoneSuffix,
+        classId: data.classId ?? null,
+        classIds: normalizeClassIds(data.classIds, data.classId),
+        className: data.className ?? null,
+        docPath: `users/${snap.ref.id}`,
+        needsMigration: data.needsMigration === true,
+      });
+      setLoading(false);
+      return true;
+    };
+
+    const subscribeToProfile = async (firebaseUser: User, recoveryAttempt = 0) => {
+      let resolved = null;
       try {
-        const directSnap = await getDoc(uidRef);
-        if (!directSnap.exists()) {
-          const found = await resolveRef();
-          if (found) targetRef = found;
-        }
-      } catch {
-        /* 네트워크 오류 시 uid ref로 폴백 */
+        resolved = await resolveUserProfileSnapshot(firebaseUser.uid);
+      } catch (error) {
+        console.error("Failed to resolve user profile", error);
       }
 
       if (cancelled) return;
 
       unsubscribeProfileRef.current?.();
-      unsubscribeProfileRef.current = onSnapshot(
-        targetRef,
-        async (snap) => {
-          if (!snap.exists()) {
-            if (!cancelled) {
-              unsubscribeProfileRef.current?.();
-              unsubscribeProfileRef.current = null;
-              await subscribeToProfile(firebaseUser);
+      unsubscribeProfileRef.current = null;
+
+      if (!resolved) {
+        // createUserWithEmailAndPassword fires before Signup writes users/{uid}.
+        // Keep one direct listener so that the just-created profile is picked up
+        // without recursively repeating Firestore reads.
+        const uidRef = doc(db, "users", firebaseUser.uid);
+        unsubscribeProfileRef.current = onSnapshot(
+          uidRef,
+          (snap) => {
+            if (snap.exists()) {
+              invalidateUserProfileResolution(firebaseUser.uid);
+              applyProfile(firebaseUser, snap);
+            } else {
+              setUser(null);
+              setLoading(false);
             }
+          },
+          (error) => {
+            console.error("Failed to subscribe user profile", error);
+            setUser(null);
+            setLoading(false);
+          },
+        );
+        return;
+      }
+
+      // The resolver snapshot is already available. Use it immediately instead of
+      // waiting for onSnapshot to deliver the same initial document again.
+      applyProfile(firebaseUser, resolved.snapshot);
+
+      unsubscribeProfileRef.current = onSnapshot(
+        resolved.ref,
+        (snap) => {
+          if (snap.exists()) {
+            applyProfile(firebaseUser, snap);
             return;
           }
 
-          const data = snap.data() as {
-            name?: string;
-            email?: string;
-            role?: string;
-            studentId?: string;
-            studentKey?: string;
-            phoneSuffix?: string;
-            classId?: string | null;
-            classIds?: unknown;
-            className?: string | null;
-            needsMigration?: boolean;
-          };
+          if (recoveryAttempt < 1 && !cancelled) {
+            invalidateUserProfileResolution(firebaseUser.uid);
+            unsubscribeProfileRef.current?.();
+            unsubscribeProfileRef.current = null;
+            setLoading(true);
+            void subscribeToProfile(firebaseUser, recoveryAttempt + 1);
+            return;
+          }
 
-          const inferredStudentId =
-            data.studentId ??
-            data.phoneSuffix ??
-            data.studentKey?.match(/_(\d{4})$/)?.[1];
-
-          const role = normalizeRole(data.role);
-          const needsMigration = data.needsMigration === true;
-          const newClassIds = normalizeClassIds(data.classIds, data.classId);
-
-          setUser((prev) => ({
-            ...prev,
-            uid: firebaseUser.uid,
-            name: data.name ?? firebaseUser.displayName ?? "사용자",
-            email: data.email ?? firebaseUser.email,
-            role,
-            studentId: inferredStudentId,
-            studentKey: data.studentKey,
-            phoneSuffix: data.phoneSuffix,
-            classId: data.classId ?? null,
-            classIds: newClassIds,
-            className: data.className ?? null,
-            docPath: `users/${snap.ref.id}`,
-            needsMigration,
-          }));
+          setUser(null);
           setLoading(false);
         },
         (error) => {
@@ -156,7 +178,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     };
 
     const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser: User | null) => {
-      cancelled = false;
       unsubscribeProfileRef.current?.();
       unsubscribeProfileRef.current = null;
 
@@ -179,6 +200,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const signOut = useCallback(async () => {
+    if (auth.currentUser?.uid) {
+      invalidateUserProfileResolution(auth.currentUser.uid);
+    }
     await firebaseSignOut(auth);
     setUser(null);
   }, []);
