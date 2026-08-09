@@ -9,7 +9,7 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "vitest run && node --check functions/index.js",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.app.json --noEmit"
   },
