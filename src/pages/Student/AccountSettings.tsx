@@ -48,17 +48,33 @@ const AccountSettings = () => {
     () => classes.find((item) => item.id === selectedClassId) ?? null,
     [classes, selectedClassId],
   );
+  const currentClass = useMemo(() => {
+    const currentClassId = normalizeClassIds(user?.classIds).at(0);
+    return classes.find((item) => item.id === currentClassId) ?? null;
+  }, [classes, user?.classIds]);
 
   const hasClassSelectionChanged = (normalizeClassIds(user?.classIds).at(0) ?? "none") !== selectedClassId;
 
   const handleClassChange = async () => {
-    if (!user?.uid || !hasClassSelectionChanged) {
+    if (!user?.docPath || !hasClassSelectionChanged) {
+      return;
+    }
+
+    const studentDocId = user.docPath.startsWith("users/")
+      ? user.docPath.slice("users/".length)
+      : "";
+    if (!studentDocId) {
+      toast({
+        variant: "destructive",
+        title: "반 변경에 실패했습니다",
+        description: "학생 문서 경로를 확인할 수 없습니다.",
+      });
       return;
     }
 
     setClassSaving(true);
     try {
-      await updateStudentClassAssignment(user.uid, selectedClass);
+      await updateStudentClassAssignment({ docId: studentDocId, uid: user.uid }, selectedClass);
       toast({
         title: "반 정보가 성공적으로 업데이트되었습니다",
       });
@@ -195,7 +211,7 @@ const AccountSettings = () => {
           <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
             <div className="space-y-1.5">
               <p className="text-sm font-semibold text-card-foreground">현재 소속 반</p>
-              <p className="text-base text-foreground">{user?.className || "미배정"}</p>
+              <p className="text-base text-foreground">{currentClass?.name || "미배정"}</p>
             </div>
             <div className="w-full max-w-sm space-y-2">
               <label className="text-sm font-medium text-card-foreground">반 변경하기</label>
