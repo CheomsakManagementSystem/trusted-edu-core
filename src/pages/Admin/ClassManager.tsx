@@ -4,7 +4,6 @@ import {
   collection,
   deleteDoc,
   doc,
-  getDocs,
   getDocsFromServer,
   orderBy,
   query,
@@ -33,6 +32,9 @@ import {
   bulkUpdateStudentClassIds,
   normalizeClassIds,
   removeClassIdFromStudent,
+  removeDeletedClassReferences,
+  resolveClassStateAfterRemoval,
+  syncRenamedClassReferences,
   updateStudentClassIds,
 } from "@/services/classTransferService";
 
@@ -100,7 +102,6 @@ const ClassManager = () => {
   const [expandedClassId, setExpandedClassId] = useState<string | null>(null);
   const [adminSearch, setAdminSearch] = useState("");
   const [selectedBulkClassId, setSelectedBulkClassId] = useState("none");
-  /** student docId → 선택된 classId 배열. 저장 전 로컬 펜딩 상태 */
   const [pendingClassSelections, setPendingClassSelections] = useState<Record<string, string[]>>({});
 
   const loadData = async () => {
@@ -191,16 +192,12 @@ const ClassManager = () => {
     });
 
     students.forEach((student) => {
-      // classIds 배열 우선, 없으면 classId 폴백
-      const rawIds: string[] =
-        normalizeClassIds(student.classIds);
-
-      // classIds 내 중복 제거 → 동일 반에 같은 학생이 두 번 추가되는 것 방지
+      const rawIds: string[] = normalizeClassIds(student.classIds);
       const uniqueIds = Array.from(new Set(rawIds));
       uniqueIds.forEach((cid) => {
         const list = map.get(cid);
         if (list) {
-          list.push(student); // 다중 반이면 각 반 목록에 독립적으로 추가됨
+          list.push(student);
         }
       });
     });
@@ -222,12 +219,10 @@ const ClassManager = () => {
     setPendingClassSelections((prev) => {
       const next: Record<string, string[]> = {};
       students.forEach((student) => {
-        // 기존 펜딩이 있으면 유지, 없으면 classIds 정규화값으로 초기화
         if (prev[student.docId] !== undefined) {
           next[student.docId] = prev[student.docId];
         } else {
-          const ids =
-            normalizeClassIds(student.classIds);
+          const ids = normalizeClassIds(student.classIds);
           next[student.docId] = ids;
         }
       });
@@ -282,18 +277,7 @@ const ClassManager = () => {
           name,
           updatedAt: serverTimestamp(),
         });
-        await getDocs(query(collection(db, "users"), where("classIds", "array-contains", classForm.id))).then(
-          async (snap) => {
-            await Promise.all(
-              snap.docs.map((studentDoc) =>
-                updateDoc(studentDoc.ref, {
-                  className: name,
-                  updatedAt: serverTimestamp(),
-                }),
-              ),
-            );
-          },
-        );
+        await syncRenamedClassReferences(classForm.id, name);
         setMessage("반 정보가 수정되었습니다.");
       } else {
         await addDoc(collection(db, "classes"), {
@@ -322,26 +306,7 @@ const ClassManager = () => {
     setMessage("");
 
     try {
-      const studentsInClass = await getDocs(
-        query(collection(db, "users"), where("classIds", "array-contains", classDoc.id)),
-      );
-
-      await Promise.all(
-        studentsInClass.docs.map((studentDoc) => {
-          const data = studentDoc.data() as { classIds?: unknown };
-          const prevIds = normalizeClassIds(data.classIds);
-          const nextIds = prevIds.filter((id) => id !== classDoc.id);
-          return updateDoc(studentDoc.ref, {
-            classIds: nextIds,
-            classId: nextIds.length > 0 ? nextIds[0] : null,
-            className: nextIds.length > 0 ? null : null, // className은 loadData 후 재조회
-            isEnrolled: nextIds.length > 0,
-            enrollmentStatus: nextIds.length > 0 ? "active" : null,
-            updatedAt: serverTimestamp(),
-          });
-        }),
-      );
-
+      await removeDeletedClassReferences(classDoc.id, classes);
       await deleteDoc(doc(db, "classes", classDoc.id));
 
       if (selectedClassId === classDoc.id) {
@@ -376,7 +341,6 @@ const ClassManager = () => {
     setMessage("");
 
     try {
-      // classIds 배열에 원자적 추가 (arrayUnion → 중복 방지)
       await bulkAddClassIdToStudents(assignedStudents, selectedClass.id);
       await forceSync();
       setCheckedStudentDocIds([]);
@@ -421,7 +385,6 @@ const ClassManager = () => {
       toast({ title: "반 정보가 성공적으로 업데이트되었습니다" });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "반 변경에 실패했습니다.");
-      // 롤백
       setPendingClassSelections((prev) => ({ ...prev, [student.docId]: currentIds }));
     } finally {
       setLoading(false);
@@ -434,8 +397,7 @@ const ClassManager = () => {
       return;
     }
 
-    const targetIds =
-      selectedBulkClassId !== "none" ? [selectedBulkClassId] : [];
+    const targetIds = selectedBulkClassId !== "none" ? [selectedBulkClassId] : [];
     const firstClass = classes.find((c) => c.id === selectedBulkClassId) ?? null;
 
     setLoading(true);
@@ -474,33 +436,33 @@ const ClassManager = () => {
     }
   };
 
-  /**
-   * expandedClassId 컨텍스트에서 호출됨.
-   * 해당 classId 만 제거하고, 다른 반 소속은 유지.
-   */
   const handleRemoveStudentFromClass = async (student: StudentLite, targetClassId: string) => {
     if (!window.confirm(`${formatStudentLabel(student)} 학생을 이 반에서 내보내시겠습니까?`)) {
       return;
     }
 
-    const currentIds = normalizeClassIds(student.classIds);
-    const nextIds = currentIds.filter((id) => id !== targetClassId);
-    const firstClass = classes.find((item) => item.id === nextIds[0]) ?? null;
+    const nextState = resolveClassStateAfterRemoval(
+      student.classIds,
+      student.classId,
+      targetClassId,
+      classes,
+    );
+    const nextIds = nextState.classIds;
+    const primaryClass = nextState.primaryClass;
 
     setLoading(true);
     setMessage("");
 
     try {
-      await removeClassIdFromStudent(student, targetClassId, nextIds, firstClass);
+      await removeClassIdFromStudent(student, targetClassId, nextIds, primaryClass);
       setStudents((prev) =>
         prev.map((s) => {
           if (s.docId !== student.docId) return s;
-          const firstClass = classes.find((c) => c.id === nextIds[0]) ?? null;
           return {
             ...s,
             classIds: nextIds,
-            classId: firstClass?.id ?? null,
-            className: firstClass?.name ?? null,
+            classId: primaryClass?.id ?? null,
+            className: primaryClass?.name ?? null,
           };
         }),
       );
@@ -696,9 +658,7 @@ const ClassManager = () => {
                       <p className="text-xs text-muted-foreground">{student.email}</p>
                     </div>
                   </div>
-                  <span className="text-xs text-muted-foreground">
-                    {classStatus}
-                  </span>
+                  <span className="text-xs text-muted-foreground">{classStatus}</span>
                 </label>
               );
             })}
@@ -769,8 +729,7 @@ const ClassManager = () => {
                 {filteredManageableStudents.map((student) => {
                   const checked = checkedManagedStudentDocIds.includes(student.docId);
                   const currentIds = normalizeClassIds(student.classIds).sort();
-                  const pendingIds: string[] =
-                    pendingClassSelections[student.docId] ?? currentIds;
+                  const pendingIds: string[] = pendingClassSelections[student.docId] ?? currentIds;
                   const isDirty =
                     JSON.stringify(Array.from(new Set(pendingIds)).sort()) !==
                     JSON.stringify(currentIds);
@@ -812,7 +771,6 @@ const ClassManager = () => {
                           저장
                         </Button>
                       </div>
-                      {/* 다중 반 선택 체크박스 그룹 (중복 방지: Set 기반) */}
                       <div className="ml-7 flex flex-wrap gap-x-4 gap-y-1">
                         {classes.map((cls) => (
                           <label
