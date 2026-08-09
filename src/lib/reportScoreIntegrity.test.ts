@@ -27,6 +27,20 @@ describe("report score integrity", () => {
     expect(resolveReportTotalScore(undefined, scores(92, 92, 92, 94, 94))).toBe(92.6);
   });
 
+  it("recovers a fabricated legacy zero when score rows contain a real total", () => {
+    expect(resolveReportTotalScore(0, scores(92, 92, 92, 94, 94))).toBe(92.6);
+  });
+
+  it("keeps a legitimate all-zero report at zero", () => {
+    expect(
+      resolveReportTotalScore(
+        0,
+        scores(0, 0, 0, 0, 0),
+        scores(0, 0, 0, 0, 0),
+      ),
+    ).toBe(0);
+  });
+
   it("falls back to converted scores for legacy rows when needed", () => {
     expect(
       resolveReportTotalScore(
