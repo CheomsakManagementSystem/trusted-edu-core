@@ -1,4 +1,4 @@
-import { DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import { Input } from "@/components/ui/input";
@@ -44,6 +44,7 @@ import {
   formatExamDate,
   fixAndAssignPendingReport,
   getReportExamTitle,
+  getUploadCandidateValidationError,
   movePublishedReportToPending,
   normalizeDateString,
   prepareUploadCandidates,
@@ -108,6 +109,8 @@ const UploadDashboard = () => {
   const { user } = useAuth();
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const archiveSectionRef = useRef<HTMLDivElement | null>(null);
+  const publishedLoadStateRef = useRef<"idle" | "loading" | "loaded">("idle");
   const toastRef = useRef(toast);
   const canManageReports = isStaffRole(user?.role);
 
@@ -115,6 +118,8 @@ const UploadDashboard = () => {
   const [students, setStudents] = useState<StudentLite[]>([]);
   const [classReports, setClassReports] = useState<ReportRecord[]>([]);
   const [publishedReports, setPublishedReports] = useState<ReportRecord[]>([]);
+  const [publishedReportsLoading, setPublishedReportsLoading] = useState(false);
+  const [publishedReportsLoaded, setPublishedReportsLoaded] = useState(false);
   const [pendingReports, setPendingReports] = useState<ReportRecord[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string>("none");
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(() => new Date());
@@ -133,10 +138,10 @@ const UploadDashboard = () => {
   const [cleanupSearch, setCleanupSearch] = useState("");
   const [pendingMatchTarget, setPendingMatchTarget] = useState<ReportRecord | null>(null);
   const [pendingMatchSearch, setPendingMatchSearch] = useState("");
-  const [pendingMatchStudentUid, setPendingMatchStudentUid] = useState<string>("");
+  const [pendingMatchStudentDocId, setPendingMatchStudentDocId] = useState<string>("");
   const [fixTarget, setFixTarget] = useState<ReportRecord | null>(null);
   const [fixSearch, setFixSearch] = useState("");
-  const [fixStudentUid, setFixStudentUid] = useState("");
+  const [fixStudentDocId, setFixStudentDocId] = useState("");
   const [savingFix, setSavingFix] = useState(false);
   const [openClaims, setOpenClaims] = useState<ReportClaimTriageRecord[]>([]);
   const [editingReport, setEditingReport] = useState<ReportRecord | null>(null);
@@ -235,8 +240,10 @@ const UploadDashboard = () => {
     });
   };
 
+  const studentByUid = useMemo(() => new Map(students.map((student) => [student.uid, student])), [students]);
+
   const getClaimStudentLabel = (claim: ReportClaimTriageRecord) => {
-    const student = students.find((item) => item.uid === claim.studentUid);
+    const student = studentByUid.get(claim.studentUid);
     return student ? formatStudentLabel(student) : claim.report?.studentName || "기록 없음";
   };
 
@@ -300,20 +307,55 @@ const UploadDashboard = () => {
     };
   }, []);
 
-  useEffect(() => {
+  const loadPublishedReports = useCallback(async (force = false): Promise<ReportRecord[]> => {
+    if (!force && publishedLoadStateRef.current !== "idle") {
+      return publishedReports;
+    }
+
+    publishedLoadStateRef.current = "loading";
+    setPublishedReportsLoading(true);
     const measurement = startPerformanceTrace("admin_published_load");
-    const run = async () => {
-      try {
-        const reports = await fetchPublishedReports();
-        setPublishedReports(reports);
-        measurement.stop({ status: "success", metrics: { report_count: reports.length } });
-      } catch (error) {
-        measurement.stop({ status: "error" });
-        throw error;
-      }
-    };
-    void run();
-  }, []);
+    try {
+      const reports = await fetchPublishedReports();
+      setPublishedReports(reports);
+      setPublishedReportsLoaded(true);
+      publishedLoadStateRef.current = "loaded";
+      measurement.stop({ status: "success", metrics: { report_count: reports.length } });
+      return reports;
+    } catch (error) {
+      publishedLoadStateRef.current = "idle";
+      measurement.stop({ status: "error" });
+      toastRef.current({
+        variant: "destructive",
+        title: "리포트 보관함 조회 실패",
+        description: error instanceof Error ? error.message : "배포된 리포트를 불러오지 못했습니다.",
+      });
+      return [];
+    } finally {
+      setPublishedReportsLoading(false);
+    }
+  }, [publishedReports]);
+
+  useEffect(() => {
+    if (publishedReportsLoaded) return;
+    const target = archiveSectionRef.current;
+    if (!target || typeof IntersectionObserver === "undefined") {
+      void loadPublishedReports();
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          void loadPublishedReports();
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "800px 0px" },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [loadPublishedReports, publishedReportsLoaded]);
 
   useEffect(() => {
     const unsubscribe = subscribeOpenReportClaims(
@@ -468,10 +510,8 @@ const UploadDashboard = () => {
           return row;
         }
         const next = updater(row);
-        const recovered =
-          requiredScoreKeys.every((key) => Number.isFinite(next.parsed.scores[key])) &&
-          next.parsed.feedback.trim().length > 0;
-        return recovered ? { ...next, parseError: undefined } : next;
+        const parseError = getUploadCandidateValidationError(next.parsed) ?? undefined;
+        return { ...next, parseError };
       }),
     );
   };
@@ -511,26 +551,21 @@ const UploadDashboard = () => {
           ...row.parsed.scores,
           [field]: Number.isFinite(numeric) ? numeric : null,
         },
+        scoreParse: {
+          confidence: "manual",
+          method: "manual",
+          warnings: [],
+        },
       },
     }));
   };
 
   const hasAnyInvalidRow = useMemo(
-    () =>
-      rows.some(
-        (row) =>
-          requiredScoreKeys.some((key) => !Number.isFinite(row.parsed.scores[key])) ||
-          !row.parsed.feedback.trim(),
-      ),
+    () => rows.some((row) => Boolean(getUploadCandidateValidationError(row.parsed))),
     [rows],
   );
   const hasAnyReadyRow = useMemo(
-    () =>
-      rows.some(
-        (row) =>
-          requiredScoreKeys.every((key) => Number.isFinite(row.parsed.scores[key])) &&
-          row.parsed.feedback.trim().length > 0,
-      ),
+    () => rows.some((row) => !getUploadCandidateValidationError(row.parsed)),
     [rows],
   );
   const readByReportId = useMemo(
@@ -551,29 +586,32 @@ const UploadDashboard = () => {
         .sort(compareReportsByExamDateDesc),
     [pendingReports],
   );
+const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
+  const searchablePublishedReports = useMemo(
+    () =>
+      [...publishedReports]
+        .sort(compareReportsByExamDateDesc)
+        .map((report) => ({
+          report,
+          searchText: [report.studentName, report.fileName, report.sourceName, report.essayTopic]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase(),
+        })),
+    [publishedReports],
+  );
   const filteredPublishedReports = useMemo(() => {
-    return [...publishedReports]
-      .sort(compareReportsByExamDateDesc)
-      .filter((report) => {
-        if (archiveClassFilter !== "all" && report.classId !== archiveClassFilter) {
-          return false;
-        }
-        const keyword = archiveStudentFilter.trim().toLowerCase();
-        if (keyword) {
-          const target = `${report.studentName} ${report.fileName} ${report.sourceName} ${report.essayTopic}`.toLowerCase();
-          if (!target.includes(keyword)) {
-            return false;
-          }
-        }
-        if (archiveReadFilter === "read" && !report.isRead) {
-          return false;
-        }
-        if (archiveReadFilter === "unread" && report.isRead) {
-          return false;
-        }
+    const keyword = deferredArchiveStudentFilter.trim().toLowerCase();
+    return searchablePublishedReports
+      .filter(({ report, searchText }) => {
+        if (archiveClassFilter !== "all" && report.classId !== archiveClassFilter) return false;
+        if (keyword && !searchText.includes(keyword)) return false;
+        if (archiveReadFilter === "read" && !report.isRead) return false;
+        if (archiveReadFilter === "unread" && report.isRead) return false;
         return true;
-      });
-  }, [archiveClassFilter, archiveReadFilter, archiveStudentFilter, publishedReports]);
+      })
+      .map(({ report }) => report);
+  }, [archiveClassFilter, archiveReadFilter, deferredArchiveStudentFilter, searchablePublishedReports]);
 
   const recentClassReports = useMemo(
     () => [...classReports].sort(compareReportsByExamDateDesc).slice(0, 20),
@@ -647,15 +685,17 @@ const UploadDashboard = () => {
     const measurement = startPerformanceTrace("report_publish_batch", { source: "admin_upload" });
 
     try {
-      const result = await publishReportBatch(
-        rows,
-        selectedClass,
-        selectedDateText,
-        students,
-        user.uid,
-        setProgress,
-      );
-      const controls = await getMasterControls();
+      const [result, controls] = await Promise.all([
+        publishReportBatch(
+          rows,
+          selectedClass,
+          selectedDateText,
+          students,
+          user.uid,
+          setProgress,
+        ),
+        getMasterControls(),
+      ]);
 
       setRows((prev) => {
         const mapById = new Map(result.results.map((item) => [item.candidateId, item]));
@@ -719,9 +759,11 @@ const UploadDashboard = () => {
         });
       }
 
-      const reports = await fetchReportsByClassId(selectedClass.id);
+      const [reports, pending] = await Promise.all([
+        fetchReportsByClassId(selectedClass.id),
+        fetchPendingReports(),
+      ]);
       setClassReports(reports);
-      const pending = await fetchPendingReports();
       setPendingReports(pending);
       measurement.stop({
         status: result.failureCount > 0 ? "partial" : "success",
@@ -749,13 +791,13 @@ const UploadDashboard = () => {
   };
 
   const handleRefreshReadStatus = async () => {
-    const published = await fetchPublishedReports();
+    const [published, reports, pending] = await Promise.all([
+      loadPublishedReports(true),
+      selectedClass ? fetchReportsByClassId(selectedClass.id) : Promise.resolve(classReports),
+      fetchPendingReports(),
+    ]);
     setPublishedReports(published);
-    if (selectedClass) {
-      const reports = await fetchReportsByClassId(selectedClass.id);
-      setClassReports(reports);
-    }
-    const pending = await fetchPendingReports();
+    setClassReports(reports);
     setPendingReports(pending);
   };
 
@@ -764,8 +806,8 @@ const UploadDashboard = () => {
   };
 
   const handleAssignPending = async (report: ReportRecord) => {
-    const studentUid = pendingSelectedStudent[report.id];
-    if (!studentUid) {
+    const studentDocId = pendingSelectedStudent[report.id];
+    if (!studentDocId) {
       toast({
         variant: "destructive",
         title: "연결 실패",
@@ -774,7 +816,7 @@ const UploadDashboard = () => {
       return;
     }
 
-    const target = students.find((student) => student.uid === studentUid);
+    const target = students.find((student) => student.docId === studentDocId);
     if (!target) {
       toast({
         variant: "destructive",
@@ -819,7 +861,7 @@ const UploadDashboard = () => {
     setPendingMatchSearch(
       `${report.sourceName || ""} ${report.sourceStudentId || report.sourcePhoneSuffix || ""}`.trim(),
     );
-    setPendingMatchStudentUid("");
+    setPendingMatchStudentDocId("");
   };
 
   const handleOpenFixModal = (report: ReportRecord) => {
@@ -831,17 +873,17 @@ const UploadDashboard = () => {
       examDate: report.examDate || report.writtenAt || "",
     });
     setFixSearch(`${report.sourceName || report.studentName || ""} ${report.sourceStudentId || report.sourcePhoneSuffix || ""}`.trim());
-    setFixStudentUid("");
+    setFixStudentDocId("");
   };
 
   const closeFixModal = () => {
     setFixTarget(null);
     setFixSearch("");
-    setFixStudentUid("");
+    setFixStudentDocId("");
   };
 
   const handleApplyFix = async () => {
-    if (!fixTarget || !fixStudentUid) {
+    if (!fixTarget || !fixStudentDocId) {
       toast({
         variant: "destructive",
         title: "수정 및 배정 실패",
@@ -850,7 +892,7 @@ const UploadDashboard = () => {
       return;
     }
 
-    const student = students.find((item) => item.uid === fixStudentUid);
+    const student = students.find((item) => item.docId === fixStudentDocId);
     if (!student) {
       toast({
         variant: "destructive",
@@ -886,7 +928,7 @@ const UploadDashboard = () => {
   };
 
   const handleApplyPendingMatch = async () => {
-    if (!pendingMatchTarget || !pendingMatchStudentUid) {
+    if (!pendingMatchTarget || !pendingMatchStudentDocId) {
       toast({
         variant: "destructive",
         title: "학생 매칭 실패",
@@ -895,7 +937,7 @@ const UploadDashboard = () => {
       return;
     }
 
-    const student = students.find((item) => item.uid === pendingMatchStudentUid);
+    const student = students.find((item) => item.docId === pendingMatchStudentDocId);
     if (!student) {
       toast({
         variant: "destructive",
@@ -921,7 +963,7 @@ const UploadDashboard = () => {
       setPublishedReports(publishedRows);
       setPendingMatchTarget(null);
       setPendingMatchSearch("");
-      setPendingMatchStudentUid("");
+      setPendingMatchStudentDocId("");
       toast({
         title: "학생 매칭 완료",
         description: `${formatStudentLabel(student)} 학생으로 자료를 연결했습니다.`,
@@ -1244,9 +1286,7 @@ const UploadDashboard = () => {
 
           <div className="space-y-4">
             {rows.map((row) => {
-              const invalidRow =
-                requiredScoreKeys.some((key) => !Number.isFinite(row.parsed.scores[key])) ||
-                !row.parsed.feedback.trim();
+              const invalidRow = Boolean(getUploadCandidateValidationError(row.parsed));
               return (
                 <div
                   key={row.id}
@@ -1521,10 +1561,12 @@ const UploadDashboard = () => {
           )}
         </div>
 
-        <div className="rounded-lg border border-border bg-card p-5 shadow-card">
+        <div ref={archiveSectionRef} className="rounded-lg border border-border bg-card p-5 shadow-card">
           <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <h3 className="text-sm font-semibold text-card-foreground">배포된 리포트 보관함</h3>
-            <p className="text-xs text-muted-foreground">총 {filteredPublishedReports.length}건</p>
+            <p className="text-xs text-muted-foreground">
+              {publishedReportsLoading && !publishedReportsLoaded ? "불러오는 중..." : `총 ${filteredPublishedReports.length}건`}
+            </p>
           </div>
 
           <div className="mb-4 grid grid-cols-1 gap-2 md:grid-cols-3">
@@ -1564,6 +1606,7 @@ const UploadDashboard = () => {
                 <div
                   key={report.id}
                   className="grid grid-cols-1 gap-2 rounded-lg border border-border bg-background px-3 py-2.5 md:grid-cols-[1.2fr_1fr_0.7fr_0.7fr_auto]"
+                  style={{ contentVisibility: "auto", containIntrinsicSize: "96px" }}
                 >
                   <div>
                     <div className="flex flex-wrap items-center gap-1.5">
@@ -1617,9 +1660,11 @@ const UploadDashboard = () => {
                 </div>
               );
             })}
-            {filteredPublishedReports.length === 0 && (
+            {publishedReportsLoading && !publishedReportsLoaded ? (
+              <p className="text-sm text-muted-foreground">리포트 보관함을 불러오는 중입니다...</p>
+            ) : filteredPublishedReports.length === 0 ? (
               <p className="text-sm text-muted-foreground">검색 결과가 없습니다</p>
-            )}
+            ) : null}
           </div>
         </div>
 
@@ -1643,7 +1688,11 @@ const UploadDashboard = () => {
               const options = getPendingCandidates(report);
               const isDuplicate = report.assignmentStatus === "duplicate_pending";
               return (
-                <div key={report.id} className="rounded-lg border border-border bg-background p-3">
+                <div
+                  key={report.id}
+                  className="rounded-lg border border-border bg-background p-3"
+                  style={{ contentVisibility: "auto", containIntrinsicSize: "180px" }}
+                >
                   <div className="mb-2 flex flex-wrap items-center gap-2">
                     <p className="text-sm font-semibold text-card-foreground">
                       {report.sourceName || "기록 없음"} | {report.fileName}
@@ -1717,7 +1766,7 @@ const UploadDashboard = () => {
                       <SelectContent>
                         <SelectItem value="none">학생 선택</SelectItem>
                         {options.map((student) => (
-                          <SelectItem key={student.uid} value={student.uid}>
+                          <SelectItem key={student.docId} value={student.docId}>
                             {formatStudentLabel(student)} ({student.email || "이메일 없음"})
                           </SelectItem>
                         ))}
@@ -1840,11 +1889,11 @@ const UploadDashboard = () => {
               <div className="max-h-[300px] space-y-2 overflow-y-auto pr-1">
                 {fixCandidates.map((student) => (
                   <button
-                    key={student.uid}
+                    key={student.docId}
                     type="button"
-                    onClick={() => setFixStudentUid(student.uid)}
+                    onClick={() => setFixStudentDocId(student.docId)}
                     className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${
-                      fixStudentUid === student.uid
+                      fixStudentDocId === student.docId
                         ? "border-primary bg-primary/5"
                         : "border-border bg-background hover:border-primary/30 hover:bg-muted/40"
                     }`}
@@ -1864,7 +1913,7 @@ const UploadDashboard = () => {
               <Button variant="outline" onClick={closeFixModal} disabled={savingFix}>
                 취소
               </Button>
-              <Button onClick={handleApplyFix} disabled={!fixStudentUid || savingFix || !canManageReports}>
+              <Button onClick={handleApplyFix} disabled={!fixStudentDocId || savingFix || !canManageReports}>
                 {savingFix ? "저장 중..." : "확인"}
               </Button>
             </DialogFooter>
@@ -1877,7 +1926,7 @@ const UploadDashboard = () => {
             if (!open) {
               setPendingMatchTarget(null);
               setPendingMatchSearch("");
-              setPendingMatchStudentUid("");
+              setPendingMatchStudentDocId("");
             }
           }}
         >
@@ -1905,11 +1954,11 @@ const UploadDashboard = () => {
               <div className="max-h-[320px] space-y-2 overflow-y-auto pr-1">
                 {pendingMatchCandidates.map((student) => (
                   <button
-                    key={student.uid}
+                    key={student.docId}
                     type="button"
-                    onClick={() => setPendingMatchStudentUid(student.uid)}
+                    onClick={() => setPendingMatchStudentDocId(student.docId)}
                     className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${
-                      pendingMatchStudentUid === student.uid
+                      pendingMatchStudentDocId === student.docId
                         ? "border-primary bg-primary/5"
                         : "border-border bg-background hover:border-primary/30 hover:bg-muted/40"
                     }`}
@@ -1931,13 +1980,13 @@ const UploadDashboard = () => {
                 onClick={() => {
                   setPendingMatchTarget(null);
                   setPendingMatchSearch("");
-                  setPendingMatchStudentUid("");
+                  setPendingMatchStudentDocId("");
                 }}
                 disabled={Boolean(resolvingPendingId)}
               >
                 취소
               </Button>
-              <Button onClick={handleApplyPendingMatch} disabled={!pendingMatchStudentUid || Boolean(resolvingPendingId) || !canManageReports}>
+              <Button onClick={handleApplyPendingMatch} disabled={!pendingMatchStudentDocId || Boolean(resolvingPendingId) || !canManageReports}>
                 {resolvingPendingId ? "처리 중..." : "선택 학생으로 배송"}
               </Button>
             </DialogFooter>
