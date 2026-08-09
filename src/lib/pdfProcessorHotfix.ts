@@ -30,6 +30,17 @@ const REQUIRED_SCORE_KEYS: Array<Exclude<keyof ScoreBreakdown, "total">> = [
   "expression",
 ];
 
+const SCORE_ROWS: Array<{
+  key: Exclude<keyof ScoreBreakdown, "total">;
+  label: string;
+}> = [
+  { key: "reading", label: "독해력" },
+  { key: "comprehension", label: "내용 이해력" },
+  { key: "problemUnderstanding", label: "문제 이해력" },
+  { key: "organization", label: "구성력" },
+  { key: "expression", label: "표현력" },
+];
+
 const emptyScores = (): ScoreBreakdown => ({
   reading: null,
   comprehension: null,
@@ -86,6 +97,78 @@ const fallbackTotal = (scores: ScoreBreakdown) =>
   hasScoreIntegrity(scores) && looksLikeNormalizedScale(scores)
     ? roundTenth(weightedNormalizedTotal(scores))
     : sumScores(scores);
+
+const parseScoreRowsFromRawText = (rawText: string) => {
+  const text = rawText.replace(/\s+/g, " ").trim();
+  if (!text) return null;
+
+  const scores = emptyScores();
+  const averageScores = emptyScores();
+  const convertedScores = emptyScores();
+
+  for (let index = 0; index < SCORE_ROWS.length; index += 1) {
+    const { key, label } = SCORE_ROWS[index];
+    const start = text.indexOf(label);
+    if (start < 0) return null;
+
+    const nextLabel = SCORE_ROWS[index + 1]?.label;
+    const nextLabelIndex = nextLabel ? text.indexOf(nextLabel, start + label.length) : -1;
+    const totalIndex = text.indexOf("총점", start + label.length);
+    const endCandidates = [nextLabelIndex, totalIndex].filter((value) => value > start);
+    const end = endCandidates.length > 0 ? Math.min(...endCandidates) : text.length;
+    const segment = text
+      .slice(start + label.length, end)
+      .replace(/\(?\s*\d+(?:\.\d+)?\s*점\s*만점\s*\)?/gi, " ");
+    const values = (segment.match(/-?\d+(?:\.\d+)?/g) ?? [])
+      .map(Number)
+      .filter(Number.isFinite)
+      .slice(0, 3);
+
+    if (values.length !== 3) return null;
+
+    const [mine, average, converted] = values;
+    const maximum = key === "comprehension" ? 30 : key === "expression" ? 10 : 20;
+    if (mine < 0 || mine > 100 || average < 0 || average > 100 || converted < 0 || converted > maximum) {
+      return null;
+    }
+
+    scores[key] = mine;
+    averageScores[key] = average;
+    convertedScores[key] = converted;
+  }
+
+  convertedScores.total = sumScores(convertedScores);
+  return { scores, averageScores, convertedScores };
+};
+
+export const repairParsedScores = (parsed: ParsedPdfData): ParsedPdfData => {
+  if (hasScoreIntegrity(parsed.scores) && looksLikeNormalizedScale(parsed.scores)) {
+    return parsed;
+  }
+
+  const recovered = parseScoreRowsFromRawText(parsed.rawText);
+  if (!recovered) return parsed;
+
+  return {
+    ...parsed,
+    scores: {
+      ...recovered.scores,
+      total: parsed.scores.total,
+    },
+    averageScores: recovered.averageScores,
+    convertedScores: recovered.convertedScores,
+    scoreParse: {
+      confidence: "medium",
+      method: "layout-order",
+      warnings: [
+        ...new Set([
+          ...(parsed.scoreParse?.warnings ?? []),
+          "0~100 원점수와 가중 환산점수를 분리해 점수표를 복구했습니다.",
+        ]),
+      ],
+    },
+  };
+};
 
 export const resolveParsedTotalScore = (
   parsed: Pick<ParsedPdfData, "scores" | "convertedScores">,
@@ -160,10 +243,14 @@ export const prepareUploadCandidates = async (
   const rows = await legacy.prepareUploadCandidates(files, classStudents, allStudents);
   const seenFiles = new Set(rows.map((row) => fileKey(row.file)));
 
-  const normalized = rows.map((row) => ({
-    ...row,
-    parseError: getUploadCandidateValidationError(row.parsed) ?? undefined,
-  }));
+  const normalized = rows.map((row) => {
+    const parsed = repairParsedScores(row.parsed);
+    return {
+      ...row,
+      parsed,
+      parseError: getUploadCandidateValidationError(parsed) ?? undefined,
+    };
+  });
 
   const missing = files
     .filter((file) => !seenFiles.has(fileKey(file)))
