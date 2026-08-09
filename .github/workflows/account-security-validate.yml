@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - fix/account-security-integrity-20260809
+  pull_request:
+    branches:
+      - develop
 
 jobs:
   validate:
@@ -36,6 +39,9 @@ jobs:
           const fs = require('fs');
           const fn = fs.readFileSync('functions/index.js', 'utf8');
           const client = fs.readFileSync('src/services/accountDeletionService.ts', 'utf8');
+          const managedStart = client.indexOf('export const deleteManagedUserCompletely');
+          const authDelete = client.indexOf('await deleteAuthUserByUid(uid);', managedStart);
+          const firestorePurge = client.indexOf('await purgeUserFirestoreData(uid);', managedStart);
           const checks = [
             [fn.includes('verifyIdToken(token, true)'), 'Firebase ID token verification missing'],
             [fn.includes('profileRole !== ADMIN_ROLE'), 'ADMIN profile verification missing'],
@@ -44,7 +50,7 @@ jobs:
             [client.includes('Authorization: `Bearer ${idToken}`'), 'Authorization header missing'],
             [client.includes('resolveUniqueUserProfileRef'), 'custom profile resolution missing'],
             [!client.includes('query(collection(db, "reports"), where("uid", "==", uid))'), 'uploader reports are still deleted'],
-            [client.indexOf('await deleteAuthUserByUid(uid);') < client.indexOf('await purgeUserFirestoreData(uid);', client.indexOf('deleteManagedUserCompletely')), 'managed user deletion order is unsafe'],
+            [managedStart >= 0 && authDelete > managedStart && firestorePurge > authDelete, 'managed user deletion order is unsafe'],
           ];
           const failures = checks.filter(([ok]) => !ok).map(([, message]) => message);
           if (failures.length) {
