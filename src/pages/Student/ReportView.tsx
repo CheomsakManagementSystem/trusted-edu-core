@@ -23,8 +23,11 @@ import {
 } from "@/lib/pdfProcessor";
 import { formatStudentName } from "@/lib/studentName";
 import { db } from "@/lib/firebase";
-import { startPerformanceTrace } from "@/lib/performanceMonitoring";
-import { collection, doc, onSnapshot, orderBy, query, serverTimestamp, where, writeBatch } from "firebase/firestore";
+import {
+  startPerformanceTrace,
+  stopPerformanceTraceAfterPaint,
+} from "@/lib/performanceMonitoring";
+import { collection, doc, onSnapshot, or, query, serverTimestamp, where, writeBatch } from "firebase/firestore";
 import { Check, Clipboard } from "lucide-react";
 import {
   clearClientSession,
@@ -144,13 +147,14 @@ const ReportView = () => {
       ).sort(compareReportsByExamDateDesc);
 
     const reportsRef = collection(db, "reports");
-    const primaryQuery = query(reportsRef, where("studentUid", "==", user.uid), orderBy("createdAt", "desc"));
-    let fallbackUnsub: (() => void) | null = null;
-    let identityUnsub: (() => void) | null = null;
-    let identityFallbackUnsub: (() => void) | null = null;
+    const studentId = user.studentId?.trim() || null;
+    let fallbackUidUnsub: (() => void) | null = null;
+    let fallbackIdentityUnsub: (() => void) | null = null;
     let uidRows: ReportRecord[] = [];
     let identityRows: ReportRecord[] = [];
-    const syncRows = () => {
+    let uidLoaded = false;
+    let identityLoaded = !studentId;
+    const syncRows = (queryMode: "or" | "uid" | "fallback") => {
       const ownRecords = mergeReports(uidRows, identityRows);
       setReports(ownRecords);
       setSelectedReportId((prev) => {
@@ -160,76 +164,81 @@ const ReportView = () => {
         return ownRecords[0]?.id ?? "";
       });
       setLoading(false);
-      recordFirstLoad("success", ownRecords.length);
+      if (uidLoaded && identityLoaded && !firstLoadRecorded) {
+        firstLoadRecorded = true;
+        stopPerformanceTraceAfterPaint(measurement, {
+          status: "success",
+          metrics: { report_count: ownRecords.length },
+          attributes: { query_mode: queryMode },
+        });
+      }
     };
 
-    const primaryUnsub = onSnapshot(
-      primaryQuery,
-      (snapshot) => {
-        uidRows = toRows(snapshot.docs);
-        syncRows();
-      },
-      () => {
-        const fallbackQuery = query(reportsRef, where("studentUid", "==", user.uid));
-        fallbackUnsub = onSnapshot(
-          fallbackQuery,
+    const subscribeFallback = () => {
+      fallbackUidUnsub = onSnapshot(
+        query(reportsRef, where("studentUid", "==", user.uid)),
+        (snapshot) => {
+          uidRows = toRows(snapshot.docs);
+          uidLoaded = true;
+          syncRows("fallback");
+        },
+        (loadError) => {
+          recordFirstLoad("error");
+          setError(loadError instanceof Error ? loadError.message : "리포트 조회 중 오류가 발생했습니다.");
+          setLoading(false);
+        },
+      );
+
+      if (studentId) {
+        fallbackIdentityUnsub = onSnapshot(
+          query(reportsRef, where("studentId", "==", studentId)),
           (snapshot) => {
-            uidRows = toRows(snapshot.docs);
-            syncRows();
+            identityRows = toRows(snapshot.docs);
+            identityLoaded = true;
+            syncRows("fallback");
           },
           (loadError) => {
             recordFirstLoad("error");
-            setError(
-              loadError instanceof Error
-                ? loadError.message
-                : "리포트 조회 중 오류가 발생했습니다.",
-            );
+            setError(loadError instanceof Error ? loadError.message : "리포트 조회 중 오류가 발생했습니다.");
             setLoading(false);
           },
         );
+      }
+    };
+
+    const ownQuery = studentId
+      ? query(
+          reportsRef,
+          or(
+            where("studentUid", "==", user.uid),
+            where("studentId", "==", studentId),
+          ),
+        )
+      : query(reportsRef, where("studentUid", "==", user.uid));
+    const primaryUnsub = onSnapshot(
+      ownQuery,
+      (snapshot) => {
+        uidRows = toRows(snapshot.docs);
+        uidLoaded = true;
+        identityLoaded = true;
+        syncRows(studentId ? "or" : "uid");
+      },
+      (loadError) => {
+        if (studentId) {
+          subscribeFallback();
+          return;
+        }
+        recordFirstLoad("error");
+        setError(loadError instanceof Error ? loadError.message : "리포트 조회 중 오류가 발생했습니다.");
+        setLoading(false);
       },
     );
-
-    if (user.studentId) {
-      const identityQuery = query(
-        reportsRef,
-        where("studentId", "==", user.studentId),
-        orderBy("createdAt", "desc"),
-      );
-      identityUnsub = onSnapshot(
-        identityQuery,
-        (snapshot) => {
-          identityRows = toRows(snapshot.docs);
-          syncRows();
-        },
-        () => {
-          const fallbackQuery = query(reportsRef, where("studentId", "==", user.studentId));
-          identityFallbackUnsub = onSnapshot(
-            fallbackQuery,
-            (snapshot) => {
-              identityRows = toRows(snapshot.docs);
-              syncRows();
-            },
-            (loadError) => {
-              recordFirstLoad("error");
-              setError(
-                loadError instanceof Error
-                  ? loadError.message
-                  : "리포트 조회 중 오류가 발생했습니다.",
-              );
-              setLoading(false);
-            },
-          );
-        },
-      );
-    }
 
     return () => {
       recordFirstLoad("cancelled");
       primaryUnsub();
-      fallbackUnsub?.();
-      identityUnsub?.();
-      identityFallbackUnsub?.();
+      fallbackUidUnsub?.();
+      fallbackIdentityUnsub?.();
     };
   }, [user?.studentId, user?.uid]);
 

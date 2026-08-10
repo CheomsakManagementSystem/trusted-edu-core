@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   collection,
   doc,
   getDocsFromServer,
-  onSnapshot,
   query,
   serverTimestamp,
   writeBatch,
@@ -14,6 +13,11 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { db } from "@/lib/firebase";
+import { type ClassLite, type StudentLite } from "@/lib/pdfProcessor";
+import {
+  startPerformanceTrace,
+  stopPerformanceTraceAfterPaint,
+} from "@/lib/performanceMonitoring";
 import { normalizeClassIds } from "@/services/classTransferService";
 
 type ClassRow = {
@@ -246,61 +250,56 @@ const commitBatches = async (
   }
 };
 
-const IntegrityManager = () => {
+type IntegrityManagerProps = {
+  classes: ClassLite[];
+  students: StudentLite[];
+};
+
+const IntegrityManager = ({ classes, students }: IntegrityManagerProps) => {
   const { toast } = useToast();
   const [snapshot, setSnapshot] = useState<IntegritySnapshot | null>(null);
-  const [liveSummary, setLiveSummary] = useState<IntegritySummary>(emptySummary);
   const [loading, setLoading] = useState(false);
   const [repairing, setRepairing] = useState(false);
 
-  const totalIssueCount = useMemo(
-    () =>
-      liveSummary.legacyClassIdOnly +
-      liveSummary.ghostClass +
-      liveSummary.enrollmentMismatch,
-    [liveSummary],
+  const liveSnapshot = useMemo(
+    () => buildIntegritySnapshot(
+      students.map((student) => ({
+        docId: student.docId,
+        uid: student.uid,
+        name: student.name,
+        email: student.email,
+        role: student.role ?? "STUDENT",
+        classId: student.classId ?? null,
+        className: student.className ?? null,
+        classIds: normalizeClassIds(student.classIds, student.classId),
+        rawClassIds: student.rawClassIds ?? student.classIds,
+        isEnrolled: student.isEnrolled ?? null,
+        enrollmentStatus: student.enrollmentStatus ?? null,
+      })),
+      classes,
+    ),
+    [classes, students],
   );
-
-  useEffect(() => {
-    let latestStudents: StudentIntegrityRow[] = [];
-    let latestClasses: ClassRow[] = [];
-
-    const updateLiveSummary = () => {
-      const nextSnapshot = buildIntegritySnapshot(latestStudents, latestClasses);
-      setLiveSummary(nextSnapshot.summary);
-    };
-
-    const unsubUsers = onSnapshot(query(collection(db, "users")), (snap) => {
-      latestStudents = snap.docs.map((docSnap) =>
-        hydrateStudent(docSnap.id, docSnap.data() as Record<string, unknown>),
-      );
-      updateLiveSummary();
-    });
-
-    const unsubClasses = onSnapshot(query(collection(db, "classes")), (snap) => {
-      latestClasses = snap.docs.map((docSnap) =>
-        hydrateClass(docSnap.id, docSnap.data() as Record<string, unknown>),
-      );
-      updateLiveSummary();
-    });
-
-    return () => {
-      unsubUsers();
-      unsubClasses();
-    };
-  }, []);
 
   const handleAudit = async () => {
     setLoading(true);
+    const measurement = startPerformanceTrace("integrity_audit");
     try {
       const nextSnapshot = await fetchSnapshotFromServer();
       setSnapshot(nextSnapshot);
-      setLiveSummary(nextSnapshot.summary);
+      stopPerformanceTraceAfterPaint(measurement, {
+        status: "success",
+        metrics: {
+          student_count: nextSnapshot.students.length,
+          issue_count: nextSnapshot.issues.length,
+        },
+      });
       toast({
         title: "데이터 무결성 진단 완료",
         description: `오류 ${nextSnapshot.issues.length}건을 확인했습니다.`,
       });
     } catch (error) {
+      measurement.stop({ status: "error" });
       console.error("[IntegrityManager] audit failed", error);
       toast({
         variant: "destructive",
@@ -314,6 +313,7 @@ const IntegrityManager = () => {
 
   const handleRepair = async () => {
     setRepairing(true);
+    const measurement = startPerformanceTrace("integrity_repair");
     try {
       const beforeRepair = await fetchSnapshotFromServer();
       const classNameById = new Map(beforeRepair.classes.map((row) => [row.id, row.name]));
@@ -357,12 +357,19 @@ const IntegrityManager = () => {
 
       const afterRepair = await fetchSnapshotFromServer();
       setSnapshot(afterRepair);
-      setLiveSummary(afterRepair.summary);
+      stopPerformanceTraceAfterPaint(measurement, {
+        status: "success",
+        metrics: {
+          updated_count: updates.length,
+          remaining_issue_count: afterRepair.issues.length,
+        },
+      });
       toast({
         title: "자동 복구 완료",
         description: `${updates.length}개 학생 문서를 정규화했습니다.`,
       });
     } catch (error) {
+      measurement.stop({ status: "error" });
       console.error("[IntegrityManager] repair failed", error);
       toast({
         variant: "destructive",
@@ -375,7 +382,7 @@ const IntegrityManager = () => {
   };
 
   const isWorking = loading || repairing;
-  const currentSummary = snapshot?.summary ?? liveSummary;
+  const currentSummary = snapshot?.summary ?? liveSnapshot.summary;
   const currentTotal =
     currentSummary.legacyClassIdOnly +
     currentSummary.ghostClass +

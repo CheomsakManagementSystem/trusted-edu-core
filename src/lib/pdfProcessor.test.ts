@@ -1,14 +1,32 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   getParsedScoreValidationError,
   parseScoreTableFromTokens,
   resolveMatchStatus,
   resolveParsedTotalScore,
   resolveReportAssignmentClass,
+  readPdfFileBuffer,
   type PageToken,
   type ScoreBreakdown,
   type StudentLite,
 } from "@/lib/pdfProcessor";
+
+describe("PDF file buffer cache", () => {
+  it("reads the same selected file only once", async () => {
+    const buffer = new ArrayBuffer(8);
+    const arrayBuffer = vi.fn().mockResolvedValue(buffer);
+    const file = { arrayBuffer } as unknown as File;
+
+    const [first, second] = await Promise.all([
+      readPdfFileBuffer(file),
+      readPdfFileBuffer(file),
+    ]);
+
+    expect(first).toBe(buffer);
+    expect(second).toBe(buffer);
+    expect(arrayBuffer).toHaveBeenCalledTimes(1);
+  });
+});
 
 const student = (overrides: Partial<StudentLite>): StudentLite => ({
   docId: overrides.docId ?? overrides.uid ?? "doc-id",
@@ -221,4 +239,3 @@ describe("score validation", () => {
     ).toContain("직접 확인");
   });
 });
-

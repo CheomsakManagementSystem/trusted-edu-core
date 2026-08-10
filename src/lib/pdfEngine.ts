@@ -8,12 +8,7 @@ import {
   serverTimestamp,
   where,
 } from "firebase/firestore";
-import {
-  getDownloadURL,
-  ref,
-  uploadBytesResumable,
-} from "firebase/storage";
-import { db, storage } from "@/lib/firebase";
+import { db } from "@/lib/firebase";
 
 export const reportFileNamePattern = /([가-힣]+)(\d{4})_(\d+)점/;
 
@@ -238,6 +233,10 @@ const uploadSingleReport = async (
   onFileProgress?: (progress: number) => void,
 ) => {
   const { file, parsed } = validFile;
+  const [{ getDownloadURL, ref, uploadBytesResumable }, { storage }] = await Promise.all([
+    import("firebase/storage"),
+    import("@/lib/firebaseStorage"),
+  ]);
   const storageRef = ref(storage, `reports/${parsed.studentId}/${Date.now()}_${file.name}`);
   const task = uploadBytesResumable(storageRef, file);
 

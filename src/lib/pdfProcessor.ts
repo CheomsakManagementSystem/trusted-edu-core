@@ -9,8 +9,10 @@ import {
   getDoc,
   getDocFromServer,
   getDocs,
+  limit,
   onSnapshot,
   orderBy,
+  startAfter,
   writeBatch,
   query,
   serverTimestamp,
@@ -18,13 +20,28 @@ import {
   where,
   type WriteBatch,
 } from "firebase/firestore";
-import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
-import { db, storage } from "@/lib/firebase";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { db } from "@/lib/firebase";
 import { isStaffRole } from "@/lib/authz";
 import { normalizeClassIds } from "@/services/classTransferService";
 
 const STORAGE_UPLOAD_TIMEOUT_MS = 60_000;
 const PDFJS_VERSION = "4.10.38";
+const PUBLISHED_REPORT_PAGE_SIZE = 100;
+const PDF_PARSE_CONCURRENCY = 2;
+const pdfFileBufferCache = new WeakMap<File, Promise<ArrayBuffer>>();
+
+export const readPdfFileBuffer = (file: File): Promise<ArrayBuffer> => {
+  const cached = pdfFileBufferCache.get(file);
+  if (cached) return cached;
+
+  const read = file.arrayBuffer().catch((error) => {
+    pdfFileBufferCache.delete(file);
+    throw error;
+  });
+  pdfFileBufferCache.set(file, read);
+  return read;
+};
 
 export type MatchStatus = "ready" | "unregistered";
 export type JoinRequestStatus = "pending" | "approved" | "rejected";
@@ -45,6 +62,10 @@ export type StudentLite = {
   studentId?: string | null;
   phoneNumber?: string | null;
   phoneSuffix?: string | null;
+  role?: string;
+  rawClassIds?: string[];
+  isEnrolled?: boolean | null;
+  enrollmentStatus?: string | null;
 };
 
 export type ClassLite = {
@@ -1292,53 +1313,49 @@ const parsePdfPage = (scope: PageScope): ParsedPdfData => {
   };
 };
 
-const loadPdfJs = async (): Promise<PdfJsModule> => {
-  const packageCandidates = [
-    {
-      pdf: "pdfjs-dist/build/pdf.mjs",
-      worker: "pdfjs-dist/build/pdf.worker.min.mjs",
-    },
-    {
-      pdf: "pdfjs-dist/legacy/build/pdf.mjs",
-      worker: "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
-    },
-  ];
+let pdfJsPromise: Promise<PdfJsModule> | null = null;
 
-  for (const source of packageCandidates) {
+const loadPdfJs = (): Promise<PdfJsModule> => {
+  if (pdfJsPromise) return pdfJsPromise;
+
+  pdfJsPromise = (async () => {
     try {
-      const mod = (await import(
-        /* @vite-ignore */ source.pdf
-      )) as unknown as PdfJsModule;
-      mod.GlobalWorkerOptions.workerSrc = source.worker;
+      const mod = (await import("pdfjs-dist/build/pdf.mjs")) as unknown as PdfJsModule;
+      mod.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
       return mod;
     } catch {
-      // local dependency 미설치 시 CDN fallback 사용
+      // 배포 번들 손상 시에만 고정 버전 CDN으로 복구한다.
     }
-  }
 
-  const cdnCandidates = [
-    `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.mjs`,
-    `https://unpkg.com/pdfjs-dist@${PDFJS_VERSION}/build/pdf.mjs`,
-  ];
+    const cdnCandidates = [
+      `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.mjs`,
+      `https://unpkg.com/pdfjs-dist@${PDFJS_VERSION}/build/pdf.mjs`,
+    ];
 
-  let lastError: unknown;
-  for (const source of cdnCandidates) {
-    try {
-      const mod = (await import(
-        /* @vite-ignore */ source
-      )) as unknown as PdfJsModule;
-      mod.GlobalWorkerOptions.workerSrc = source.replace("pdf.mjs", "pdf.worker.min.mjs");
-      return mod;
-    } catch (error) {
-      lastError = error;
+    let lastError: unknown;
+    for (const source of cdnCandidates) {
+      try {
+        const mod = (await import(
+          /* @vite-ignore */ source
+        )) as unknown as PdfJsModule;
+        mod.GlobalWorkerOptions.workerSrc = source.replace("pdf.mjs", "pdf.worker.min.mjs");
+        return mod;
+      } catch (error) {
+        lastError = error;
+      }
     }
-  }
 
-  throw new Error(
-    `pdfjs-dist 모듈을 로드하지 못했습니다. ${
-      lastError instanceof Error ? lastError.message : ""
-    }`,
-  );
+    throw new Error(
+      `pdfjs-dist 모듈을 로드하지 못했습니다. ${
+        lastError instanceof Error ? lastError.message : ""
+      }`,
+    );
+  })().catch((error) => {
+    pdfJsPromise = null;
+    throw error;
+  });
+
+  return pdfJsPromise;
 };
 
 export const extractPdfData = async (file: File): Promise<ParsedPdfData> => {
@@ -1410,8 +1427,8 @@ const extractPdfDataByStudent = async (
   }
 
   const pdfjs = await loadPdfJs();
-  const bytes = await file.arrayBuffer();
-  const pdf = await pdfjs.getDocument({ data: bytes }).promise;
+  const bytes = await readPdfFileBuffer(file);
+  const pdf = await pdfjs.getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
   const pageScopes = await Promise.all(
     Array.from({ length: pdf.numPages }, (_, index) => extractPageScope(pdf, index + 1)),
   );
@@ -1606,60 +1623,76 @@ export const prepareUploadCandidates = async (
   classStudents: StudentLite[],
   allStudents: StudentLite[],
 ): Promise<UploadCandidate[]> => {
-  const candidates: UploadCandidate[] = [];
+  const results: UploadCandidate[][] = new Array(files.length);
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(PDF_PARSE_CONCURRENCY, files.length) },
+    async () => {
+      while (nextIndex < files.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        const file = files[index];
+        const candidates: UploadCandidate[] = [];
+        const fileHint = parseFileNameHint(file.name);
 
-  for (const file of files) {
-    const fileHint = parseFileNameHint(file.name);
-    try {
-      const chunks = await extractPdfDataByStudent(file);
-      for (const chunk of chunks) {
-        const merged = {
-          ...chunk.parsed,
-          name: chunk.parsed.name || fileHint.name || "",
-          studentId: chunk.parsed.studentId || fileHint.studentId || "",
-          phoneSuffix: chunk.parsed.phoneSuffix || fileHint.phoneSuffix || "",
-          scores: {
-            ...chunk.parsed.scores,
-            total: chunk.parsed.scores.total ?? chunk.parsed.convertedScores.total ?? fileHint.total ?? null,
-          },
-        };
-        const match = resolveMatchStatus(merged, classStudents, allStudents);
-        const parseError = getUploadCandidateValidationError(merged) ?? undefined;
-        candidates.push({
-          id: createUploadCandidateId(),
-          file,
-          sourcePage: chunk.sourcePage,
-          sourcePageLabel: `${chunk.sourcePage}p`,
-          parsed: merged,
-          ...match,
-          parseError,
-        });
+        try {
+          const chunks = await extractPdfDataByStudent(file);
+          for (const chunk of chunks) {
+            const merged = {
+              ...chunk.parsed,
+              name: chunk.parsed.name || fileHint.name || "",
+              studentId: chunk.parsed.studentId || fileHint.studentId || "",
+              phoneSuffix: chunk.parsed.phoneSuffix || fileHint.phoneSuffix || "",
+              scores: {
+                ...chunk.parsed.scores,
+                total:
+                  chunk.parsed.scores.total ??
+                  chunk.parsed.convertedScores.total ??
+                  fileHint.total ??
+                  null,
+              },
+            };
+            const match = resolveMatchStatus(merged, classStudents, allStudents);
+            const parseError = getUploadCandidateValidationError(merged) ?? undefined;
+            candidates.push({
+              id: createUploadCandidateId(),
+              file,
+              sourcePage: chunk.sourcePage,
+              sourcePageLabel: `${chunk.sourcePage}p`,
+              parsed: merged,
+              ...match,
+              parseError,
+            });
+          }
+        } catch (error) {
+          candidates.push({
+            id: createUploadCandidateId(),
+            file,
+            sourcePage: 1,
+            sourcePageLabel: "1p",
+            parsed: {
+              ...EMPTY_PARSED,
+              name: fileHint.name || "",
+              studentId: fileHint.studentId || "",
+              phoneSuffix: fileHint.phoneSuffix || "",
+              scores: {
+                ...EMPTY_PARSED.scores,
+                total: fileHint.total ?? null,
+              },
+            },
+            status: "unregistered",
+            candidates: allStudents,
+            selectedStudentUid: null,
+            parseError: error instanceof Error ? error.message : "파싱 오류가 발생했습니다.",
+          });
+        }
+        results[index] = candidates;
       }
-    } catch (error) {
-      candidates.push({
-        id: createUploadCandidateId(),
-        file,
-        sourcePage: 1,
-        sourcePageLabel: "1p",
-        parsed: {
-          ...EMPTY_PARSED,
-          name: fileHint.name || "",
-          studentId: fileHint.studentId || "",
-          phoneSuffix: fileHint.phoneSuffix || "",
-          scores: {
-            ...EMPTY_PARSED.scores,
-            total: fileHint.total ?? null,
-          },
-        },
-        status: "unregistered",
-        candidates: allStudents,
-        selectedStudentUid: null,
-        parseError: error instanceof Error ? error.message : "파싱 오류가 발생했습니다.",
-      });
-    }
-  }
+    },
+  );
+  await Promise.all(workers);
 
-  return candidates;
+  return results.flat();
 };
 
 const hasScoreIntegrity = (scores: ScoreBreakdown) =>
@@ -1765,6 +1798,10 @@ const uploadPdfToStorage = async (
   file: File,
   onProgress?: (progress: number) => void,
 ): Promise<string> => {
+  const [{ getDownloadURL, ref, uploadBytesResumable }, { storage }] = await Promise.all([
+    import("firebase/storage"),
+    import("@/lib/firebaseStorage"),
+  ]);
   const storageRef = ref(storage, `reports/${userId}/${Date.now()}_${file.name}`);
   const task = uploadBytesResumable(storageRef, file);
 
@@ -1958,6 +1995,9 @@ export const fetchStudents = async (): Promise<StudentLite[]> => {
       studentId?: string;
       phoneNumber?: string;
       phoneSuffix?: string;
+      role?: string;
+      isEnrolled?: boolean;
+      enrollmentStatus?: string;
     };
     const phoneDigits = (data.phoneNumber ?? "").replace(/\D/g, "");
     const phoneLast4 = phoneDigits.length >= 4 ? phoneDigits.slice(-4) : null;
@@ -1975,6 +2015,12 @@ export const fetchStudents = async (): Promise<StudentLite[]> => {
       studentId,
       phoneNumber: data.phoneNumber ?? null,
       phoneSuffix: data.phoneSuffix ?? null,
+      role: data.role ?? "STUDENT",
+      rawClassIds: Array.isArray(data.classIds)
+        ? data.classIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+        : [],
+      isEnrolled: typeof data.isEnrolled === "boolean" ? data.isEnrolled : null,
+      enrollmentStatus: data.enrollmentStatus ?? null,
     };
   });
 };
@@ -2508,20 +2554,43 @@ export const fetchReportsByClassId = async (classId: string): Promise<ReportReco
   }
 };
 
-export const fetchPublishedReports = async (): Promise<ReportRecord[]> => {
+export const fetchPublishedReports = async (
+  onProgress?: (reports: ReportRecord[], pageCount: number) => void,
+): Promise<ReportRecord[]> => {
   const reportsRef = collection(db, "reports");
 
-  try {
-    const snapshot = await getDocs(
-      query(
-        reportsRef,
+  const loadPages = async (ordered: boolean) => {
+    const reports: ReportRecord[] = [];
+    let cursor: Awaited<ReturnType<typeof getDocs>>["docs"][number] | null = null;
+    let pageCount = 0;
+
+    while (true) {
+      const constraints = [
         where("assignmentStatus", "==", "completed"),
-        orderBy("createdAt", "desc"),
-      ),
-    );
-    return snapshot.docs
-      .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-      .sort(compareReportsByExamDateDesc);
+        ...(ordered ? [orderBy("createdAt", "desc")] : []),
+        ...(cursor ? [startAfter(cursor)] : []),
+        limit(PUBLISHED_REPORT_PAGE_SIZE),
+      ];
+      const snapshot = await getDocs(query(reportsRef, ...constraints));
+      reports.push(
+        ...snapshot.docs.map((docSnap) =>
+          hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">),
+        ),
+      );
+      pageCount += 1;
+
+      const sortedReports = [...reports].sort(compareReportsByExamDateDesc);
+      onProgress?.(sortedReports, pageCount);
+
+      if (snapshot.docs.length < PUBLISHED_REPORT_PAGE_SIZE) {
+        return sortedReports;
+      }
+      cursor = snapshot.docs.at(-1) ?? null;
+    }
+  };
+
+  try {
+    return await loadPages(true);
   } catch (error) {
     if (
       !error
@@ -2531,12 +2600,7 @@ export const fetchPublishedReports = async (): Promise<ReportRecord[]> => {
     ) {
       throw error;
     }
-    const snapshot = await getDocs(
-      query(reportsRef, where("assignmentStatus", "==", "completed")),
-    );
-    return snapshot.docs
-      .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-      .sort(compareReportsByExamDateDesc);
+    return loadPages(false);
   }
 };
 

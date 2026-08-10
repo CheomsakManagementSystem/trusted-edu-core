@@ -1,7 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
-import { getStorage } from "firebase/storage";
 
 // TODO: 실제 Firebase 콘솔에서 발급받은 값으로 .env 설정 후 사용하세요.
 // 예시 (.env.local 또는 .env):
@@ -21,9 +20,8 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
-const app = initializeApp(firebaseConfig);
+export const firebaseApp = initializeApp(firebaseConfig);
 
-export const auth = getAuth(app);
+export const auth = getAuth(firebaseApp);
 auth.languageCode = "ko";
-export const db = getFirestore(app);
-export const storage = getStorage(app);
+export const db = getFirestore(firebaseApp);

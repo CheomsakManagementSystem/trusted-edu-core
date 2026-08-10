@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import WithdrawalDialog from "@/components/WithdrawalDialog";
 import { Input } from "@/components/ui/input";
@@ -37,7 +37,10 @@ import {
   type ManagedUser,
 } from "@/services/masterAdminService";
 import { Search } from "lucide-react";
-import { startPerformanceTrace } from "@/lib/performanceMonitoring";
+import {
+  startPerformanceTrace,
+  stopPerformanceTraceAfterPaint,
+} from "@/lib/performanceMonitoring";
 
 const scoreMetrics: Array<{ key: keyof NonNullable<ReportRecord["scores"]>; label: string }> = [
   { key: "reading", label: "독해력" },
@@ -96,6 +99,7 @@ const formatDate = (report: ReportRecord): string => {
 
 const navyScrollbarClass =
   "scrollbar-thin [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-track]:bg-slate-100 [&::-webkit-scrollbar-thumb]:bg-slate-900/65 hover:[&::-webkit-scrollbar-thumb]:bg-slate-900/80";
+const USER_PAGE_SIZE = 50;
 
 const MasterAdminPage = () => {
   const { user, signOut } = useAuth();
@@ -105,6 +109,8 @@ const MasterAdminPage = () => {
   const [savingControls, setSavingControls] = useState(false);
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [search, setSearch] = useState("");
+  const [userPage, setUserPage] = useState(1);
+  const userSearchMeasurementRef = useRef<ReturnType<typeof startPerformanceTrace> | null>(null);
   const [instructorSignupCode, setInstructorSignupCode] = useState("");
   const [autoNotifyOnFeedbackComplete, setAutoNotifyOnFeedbackComplete] = useState(true);
   const [roleUpdatingUid, setRoleUpdatingUid] = useState<string | null>(null);
@@ -124,10 +130,13 @@ const MasterAdminPage = () => {
     if (!user?.uid) return;
     if (!window.confirm("중복 학생 ID 보유 유저에게 인앱 알림을 발송합니다. 계속하시겠습니까?")) return;
     setNotifyingDuplicates(true);
+    const measurement = startPerformanceTrace("master_duplicate_notification_batch");
     try {
       const { notified, skipped } = await notifyDuplicatePhoneSuffixUsers(user.uid);
+      measurement.stop({ status: "success", metrics: { notified_count: notified, skipped_count: skipped } });
       toast({ title: `발송 완료: ${notified}명 / 이미 발송됨: ${skipped}명` });
     } catch (err) {
+      measurement.stop({ status: "error" });
       toast({
         variant: "destructive",
         title: "발송 실패",
@@ -145,7 +154,7 @@ const MasterAdminPage = () => {
   const [analysisMessages, setAnalysisMessages] = useState<string[]>([]);
   const [openReportIds, setOpenReportIds] = useState<Record<string, boolean>>({});
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     const measurement = startPerformanceTrace("master_admin_load");
     try {
@@ -153,7 +162,10 @@ const MasterAdminPage = () => {
       setInstructorSignupCode(controls.instructorSignupCode);
       setAutoNotifyOnFeedbackComplete(controls.autoNotifyOnFeedbackComplete);
       setUsers(userRows);
-      measurement.stop({ status: "success", metrics: { user_count: userRows.length } });
+      stopPerformanceTraceAfterPaint(measurement, {
+        status: "success",
+        metrics: { user_count: userRows.length, rendered_count: Math.min(userRows.length, USER_PAGE_SIZE) },
+      });
     } catch (error) {
       measurement.stop({ status: "error" });
       toast({
@@ -164,14 +176,15 @@ const MasterAdminPage = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
 
   useEffect(() => {
-    loadData();
-  }, []);
+    void loadData();
+  }, [loadData]);
 
+  const deferredSearch = useDeferredValue(search);
   const filteredUsers = useMemo(() => {
-    const keyword = search.trim().toLowerCase();
+    const keyword = deferredSearch.trim().toLowerCase();
     if (!keyword) {
       return users;
     }
@@ -180,7 +193,50 @@ const MasterAdminPage = () => {
       const target = `${row.name} ${row.email} ${row.studentId || ""} ${row.uid}`.toLowerCase();
       return target.includes(keyword);
     });
-  }, [search, users]);
+  }, [deferredSearch, users]);
+  const userPageCount = Math.max(1, Math.ceil(filteredUsers.length / USER_PAGE_SIZE));
+  const safeUserPage = Math.min(userPage, userPageCount);
+  const visibleUsers = useMemo(() => {
+    const start = (safeUserPage - 1) * USER_PAGE_SIZE;
+    return filteredUsers.slice(start, start + USER_PAGE_SIZE);
+  }, [filteredUsers, safeUserPage]);
+
+  const beginUserSearchMeasurement = (trigger: "keyword" | "page") => {
+    userSearchMeasurementRef.current?.stop({ status: "cancelled" });
+    userSearchMeasurementRef.current = startPerformanceTrace("master_admin_search", { trigger });
+  };
+
+  const handleUserSearchChange = (value: string) => {
+    beginUserSearchMeasurement("keyword");
+    setSearch(value);
+    setUserPage(1);
+  };
+
+  const handleUserPageChange = (page: number) => {
+    beginUserSearchMeasurement("page");
+    setUserPage(page);
+  };
+
+  useEffect(() => {
+    const measurement = userSearchMeasurementRef.current;
+    if (!measurement || search !== deferredSearch) return;
+
+    stopPerformanceTraceAfterPaint(measurement, {
+      status: "success",
+      metrics: {
+        query_length: deferredSearch.trim().length,
+        result_count: filteredUsers.length,
+        rendered_count: visibleUsers.length,
+        total_count: users.length,
+      },
+    });
+    userSearchMeasurementRef.current = null;
+  }, [deferredSearch, filteredUsers.length, search, users.length, visibleUsers.length]);
+
+  useEffect(
+    () => () => userSearchMeasurementRef.current?.stop({ status: "cancelled" }),
+    [],
+  );
 
   const studentCandidates = useMemo(
     () => users.filter((row) => normalizeRole(row.role) === "STUDENT"),
@@ -533,7 +589,7 @@ const MasterAdminPage = () => {
             <div className="flex items-center gap-2">
               <Input
                 value={search}
-                onChange={(event) => setSearch(event.target.value)}
+                onChange={(event) => handleUserSearchChange(event.target.value)}
                 placeholder="이름/이메일/학생ID 검색"
                 className="w-64"
               />
@@ -556,7 +612,7 @@ const MasterAdminPage = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {filteredUsers.map((row) => (
+                {visibleUsers.map((row) => (
                   <tr key={row.uid}>
                     <td className="px-3 py-2 text-card-foreground">{row.name}</td>
                     <td className="px-3 py-2 text-card-foreground">{row.email || "-"}</td>
@@ -656,6 +712,32 @@ const MasterAdminPage = () => {
               </tbody>
             </table>
           </div>
+
+          {filteredUsers.length > USER_PAGE_SIZE && (
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <span className="text-xs text-muted-foreground">
+                {safeUserPage} / {userPageCount}페이지
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={safeUserPage <= 1}
+                onClick={() => handleUserPageChange(safeUserPage - 1)}
+              >
+                이전
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={safeUserPage >= userPageCount}
+                onClick={() => handleUserPageChange(safeUserPage + 1)}
+              >
+                다음
+              </Button>
+            </div>
+          )}
 
           <p className="mt-3 text-xs text-muted-foreground">
             계정 삭제 시 해당 유저는 처음부터 다시 가입해야 하며, 삭제된 데이터는 복구되지 않습니다.

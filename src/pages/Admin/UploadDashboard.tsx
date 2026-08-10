@@ -49,6 +49,7 @@ import {
   normalizeDateString,
   prepareUploadCandidates,
   publishReportBatch,
+  readPdfFileBuffer,
   resolveReportAssignmentClass,
   resolveMatchStatus,
   subscribeOpenReportClaims,
@@ -68,7 +69,10 @@ import {
 import { formatStudentName } from "@/lib/studentName";
 import { normalizeClassIds } from "@/services/classTransferService";
 import { isStaffRole } from "@/lib/authz";
-import { startPerformanceTrace } from "@/lib/performanceMonitoring";
+import {
+  startPerformanceTrace,
+  stopPerformanceTraceAfterPaint,
+} from "@/lib/performanceMonitoring";
 import {
   buildReportArchiveSearchIndex,
   filterReportArchive,
@@ -220,7 +224,7 @@ const UploadDashboard = () => {
   const buildFileKey = (file: File) => `${file.name}:${file.lastModified}:${file.size}`;
 
   const computeFileHash = async (file: File) => {
-    const buffer = await file.arrayBuffer();
+    const buffer = await readPdfFileBuffer(file);
     const digest = await window.crypto.subtle.digest("SHA-256", buffer);
     return Array.from(new Uint8Array(digest))
       .map((byte) => byte.toString(16).padStart(2, "0"))
@@ -277,7 +281,7 @@ const UploadDashboard = () => {
         const [classDocs, studentDocs] = await Promise.all([fetchClasses(), fetchStudents()]);
         setClasses(classDocs);
         setStudents(studentDocs);
-        measurement.stop({
+        stopPerformanceTraceAfterPaint(measurement, {
           status: "success",
           metrics: { class_count: classDocs.length, student_count: studentDocs.length },
         });
@@ -327,15 +331,34 @@ const UploadDashboard = () => {
     publishedLoadStateRef.current = "loading";
     setPublishedReportsLoading(true);
     const measurement = startPerformanceTrace("admin_published_load");
+    const firstPageMeasurement = startPerformanceTrace("admin_published_first_page");
+    let firstPageRecorded = false;
+    let loadedPageCount = 0;
     try {
-      const reports = await fetchPublishedReports();
+      const reports = await fetchPublishedReports((progressReports, pageCount) => {
+        loadedPageCount = pageCount;
+        setPublishedReports(progressReports);
+        if (!firstPageRecorded) {
+          firstPageRecorded = true;
+          stopPerformanceTraceAfterPaint(firstPageMeasurement, {
+            status: "success",
+            metrics: { report_count: progressReports.length },
+          });
+        }
+      });
       setPublishedReports(reports);
       setPublishedReportsLoaded(true);
       publishedLoadStateRef.current = "loaded";
-      measurement.stop({ status: "success", metrics: { report_count: reports.length } });
+      stopPerformanceTraceAfterPaint(measurement, {
+        status: "success",
+        metrics: { report_count: reports.length, page_count: loadedPageCount },
+      });
       return reports;
     } catch (error) {
       publishedLoadStateRef.current = "idle";
+      if (!firstPageRecorded) {
+        firstPageMeasurement.stop({ status: "error" });
+      }
       measurement.stop({ status: "error" });
       toastRef.current({
         variant: "destructive",
@@ -483,7 +506,12 @@ const UploadDashboard = () => {
       const parseFailedCount = parsedWithHash.filter((row) => Boolean(row.parseError)).length;
       measurement.stop({
         status: parseFailedCount > 0 ? "partial" : "success",
-        metrics: { file_count: files.length, parse_failure_count: parseFailedCount },
+        metrics: {
+          file_count: files.length,
+          parsed_row_count: parsedWithHash.length,
+          parse_failure_count: parseFailedCount,
+          total_bytes: files.reduce((sum, file) => sum + file.size, 0),
+        },
       });
       if (parseFailedCount > 0) {
         toast({
@@ -1263,7 +1291,7 @@ const UploadDashboard = () => {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <IntegrityManager />
+        <IntegrityManager classes={classes} students={students} />
 
         <div>
           <h2 className="text-xl font-bold text-foreground">새로운 첨삭 리포트 등록</h2>

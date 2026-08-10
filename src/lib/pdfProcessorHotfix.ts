@@ -6,8 +6,7 @@ import {
   serverTimestamp,
   updateDoc,
 } from "firebase/firestore";
-import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
-import { db, storage } from "@/lib/firebase";
+import { db } from "@/lib/firebase";
 import * as legacy from "./pdfProcessor";
 import type {
   ClassLite,
@@ -274,6 +273,10 @@ const uploadPdfToStorage = async (
   file: File,
   onProgress?: (progress: number) => void,
 ): Promise<string> => {
+  const [{ getDownloadURL, ref, uploadBytesResumable }, { storage }] = await Promise.all([
+    import("firebase/storage"),
+    import("@/lib/firebaseStorage"),
+  ]);
   const storageRef = ref(storage, `reports/${userId}/${Date.now()}_${file.name}`);
   const task = uploadBytesResumable(storageRef, file);
 

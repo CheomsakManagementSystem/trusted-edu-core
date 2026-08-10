@@ -8,6 +8,10 @@ type TraceStopOptions = {
   attributes?: Record<string, TraceValue>;
 };
 
+export type PerformanceTrace = {
+  stop: (options?: TraceStopOptions) => void;
+};
+
 type PerformanceModule = typeof import("firebase/performance");
 
 type PerformanceContext = {
@@ -67,7 +71,7 @@ export const initializePerformanceMonitoring = (): void => {
 export const startPerformanceTrace = (
   name: string,
   attributes: Record<string, TraceValue> = {},
-) => {
+): PerformanceTrace => {
   const startedAt = Date.now();
   let stopped = false;
 
@@ -101,4 +105,18 @@ export const startPerformanceTrace = (
       });
     },
   };
+};
+
+export const stopPerformanceTraceAfterPaint = (
+  measurement: PerformanceTrace,
+  options: TraceStopOptions = {},
+): void => {
+  if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+    measurement.stop(options);
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => measurement.stop(options));
+  });
 };

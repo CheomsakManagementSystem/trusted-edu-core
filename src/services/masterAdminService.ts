@@ -1,5 +1,4 @@
 import {
-  addDoc,
   collection,
   doc,
   documentId,
@@ -198,7 +197,12 @@ export const notifyDuplicatePhoneSuffixUsers = async (
   const snap = await getDocs(collection(db, "users"));
 
   // phoneSuffix별 uid 목록 집계
-  const suffixMap = new Map<string, { uid: string; name: string; docId: string }[]>();
+  const suffixMap = new Map<string, {
+    uid: string;
+    name: string;
+    docId: string;
+    isNotificationSent: boolean;
+  }[]>();
   for (const docSnap of snap.docs) {
     const data = docSnap.data() as {
       uid?: string;
@@ -208,44 +212,41 @@ export const notifyDuplicatePhoneSuffixUsers = async (
     };
     const suffix = data.phoneSuffix?.trim();
     if (!suffix) continue;
-    const entry = { uid: data.uid ?? docSnap.id, name: data.name ?? "", docId: docSnap.id };
+    const entry = {
+      uid: data.uid ?? docSnap.id,
+      name: data.name ?? "",
+      docId: docSnap.id,
+      isNotificationSent: data.isNotificationSent === true,
+    };
     const list = suffixMap.get(suffix) ?? [];
     list.push(entry);
     suffixMap.set(suffix, list);
   }
 
+  const duplicateUsers = Array.from(suffixMap.values())
+    .filter((users) => users.length >= 2)
+    .flat();
+  const targets = duplicateUsers.filter((user) => !user.isNotificationSent);
+  const skipped = duplicateUsers.length - targets.length;
   let notified = 0;
-  let skipped = 0;
 
-  for (const [, users] of suffixMap) {
-    if (users.length < 2) continue;
-
-    for (const u of users) {
-      try {
-        // 이미 발송된 유저 스킵
-        const userSnap = await getDoc(doc(db, "users", u.docId));
-        if (userSnap.data()?.isNotificationSent === true) {
-          skipped++;
-          continue;
-        }
-
-        await addDoc(collection(db, "notifications"), {
-          studentUid: u.uid,
-          category: "DUPLICATE_ID_WARNING",
-          title: "학생 ID 중복 안내",
-          message:
-            "[김윤환입시연구소] 안내: 회원님의 4자리 학생 ID가 다른 회원과 중복되어 있습니다. 대시보드 또는 마이페이지에서 즉시 ID를 변경해 주세요.",
-          isRead: false,
-          createdAt: serverTimestamp(),
-          createdBy: actorUid,
-        });
-
-        await setDoc(doc(db, "users", u.docId), { isNotificationSent: true }, { merge: true });
-        notified++;
-      } catch (err) {
-        console.error(`[notifyDuplicates] uid=${u.uid} 처리 실패`, err);
-      }
-    }
+  for (const users of chunkBy(targets, 225)) {
+    const batch = writeBatch(db);
+    users.forEach((user) => {
+      batch.set(doc(collection(db, "notifications")), {
+        studentUid: user.uid,
+        category: "DUPLICATE_ID_WARNING",
+        title: "학생 ID 중복 안내",
+        message:
+          "[김윤환입시연구소] 안내: 회원님의 4자리 학생 ID가 다른 회원과 중복되어 있습니다. 대시보드 또는 마이페이지에서 즉시 ID를 변경해 주세요.",
+        isRead: false,
+        createdAt: serverTimestamp(),
+        createdBy: actorUid,
+      });
+      batch.set(doc(db, "users", user.docId), { isNotificationSent: true }, { merge: true });
+    });
+    await batch.commit();
+    notified += users.length;
   }
 
   return { notified, skipped };

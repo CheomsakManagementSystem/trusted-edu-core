@@ -18,20 +18,27 @@ VITE_PERFORMANCE_BUILD_LABEL=perf_fix_YYYYMMDD
 ```
 
 계측을 중지하려면 `VITE_PERFORMANCE_ENABLED=false`로 빌드·배포한다.
+Performance SDK는 첫 KPI 기록 시점에 지연 로드되므로 공개 첫 화면의 초기 로딩을 막지 않는다.
 
 ## 수집 trace
 
 | trace | 측정 범위 | 주요 metric |
 |---|---|---|
-| `admin_base_load` | 관리자 반·학생 최초 조회 | `class_count`, `student_count` |
+| `admin_base_load` | 관리자 반·학생 조회부터 최초 화면 반영까지 | `class_count`, `student_count` |
+| `integrity_audit` | 무결성 서버 진단부터 결과 화면 반영까지 | `student_count`, `issue_count` |
+| `integrity_repair` | 무결성 자동 복구부터 재진단 화면 반영까지 | `updated_count`, `remaining_issue_count` |
 | `admin_pending_load` | 미연결 리포트 최초 수신 | `report_count` |
-| `admin_published_load` | 배포 리포트 최초 조회 | `report_count` |
+| `admin_published_first_page` | 보관함 조회 시작부터 첫 100건 화면 반영까지 | `report_count` |
+| `admin_published_load` | 배포 리포트 전체 점진 조회·화면 반영 | `report_count`, `page_count` |
 | `admin_published_search` | 보관함 검색·필터·페이지 결과가 화면에 반영될 때까지 | `query_length`, `result_count`, `rendered_count`, `total_count` |
 | `admin_class_reports_load` | 선택 반 리포트 조회 | `report_count` |
-| `class_manager_load` | 반 관리 데이터 조회 | `class_count`, `student_count` |
-| `master_admin_load` | 최고 관리자 데이터 조회 | `user_count` |
-| `student_reports_load` | 학생 리포트 최초 수신 | `report_count` |
-| `pdf_parse_batch` | PDF 해시·분석 처리 | `file_count`, `parse_failure_count` |
+| `class_manager_load` | 반 관리 데이터 조회부터 첫 50명 화면 반영까지 | `class_count`, `student_count`, `rendered_count` |
+| `class_manager_search` | 학생 목록 검색·페이지 결과 화면 반영까지 | `query_length`, `result_count`, `rendered_count`, `total_count` |
+| `master_admin_load` | 최고 관리자 데이터 조회부터 첫 50명 화면 반영까지 | `user_count`, `rendered_count` |
+| `master_admin_search` | 사용자 검색·페이지 결과 화면 반영까지 | `query_length`, `result_count`, `rendered_count`, `total_count` |
+| `master_duplicate_notification_batch` | 중복 학생 ID 알림 배치 처리 | `notified_count`, `skipped_count` |
+| `student_reports_load` | UID·학생 ID 통합 조회부터 화면 반영까지 | `report_count` |
+| `pdf_parse_batch` | PDF 해시·2개 제한 병렬 분석 처리 | `file_count`, `parsed_row_count`, `parse_failure_count`, `total_bytes` |
 | `report_publish_batch` | 리포트 배포 전체 처리 | `file_count`, `success_count`, `pending_count`, `failure_count` |
 
 모든 trace에는 `build`와 `status(success/partial/error/cancelled)` 속성이 기록된다. `admin_published_search`에는 검색 종류를 구분하는 `trigger(keyword/class/read/page)`와 선택한 필터 종류만 추가된다. 학생 이름, 검색어, 이메일, UID, 반 이름, 파일명 등 식별정보는 기록하지 않는다.

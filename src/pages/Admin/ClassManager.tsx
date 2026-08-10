@@ -1,4 +1,4 @@
-import { FormEvent, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { FormEvent, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   addDoc,
   collection,
@@ -27,7 +27,10 @@ import { useToast } from "@/hooks/use-toast";
 import { db } from "@/lib/firebase";
 import { type ClassLite, type StudentLite } from "@/lib/pdfProcessor";
 import { formatStudentName } from "@/lib/studentName";
-import { startPerformanceTrace } from "@/lib/performanceMonitoring";
+import {
+  startPerformanceTrace,
+  stopPerformanceTraceAfterPaint,
+} from "@/lib/performanceMonitoring";
 import {
   bulkAddClassIdToStudents,
   bulkUpdateStudentClassIds,
@@ -39,6 +42,14 @@ import {
 type ClassFormState = {
   id: string | null;
   name: string;
+};
+
+const STUDENT_PAGE_SIZE = 50;
+const getPageCount = (count: number) => Math.max(1, Math.ceil(count / STUDENT_PAGE_SIZE));
+const getPageRows = <T,>(rows: T[], page: number) => {
+  const safePage = Math.min(Math.max(1, page), getPageCount(rows.length));
+  const start = (safePage - 1) * STUDENT_PAGE_SIZE;
+  return { page: safePage, rows: rows.slice(start, start + STUDENT_PAGE_SIZE) };
 };
 
 const hydrateStudent = (id: string, data: Record<string, unknown>): StudentLite => {
@@ -100,6 +111,10 @@ const ClassManager = () => {
   const [expandedClassId, setExpandedClassId] = useState<string | null>(null);
   const [adminSearch, setAdminSearch] = useState("");
   const [selectedBulkClassId, setSelectedBulkClassId] = useState("none");
+  const [assignmentPage, setAssignmentPage] = useState(1);
+  const [manageablePage, setManageablePage] = useState(1);
+  const [expandedClassPage, setExpandedClassPage] = useState(1);
+  const classSearchMeasurementRef = useRef<ReturnType<typeof startPerformanceTrace> | null>(null);
   /** student docId → 선택된 classId 배열. 저장 전 로컬 펜딩 상태 */
   const [pendingClassSelections, setPendingClassSelections] = useState<Record<string, string[]>>({});
 
@@ -109,9 +124,13 @@ const ClassManager = () => {
       const { classDocs, studentDocs } = await loadClassManagerDataFromServer();
       setClasses(classDocs);
       setStudents(studentDocs);
-      measurement.stop({
+      stopPerformanceTraceAfterPaint(measurement, {
         status: "success",
-        metrics: { class_count: classDocs.length, student_count: studentDocs.length },
+        metrics: {
+          class_count: classDocs.length,
+          student_count: studentDocs.length,
+          rendered_count: Math.min(studentDocs.length, STUDENT_PAGE_SIZE),
+        },
       });
     } catch (error) {
       measurement.stop({ status: "error" });
@@ -164,6 +183,11 @@ const ClassManager = () => {
       return isMatch;
     });
   }, [assignableStudents, deferredSearch]);
+  const assignmentPageResult = useMemo(
+    () => getPageRows(filteredStudents, assignmentPage),
+    [assignmentPage, filteredStudents],
+  );
+  const assignmentPageCount = getPageCount(filteredStudents.length);
 
   const classNameById = useMemo(() => {
     return new Map(classes.map((item) => [item.id, item.name]));
@@ -183,6 +207,60 @@ const ClassManager = () => {
       );
     });
   }, [deferredAdminSearch, students]);
+  const manageablePageResult = useMemo(
+    () => getPageRows(filteredManageableStudents, manageablePage),
+    [filteredManageableStudents, manageablePage],
+  );
+  const manageablePageCount = getPageCount(filteredManageableStudents.length);
+
+  const beginClassSearchMeasurement = (trigger: "keyword" | "page") => {
+    classSearchMeasurementRef.current?.stop({ status: "cancelled" });
+    classSearchMeasurementRef.current = startPerformanceTrace("class_manager_search", { trigger });
+  };
+
+  const handleAdminSearchChange = (value: string) => {
+    beginClassSearchMeasurement("keyword");
+    setAdminSearch(value);
+    setManageablePage(1);
+  };
+
+  const handleManageablePageChange = (page: number) => {
+    beginClassSearchMeasurement("page");
+    setManageablePage(page);
+  };
+
+  useEffect(() => {
+    const measurement = classSearchMeasurementRef.current;
+    if (!measurement || adminSearch !== deferredAdminSearch) {
+      return;
+    }
+
+    stopPerformanceTraceAfterPaint(measurement, {
+      status: "success",
+      metrics: {
+        query_length: deferredAdminSearch.trim().length,
+        result_count: filteredManageableStudents.length,
+        rendered_count: manageablePageResult.rows.length,
+        total_count: students.length,
+      },
+    });
+    classSearchMeasurementRef.current = null;
+  }, [
+    adminSearch,
+    deferredAdminSearch,
+    filteredManageableStudents.length,
+    manageablePageResult.rows.length,
+    students.length,
+  ]);
+
+  useEffect(
+    () => () => classSearchMeasurementRef.current?.stop({ status: "cancelled" }),
+    [],
+  );
+
+  useEffect(() => {
+    setAssignmentPage(1);
+  }, [deferredSearch, selectedClassId]);
 
   const studentsByClassId = useMemo(() => {
     const map = new Map<string, StudentLite[]>();
@@ -559,9 +637,10 @@ const ClassManager = () => {
                     type="button"
                     variant="secondary"
                     size="sm"
-                    onClick={() =>
-                      setExpandedClassId((prev) => (prev === item.id ? null : item.id))
-                    }
+                    onClick={() => {
+                      setExpandedClassPage(1);
+                      setExpandedClassId((prev) => (prev === item.id ? null : item.id));
+                    }}
                     disabled={loading}
                   >
                     현황 보기
@@ -609,7 +688,7 @@ const ClassManager = () => {
                       <p className="text-sm text-muted-foreground">아직 배정된 학생이 없습니다.</p>
                     ) : (
                       <div className="space-y-1">
-                        {members.map((student) => (
+                        {getPageRows(members, expandedClassPage).rows.map((student) => (
                           <div
                             key={`member-${targetClass.id}-${student.docId}`}
                             className="flex flex-col gap-2 rounded border border-border px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
@@ -629,6 +708,31 @@ const ClassManager = () => {
                             </Button>
                           </div>
                         ))}
+                        {members.length > STUDENT_PAGE_SIZE && (
+                          <div className="flex items-center justify-end gap-2 pt-2">
+                            <span className="text-xs text-muted-foreground">
+                              {getPageRows(members, expandedClassPage).page} / {getPageCount(members.length)}페이지
+                            </span>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={expandedClassPage <= 1}
+                              onClick={() => setExpandedClassPage((page) => Math.max(1, page - 1))}
+                            >
+                              이전
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={expandedClassPage >= getPageCount(members.length)}
+                              onClick={() => setExpandedClassPage((page) => page + 1)}
+                            >
+                              다음
+                            </Button>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -671,7 +775,7 @@ const ClassManager = () => {
           </p>
 
           <div className="mt-4 space-y-2">
-            {filteredStudents.map((student) => {
+            {assignmentPageResult.rows.map((student) => {
               const checked = checkedStudentDocIds.includes(student.docId);
               const currentClassNames = normalizeClassIds(student.classIds)
                 .map((classId) => classNameById.get(classId))
@@ -705,6 +809,31 @@ const ClassManager = () => {
             {filteredStudents.length === 0 && (
               <p className="text-sm text-muted-foreground">표시할 학생이 없습니다.</p>
             )}
+            {filteredStudents.length > STUDENT_PAGE_SIZE && (
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <span className="text-xs text-muted-foreground">
+                  {assignmentPageResult.page} / {assignmentPageCount}페이지
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={assignmentPageResult.page <= 1}
+                  onClick={() => setAssignmentPage(assignmentPageResult.page - 1)}
+                >
+                  이전
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={assignmentPageResult.page >= assignmentPageCount}
+                  onClick={() => setAssignmentPage(assignmentPageResult.page + 1)}
+                >
+                  다음
+                </Button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -718,7 +847,7 @@ const ClassManager = () => {
             </div>
             <Input
               value={adminSearch}
-              onChange={(event) => setAdminSearch(event.target.value)}
+              onChange={(event) => handleAdminSearchChange(event.target.value)}
               placeholder="학생 이름/이메일/반 검색"
               className="sm:w-72"
             />
@@ -766,7 +895,7 @@ const ClassManager = () => {
               </div>
 
               <div className="space-y-2 p-3">
-                {filteredManageableStudents.map((student) => {
+                {manageablePageResult.rows.map((student) => {
                   const checked = checkedManagedStudentDocIds.includes(student.docId);
                   const currentIds = normalizeClassIds(student.classIds).sort();
                   const pendingIds: string[] =
@@ -837,6 +966,31 @@ const ClassManager = () => {
                 })}
                 {filteredManageableStudents.length === 0 && (
                   <p className="py-6 text-sm text-muted-foreground">표시할 학생이 없습니다.</p>
+                )}
+                {filteredManageableStudents.length > STUDENT_PAGE_SIZE && (
+                  <div className="flex items-center justify-end gap-2 pt-2">
+                    <span className="text-xs text-muted-foreground">
+                      {manageablePageResult.page} / {manageablePageCount}페이지
+                    </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={manageablePageResult.page <= 1}
+                      onClick={() => handleManageablePageChange(manageablePageResult.page - 1)}
+                    >
+                      이전
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={manageablePageResult.page >= manageablePageCount}
+                      onClick={() => handleManageablePageChange(manageablePageResult.page + 1)}
+                    >
+                      다음
+                    </Button>
+                  </div>
                 )}
               </div>
             </div>
