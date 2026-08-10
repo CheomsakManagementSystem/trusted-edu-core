@@ -24,6 +24,7 @@
 
     "baseUrl": ".",
     "paths": {
+      "@/lib/pdfProcessor": ["./src/lib/pdfProcessorStable.ts"],
       "@/*": ["./src/*"]
     }
   },
