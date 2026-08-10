@@ -13,6 +13,7 @@ import {
   writeBatch,
   type DocumentReference,
 } from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import { db } from "@/lib/firebase";
 import { normalizeRole, type CanonicalRole } from "@/lib/authz";
 import { deleteManagedUserCompletely } from "@/services/accountDeletionService";
@@ -21,6 +22,7 @@ export { deleteManagedUserCompletely };
 
 const SYSTEM_SETTINGS_COLLECTION = "systemSettings";
 const MASTER_CONTROLS_DOC_ID = "masterControls";
+const MASKED_INSTRUCTOR_SIGNUP_CODE = "••••••••";
 const MAX_BATCH_WRITES = 400;
 
 export type MasterControls = {
@@ -38,6 +40,12 @@ export type ManagedUser = {
   studentId?: string | null;
   phoneSuffix?: string | null;
 };
+
+const functions = getFunctions();
+const updateMasterControlsCallable = httpsCallable<
+  Pick<MasterControls, "instructorSignupCode" | "autoNotifyOnFeedbackComplete">,
+  { success?: boolean }
+>(functions, "updateMasterControls");
 
 const chunkBy = <T>(rows: T[], size: number): T[][] => {
   const chunks: T[][] = [];
@@ -82,15 +90,16 @@ export const getMasterControls = async (): Promise<MasterControls> => {
 
   if (!snap.exists()) {
     return {
-      instructorSignupCode: "",
+      instructorSignupCode: MASKED_INSTRUCTOR_SIGNUP_CODE,
       autoNotifyOnFeedbackComplete: true,
     };
   }
 
   const data = snap.data() as Partial<MasterControls>;
+  const legacyCode = typeof data.instructorSignupCode === "string" ? data.instructorSignupCode.trim() : "";
 
   return {
-    instructorSignupCode: data.instructorSignupCode || "",
+    instructorSignupCode: legacyCode || MASKED_INSTRUCTOR_SIGNUP_CODE,
     autoNotifyOnFeedbackComplete: Boolean(data.autoNotifyOnFeedbackComplete),
     updatedAt: data.updatedAt,
     updatedBy: data.updatedBy,
@@ -99,18 +108,21 @@ export const getMasterControls = async (): Promise<MasterControls> => {
 
 export const saveMasterControls = async (
   payload: Pick<MasterControls, "instructorSignupCode" | "autoNotifyOnFeedbackComplete">,
-  updatedBy: string,
+  _updatedBy: string,
 ): Promise<void> => {
-  await setDoc(
-    controlsRef,
-    {
-      instructorSignupCode: payload.instructorSignupCode,
-      autoNotifyOnFeedbackComplete: payload.autoNotifyOnFeedbackComplete,
-      updatedAt: serverTimestamp(),
-      updatedBy,
-    },
-    { merge: true },
-  );
+  const instructorSignupCode =
+    payload.instructorSignupCode.trim() === MASKED_INSTRUCTOR_SIGNUP_CODE
+      ? ""
+      : payload.instructorSignupCode.trim();
+
+  const result = await updateMasterControlsCallable({
+    instructorSignupCode,
+    autoNotifyOnFeedbackComplete: payload.autoNotifyOnFeedbackComplete,
+  });
+
+  if (result.data?.success !== true) {
+    throw new Error("운영 환경 설정 저장 결과를 확인할 수 없습니다.");
+  }
 };
 
 export const fetchManagedUsers = async (): Promise<ManagedUser[]> => {
