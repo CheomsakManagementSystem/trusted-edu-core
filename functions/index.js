@@ -13,6 +13,8 @@ const db = admin.firestore();
 const ADMIN_ROLE = "ADMIN";
 const MASTER_ADMIN_CODE = defineSecret("MASTER_ADMIN_CODE");
 const INSTRUCTOR_SIGNUP_CODE = defineSecret("INSTRUCTOR_SIGNUP_CODE");
+const signupSettingsRef = db.collection("server_settings").doc("signup");
+const masterControlsRef = db.collection("systemSettings").doc("masterControls");
 
 const secureEquals = (input, expected) => {
   const left = Buffer.from(String(input || ""));
@@ -20,11 +22,31 @@ const secureEquals = (input, expected) => {
   return left.length > 0 && left.length === right.length && crypto.timingSafeEqual(left, right);
 };
 
-const resolveSignupRole = ({ masterCode, instructorCode }) => {
+const digestInstructorCode = (value) =>
+  crypto
+    .createHmac("sha256", MASTER_ADMIN_CODE.value())
+    .update(String(value || ""))
+    .digest("hex");
+
+const matchesInstructorCode = async (input) => {
+  if (!input) {
+    return false;
+  }
+
+  const settingsSnap = await signupSettingsRef.get();
+  const storedDigest = String(settingsSnap.data()?.instructorCodeDigest || "");
+  if (storedDigest) {
+    return secureEquals(digestInstructorCode(input), storedDigest);
+  }
+
+  return secureEquals(input, INSTRUCTOR_SIGNUP_CODE.value());
+};
+
+const resolveSignupRole = async ({ masterCode, instructorCode }) => {
   if (secureEquals(masterCode, MASTER_ADMIN_CODE.value())) {
     return ADMIN_ROLE;
   }
-  if (secureEquals(instructorCode, INSTRUCTOR_SIGNUP_CODE.value())) {
+  if (await matchesInstructorCode(instructorCode)) {
     return "INSTRUCTOR";
   }
   return "STUDENT";
@@ -72,7 +94,7 @@ exports.completeSignupProfile = onCall(
     }
 
     await assertStudentIdAvailable(uid, phoneSuffix);
-    const role = resolveSignupRole({ masterCode, instructorCode });
+    const role = await resolveSignupRole({ masterCode, instructorCode });
 
     const reservationRef = db.collection("student_id_reservations").doc(phoneSuffix);
     const userRef = db.collection("users").doc(uid);
@@ -188,6 +210,66 @@ const resolveActorProfile = async (uid) => {
 
   return Array.from(candidates.values())[0];
 };
+
+const requireAdminCallable = async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
+  }
+
+  const profile = await resolveActorProfile(uid);
+  const role = String(profile?.data()?.role || "").toUpperCase();
+  if (role !== ADMIN_ROLE) {
+    throw new HttpsError("permission-denied", "관리자 권한이 필요합니다.");
+  }
+
+  return uid;
+};
+
+exports.updateMasterControls = onCall(
+  { secrets: [MASTER_ADMIN_CODE] },
+  async (request) => {
+    const actorUid = await requireAdminCallable(request);
+    const instructorSignupCode = String(request.data?.instructorSignupCode || "").trim();
+    const autoNotifyOnFeedbackComplete = request.data?.autoNotifyOnFeedbackComplete;
+
+    if (typeof autoNotifyOnFeedbackComplete !== "boolean") {
+      throw new HttpsError("invalid-argument", "자동 알림 설정값을 확인해주세요.");
+    }
+    if (instructorSignupCode.length > 256) {
+      throw new HttpsError("invalid-argument", "선생님 가입 코드가 너무 깁니다.");
+    }
+
+    const batch = db.batch();
+    const now = admin.firestore.FieldValue.serverTimestamp();
+
+    batch.set(
+      masterControlsRef,
+      {
+        autoNotifyOnFeedbackComplete,
+        instructorSignupCode: admin.firestore.FieldValue.delete(),
+        updatedAt: now,
+        updatedBy: actorUid,
+      },
+      { merge: true },
+    );
+
+    if (instructorSignupCode) {
+      batch.set(
+        signupSettingsRef,
+        {
+          instructorCodeDigest: digestInstructorCode(instructorSignupCode),
+          updatedAt: now,
+          updatedBy: actorUid,
+        },
+        { merge: true },
+      );
+    }
+
+    await batch.commit();
+    return { success: true, instructorCodeChanged: Boolean(instructorSignupCode) };
+  },
+);
 
 const requireAdminActor = async (req) => {
   const token = getBearerToken(req);
