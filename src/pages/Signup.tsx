@@ -1,18 +1,23 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { createUserWithEmailAndPassword, type AuthError } from "firebase/auth";
-import { collection, doc, getDocs, query, setDoc, where } from "firebase/firestore";
+import {
+  createUserWithEmailAndPassword,
+  deleteUser,
+  type AuthError,
+  type User,
+} from "firebase/auth";
 import { Loader2 } from "lucide-react";
-import { auth, db } from "@/lib/firebase";
+import { auth } from "@/lib/firebase";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/sonner";
+import type { CanonicalRole } from "@/lib/authz";
 import {
-  MASTER_ADMIN_CODE,
-  getMasterControls,
-} from "@/services/masterAdminService";
-import { type CanonicalRole } from "@/lib/authz";
+  completeSignupProfile,
+  fetchCompletedSignupRole,
+  getSignupServiceErrorCode,
+} from "@/services/signupService";
 
 const Signup = () => {
   const navigate = useNavigate();
@@ -31,9 +36,33 @@ const Signup = () => {
         return "유효하지 않은 이메일 형식입니다.";
       case "auth/weak-password":
         return "비밀번호는 최소 6자 이상이어야 합니다.";
+      case "functions/already-exists":
+        return "이미 사용 중인 4자리 ID입니다. 다른 숫자로 변경해 주세요.";
+      case "functions/unauthenticated":
+        return "회원가입 인증 상태를 확인할 수 없습니다. 다시 시도해주세요.";
+      case "functions/not-found":
+        return "회원가입 서버 기능을 찾을 수 없습니다. 관리자에게 문의해주세요.";
+      case "functions/internal":
+      case "functions/unavailable":
+      case "functions/deadline-exceeded":
+        return "회원가입 서버 연결이 원활하지 않습니다. 잠시 후 다시 시도해주세요.";
       default:
         return "회원가입 중 오류가 발생했습니다. 정보를 다시 확인해주세요.";
     }
+  };
+
+  const finishSignup = async (role: CanonicalRole) => {
+    toast.success("가입을 환영합니다!", {
+      description: "잠시 후 해당 권한의 대시보드로 이동합니다.",
+      duration: 1000,
+    });
+
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+
+    navigate(
+      role === "ADMIN" ? "/admin/master" : role === "INSTRUCTOR" ? "/admin" : "/dashboard",
+      { replace: true },
+    );
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -46,58 +75,52 @@ const Signup = () => {
     }
 
     setLoading(true);
+    let createdUser: User | null = null;
+    let profileCompleted = false;
 
     try {
-      const controls = await getMasterControls();
-
-      const role: CanonicalRole =
-        masterCode.trim() === MASTER_ADMIN_CODE
-          ? "ADMIN"
-          : instructorCode.trim() === controls.instructorSignupCode
-            ? "INSTRUCTOR"
-            : "STUDENT";
-
-      // 학생 ID(4자리) 중복 확인
-      const idDupSnap = await getDocs(
-        query(collection(db, "users"), where("phoneSuffix", "==", phoneSuffix)),
-      );
-      if (!idDupSnap.empty) {
-        setError("이미 사용 중인 4자리 ID입니다. 다른 숫자로 변경해 주세요.");
-        setLoading(false);
-        return;
-      }
-
       const credential = await createUserWithEmailAndPassword(auth, email, password);
-      const uid = credential.user.uid;
+      createdUser = credential.user;
 
-      const studentKey = `${name}_${phoneSuffix}`;
-
-      await setDoc(doc(db, "users", uid), {
-        uid,
+      const role = await completeSignupProfile({
         name,
         email,
-        role,
-        studentId: phoneSuffix,
-        studentKey,
         phoneSuffix,
+        instructorCode,
+        masterCode,
       });
+      profileCompleted = true;
 
-      toast.success("가입을 환영합니다!", {
-        description: "잠시 후 해당 권한의 대시보드로 이동합니다.",
-        duration: 1000,
-      });
-
-      await new Promise((resolve) => window.setTimeout(resolve, 1000));
-
-      navigate(
-        role === "ADMIN" ? "/admin/master" : role === "INSTRUCTOR" ? "/admin" : "/dashboard",
-        { replace: true },
-      );
+      await finishSignup(role);
     } catch (err) {
       console.error(err);
-      const authError = err as AuthError;
 
-      if (authError.code === "auth/email-already-in-use") {
+      if (createdUser && !profileCompleted) {
+        let recoveredRole: CanonicalRole | null | undefined;
+        try {
+          recoveredRole = await fetchCompletedSignupRole(createdUser.uid);
+        } catch (recoveryError) {
+          recoveredRole = undefined;
+          console.error("Failed to verify signup completion", recoveryError);
+        }
+
+        if (recoveredRole) {
+          await finishSignup(recoveredRole);
+          return;
+        }
+
+        if (recoveredRole === null) {
+          try {
+            await deleteUser(createdUser);
+          } catch (cleanupError) {
+            console.error("Failed to clean up incomplete signup auth user", cleanupError);
+          }
+        }
+      }
+
+      const code = getSignupServiceErrorCode(err) || (err as AuthError).code;
+
+      if (code === "auth/email-already-in-use") {
         const message = "이미 가입된 이메일입니다. 로그인 페이지로 이동하시겠습니까?";
         setError(message);
         toast.error(message, {
@@ -110,7 +133,10 @@ const Signup = () => {
         return;
       }
 
-      const message = getSignupErrorMessage(authError.code);
+      const message =
+        createdUser && !profileCompleted && auth.currentUser?.uid === createdUser.uid
+          ? "회원가입 처리 상태를 확인하지 못했습니다. 잠시 후 다시 시도해주세요."
+          : getSignupErrorMessage(code);
       setError(message);
       toast.error(message);
     } finally {
