@@ -1,0 +1,18 @@
+{
+  "runId": "20260810082609_f0654293",
+  "version": "class-name-v1",
+  "pendingCount": 2018,
+  "matchCandidateCount": 267,
+  "matchedCount": 267,
+  "staleCount": 0,
+  "errorCount": 0,
+  "unmatched": {
+    "missingName": 0,
+    "missingClass": 1,
+    "ambiguousClass": 0,
+    "noStudent": 1720,
+    "ambiguousStudent": 30,
+    "notEligible": 0
+  },
+  "durationMs": 4774
+}

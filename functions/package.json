@@ -3,7 +3,7 @@
   "private": true,
   "main": "index.js",
   "engines": {
-    "node": "20"
+    "node": "22"
   },
   "scripts": {
     "check": "node --check index.js && node --check reportAutoMatcher.js && node --check reportAutoMatchJob.js",
