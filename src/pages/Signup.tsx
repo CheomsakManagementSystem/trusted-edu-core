@@ -3,7 +3,6 @@ import { useNavigate, Link } from "react-router-dom";
 import {
   createUserWithEmailAndPassword,
   deleteUser,
-  type AuthError,
   type User,
 } from "firebase/auth";
 import { Loader2 } from "lucide-react";
@@ -118,7 +117,7 @@ const Signup = () => {
         }
       }
 
-      const code = getSignupServiceErrorCode(err) || (err as AuthError).code;
+      const code = getSignupServiceErrorCode(err);
 
       if (code === "auth/email-already-in-use") {
         const message = "이미 가입된 이메일입니다. 로그인 페이지로 이동하시겠습니까?";
