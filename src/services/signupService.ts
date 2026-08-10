@@ -6,7 +6,8 @@ import type { CanonicalRole } from "@/lib/authz";
 type SignupPayload = {
   name: string;
   email: string;
-  phoneSuffix: string;
+  studentPhone: string;
+  parentPhone: string;
   instructorCode: string;
   masterCode: string;
 };

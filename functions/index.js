@@ -22,6 +22,10 @@ const secureEquals = (input, expected) => {
   return left.length > 0 && left.length === right.length && crypto.timingSafeEqual(left, right);
 };
 
+const normalizePhoneNumber = (value) => String(value || "").replace(/\D/g, "");
+const isSupportedPhoneNumber = (value) => /^0\d{9,10}$/.test(value);
+const getPhoneLast4 = (value) => (value.length >= 4 ? value.slice(-4) : "");
+
 const digestInstructorCode = (value) =>
   crypto
     .createHmac("sha256", MASTER_ADMIN_CODE.value())
@@ -52,26 +56,6 @@ const resolveSignupRole = async ({ masterCode, instructorCode }) => {
   return "STUDENT";
 };
 
-const assertStudentIdAvailable = async (uid, phoneSuffix) => {
-  const usersRef = db.collection("users");
-  const [suffixSnap, studentIdSnap] = await Promise.all([
-    usersRef.where("phoneSuffix", "==", phoneSuffix).limit(5).get(),
-    usersRef.where("studentId", "==", phoneSuffix).limit(5).get(),
-  ]);
-
-  const conflicts = new Map();
-  [...suffixSnap.docs, ...studentIdSnap.docs].forEach((docSnap) => {
-    const existingUid = String(docSnap.data()?.uid || docSnap.id);
-    if (existingUid !== uid) {
-      conflicts.set(docSnap.id, docSnap);
-    }
-  });
-
-  if (conflicts.size > 0) {
-    throw new HttpsError("already-exists", "이미 사용 중인 4자리 ID입니다.");
-  }
-};
-
 exports.completeSignupProfile = onCall(
   { secrets: [MASTER_ADMIN_CODE, INSTRUCTOR_SIGNUP_CODE] },
   async (request) => {
@@ -81,7 +65,8 @@ exports.completeSignupProfile = onCall(
     }
 
     const name = String(request.data?.name || "").trim();
-    const phoneSuffix = String(request.data?.phoneSuffix || "").trim();
+    const studentPhone = normalizePhoneNumber(request.data?.studentPhone);
+    const parentPhone = normalizePhoneNumber(request.data?.parentPhone);
     const instructorCode = String(request.data?.instructorCode || "").trim();
     const masterCode = String(request.data?.masterCode || "").trim();
     const email = String(request.auth?.token?.email || request.data?.email || "").trim();
@@ -89,54 +74,60 @@ exports.completeSignupProfile = onCall(
     if (!name) {
       throw new HttpsError("invalid-argument", "이름을 확인해주세요.");
     }
-    if (!/^\d{4}$/.test(phoneSuffix)) {
-      throw new HttpsError("invalid-argument", "학생 ID는 숫자 4자리여야 합니다.");
+
+    const role = await resolveSignupRole({ masterCode, instructorCode });
+    if (
+      role === "STUDENT" &&
+      (!isSupportedPhoneNumber(studentPhone) || !isSupportedPhoneNumber(parentPhone))
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "학생 가입 시 학생 전화번호와 학부모 전화번호를 정확히 입력해주세요.",
+      );
     }
 
-    await assertStudentIdAvailable(uid, phoneSuffix);
-    const role = await resolveSignupRole({ masterCode, instructorCode });
-
-    const reservationRef = db.collection("student_id_reservations").doc(phoneSuffix);
+    const studentPhoneLast4 = getPhoneLast4(studentPhone);
+    const parentPhoneLast4 = getPhoneLast4(parentPhone);
     const userRef = db.collection("users").doc(uid);
 
     const savedRole = await db.runTransaction(async (transaction) => {
-      const reservationSnap = await transaction.get(reservationRef);
       const userSnap = await transaction.get(userRef);
-
-      const reservedUid = String(reservationSnap.data()?.uid || "");
-      if (reservationSnap.exists && reservedUid && reservedUid !== uid) {
-        throw new HttpsError("already-exists", "이미 사용 중인 4자리 ID입니다.");
-      }
-
       const existingData = userSnap.data() || {};
       const existingRole = String(existingData.role || "").toUpperCase();
       const effectiveRole = ["ADMIN", "INSTRUCTOR", "STUDENT"].includes(existingRole)
         ? existingRole
         : role;
 
-      transaction.set(
-        reservationRef,
-        {
-          uid,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        { merge: true },
-      );
-      transaction.set(
-        userRef,
-        {
-          uid,
-          name,
-          email: email || existingData.email || null,
-          role: effectiveRole,
-          studentId: phoneSuffix,
-          studentKey: `${name}_${phoneSuffix}`,
-          phoneSuffix,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        { merge: true },
-      );
+      const profileData = {
+        uid,
+        name,
+        email: email || existingData.email || null,
+        role: effectiveRole,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
 
+      if (effectiveRole === "STUDENT") {
+        const resolvedStudentPhone = studentPhone || String(existingData.studentPhone || "");
+        const resolvedParentPhone = parentPhone || String(existingData.parentPhone || "");
+        const resolvedStudentLast4 =
+          getPhoneLast4(resolvedStudentPhone) || String(existingData.studentPhoneLast4 || existingData.phoneSuffix || "");
+        const resolvedParentLast4 =
+          getPhoneLast4(resolvedParentPhone) || String(existingData.parentPhoneLast4 || "");
+
+        Object.assign(profileData, {
+          studentPhone: resolvedStudentPhone || null,
+          parentPhone: resolvedParentPhone || null,
+          studentPhoneLast4: resolvedStudentLast4 || null,
+          parentPhoneLast4: resolvedParentLast4 || null,
+          phoneIdentityVersion: 2,
+          // Legacy compatibility: existing report/PDF flows still read these fields.
+          studentId: resolvedStudentLast4 || null,
+          phoneSuffix: resolvedStudentLast4 || null,
+          studentKey: resolvedStudentLast4 ? `${name}_${resolvedStudentLast4}` : existingData.studentKey || null,
+        });
+      }
+
+      transaction.set(userRef, profileData, { merge: true });
       return effectiveRole;
     });
 
