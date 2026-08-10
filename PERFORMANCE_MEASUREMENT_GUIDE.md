@@ -26,6 +26,7 @@ VITE_PERFORMANCE_BUILD_LABEL=perf_fix_YYYYMMDD
 | `admin_base_load` | 관리자 반·학생 최초 조회 | `class_count`, `student_count` |
 | `admin_pending_load` | 미연결 리포트 최초 수신 | `report_count` |
 | `admin_published_load` | 배포 리포트 최초 조회 | `report_count` |
+| `admin_published_search` | 보관함 검색·필터·페이지 결과가 화면에 반영될 때까지 | `query_length`, `result_count`, `rendered_count`, `total_count` |
 | `admin_class_reports_load` | 선택 반 리포트 조회 | `report_count` |
 | `class_manager_load` | 반 관리 데이터 조회 | `class_count`, `student_count` |
 | `master_admin_load` | 최고 관리자 데이터 조회 | `user_count` |
@@ -33,7 +34,7 @@ VITE_PERFORMANCE_BUILD_LABEL=perf_fix_YYYYMMDD
 | `pdf_parse_batch` | PDF 해시·분석 처리 | `file_count`, `parse_failure_count` |
 | `report_publish_batch` | 리포트 배포 전체 처리 | `file_count`, `success_count`, `pending_count`, `failure_count` |
 
-모든 trace에는 `build`와 `status(success/partial/error/cancelled)` 속성이 기록된다. 학생 이름, 이메일, UID, 반 이름, 파일명 등 식별정보는 기록하지 않는다.
+모든 trace에는 `build`와 `status(success/partial/error/cancelled)` 속성이 기록된다. `admin_published_search`에는 검색 종류를 구분하는 `trigger(keyword/class/read/page)`와 선택한 필터 종류만 추가된다. 학생 이름, 검색어, 이메일, UID, 반 이름, 파일명 등 식별정보는 기록하지 않는다.
 
 ## 배포 전 검증
 
@@ -64,4 +65,5 @@ npm run build
 PDF 인식 실패율(%) = parse_failure_count 합계 / file_count 합계 × 100
 배포 성공률(%) = success_count / (success_count + pending_count + failure_count) × 100
 파일당 처리 시간 = trace duration / file_count
+검색 결과 1건당 렌더링 비율 = rendered_count / result_count
 ```

@@ -2492,7 +2492,15 @@ export const fetchReportsByClassId = async (classId: string): Promise<ReportReco
     return snapshot.docs
       .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
       .sort(compareReportsByExamDateDesc);
-  } catch {
+  } catch (error) {
+    if (
+      !error
+      || typeof error !== "object"
+      || !("code" in error)
+      || error.code !== "failed-precondition"
+    ) {
+      throw error;
+    }
     const snapshot = await getDocs(query(reportsRef, where("classId", "==", classId)));
     return snapshot.docs
       .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
@@ -2514,7 +2522,15 @@ export const fetchPublishedReports = async (): Promise<ReportRecord[]> => {
     return snapshot.docs
       .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
       .sort(compareReportsByExamDateDesc);
-  } catch {
+  } catch (error) {
+    if (
+      !error
+      || typeof error !== "object"
+      || !("code" in error)
+      || error.code !== "failed-precondition"
+    ) {
+      throw error;
+    }
     const snapshot = await getDocs(
       query(reportsRef, where("assignmentStatus", "==", "completed")),
     );

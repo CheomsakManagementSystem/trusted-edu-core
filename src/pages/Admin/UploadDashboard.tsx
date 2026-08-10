@@ -49,6 +49,7 @@ import {
   normalizeDateString,
   prepareUploadCandidates,
   publishReportBatch,
+  resolveReportAssignmentClass,
   resolveMatchStatus,
   subscribeOpenReportClaims,
   subscribePendingReports,
@@ -68,6 +69,12 @@ import { formatStudentName } from "@/lib/studentName";
 import { normalizeClassIds } from "@/services/classTransferService";
 import { isStaffRole } from "@/lib/authz";
 import { startPerformanceTrace } from "@/lib/performanceMonitoring";
+import {
+  buildReportArchiveSearchIndex,
+  filterReportArchive,
+  getReportArchivePage,
+  getReportArchivePageCount,
+} from "@/lib/reportArchiveSearch";
 
 const scoreFields: Array<{ key: keyof ScoreBreakdown; label: string }> = [
   { key: "reading", label: "독해력" },
@@ -90,6 +97,9 @@ const statusLabel = {
   unregistered: "가입 대기/미연결",
 } as const;
 
+const upsertReport = (reports: ReportRecord[], report: ReportRecord): ReportRecord[] =>
+  [report, ...reports.filter((item) => item.id !== report.id)].sort(compareReportsByExamDateDesc);
+
 type SearchableStudent = StudentLite & {
   searchText: string;
 };
@@ -111,6 +121,7 @@ const UploadDashboard = () => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const archiveSectionRef = useRef<HTMLDivElement | null>(null);
   const publishedLoadStateRef = useRef<"idle" | "loading" | "loaded">("idle");
+  const archiveSearchMeasurementRef = useRef<ReturnType<typeof startPerformanceTrace> | null>(null);
   const toastRef = useRef(toast);
   const canManageReports = isStaffRole(user?.role);
 
@@ -135,6 +146,7 @@ const UploadDashboard = () => {
   const [archiveClassFilter, setArchiveClassFilter] = useState<string>("all");
   const [archiveStudentFilter, setArchiveStudentFilter] = useState("");
   const [archiveReadFilter, setArchiveReadFilter] = useState<string>("all");
+  const [archivePage, setArchivePage] = useState(1);
   const [cleanupSearch, setCleanupSearch] = useState("");
   const [pendingMatchTarget, setPendingMatchTarget] = useState<ReportRecord | null>(null);
   const [pendingMatchSearch, setPendingMatchSearch] = useState("");
@@ -586,32 +598,95 @@ const UploadDashboard = () => {
         .sort(compareReportsByExamDateDesc),
     [pendingReports],
   );
-const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
+  const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
   const searchablePublishedReports = useMemo(
-    () =>
-      [...publishedReports]
-        .sort(compareReportsByExamDateDesc)
-        .map((report) => ({
-          report,
-          searchText: [report.studentName, report.fileName, report.sourceName, report.essayTopic]
-            .filter(Boolean)
-            .join(" ")
-            .toLowerCase(),
-        })),
+    () => buildReportArchiveSearchIndex([...publishedReports].sort(compareReportsByExamDateDesc)),
     [publishedReports],
   );
-  const filteredPublishedReports = useMemo(() => {
-    const keyword = deferredArchiveStudentFilter.trim().toLowerCase();
-    return searchablePublishedReports
-      .filter(({ report, searchText }) => {
-        if (archiveClassFilter !== "all" && report.classId !== archiveClassFilter) return false;
-        if (keyword && !searchText.includes(keyword)) return false;
-        if (archiveReadFilter === "read" && !report.isRead) return false;
-        if (archiveReadFilter === "unread" && report.isRead) return false;
-        return true;
-      })
-      .map(({ report }) => report);
-  }, [archiveClassFilter, archiveReadFilter, deferredArchiveStudentFilter, searchablePublishedReports]);
+  const filteredPublishedReports = useMemo(
+    () =>
+      filterReportArchive(searchablePublishedReports, {
+        classId: archiveClassFilter,
+        keyword: deferredArchiveStudentFilter,
+        readStatus: archiveReadFilter,
+      }),
+    [archiveClassFilter, archiveReadFilter, deferredArchiveStudentFilter, searchablePublishedReports],
+  );
+  const archivePageCount = getReportArchivePageCount(filteredPublishedReports.length);
+  const archivePageResult = useMemo(
+    () => getReportArchivePage(filteredPublishedReports, archivePage),
+    [archivePage, filteredPublishedReports],
+  );
+
+  const beginArchiveSearchMeasurement = useCallback((trigger: "class" | "keyword" | "page" | "read") => {
+    archiveSearchMeasurementRef.current?.stop({ status: "cancelled" });
+    archiveSearchMeasurementRef.current = startPerformanceTrace("admin_published_search", { trigger });
+  }, []);
+
+  const handleArchiveClassFilterChange = (value: string) => {
+    beginArchiveSearchMeasurement("class");
+    setArchiveClassFilter(value);
+    setArchivePage(1);
+  };
+
+  const handleArchiveKeywordChange = (value: string) => {
+    beginArchiveSearchMeasurement("keyword");
+    setArchiveStudentFilter(value);
+    setArchivePage(1);
+  };
+
+  const handleArchiveReadFilterChange = (value: string) => {
+    beginArchiveSearchMeasurement("read");
+    setArchiveReadFilter(value);
+    setArchivePage(1);
+  };
+
+  const handleArchivePageChange = (nextPage: number) => {
+    beginArchiveSearchMeasurement("page");
+    setArchivePage(nextPage);
+  };
+
+  useEffect(() => {
+    const measurement = archiveSearchMeasurementRef.current;
+    if (
+      !measurement
+      || typeof window === "undefined"
+      || archiveStudentFilter !== deferredArchiveStudentFilter
+    ) return;
+
+    const frame = window.requestAnimationFrame(() => {
+      if (archiveSearchMeasurementRef.current !== measurement) return;
+      measurement.stop({
+        status: "success",
+        metrics: {
+          query_length: deferredArchiveStudentFilter.trim().length,
+          rendered_count: archivePageResult.reports.length,
+          result_count: filteredPublishedReports.length,
+          total_count: publishedReports.length,
+        },
+        attributes: {
+          class_filter: archiveClassFilter === "all" ? "all" : "specific",
+          read_filter: archiveReadFilter,
+        },
+      });
+      archiveSearchMeasurementRef.current = null;
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    archiveClassFilter,
+    archivePageResult,
+    archiveReadFilter,
+    archiveStudentFilter,
+    deferredArchiveStudentFilter,
+    filteredPublishedReports.length,
+    publishedReports.length,
+  ]);
+
+  useEffect(
+    () => () => archiveSearchMeasurementRef.current?.stop({ status: "cancelled" }),
+    [],
+  );
 
   const recentClassReports = useMemo(
     () => [...classReports].sort(compareReportsByExamDateDesc).slice(0, 20),
@@ -805,6 +880,31 @@ const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
     return filterStudents(pendingSearch[report.id] ?? "");
   };
 
+  const updateAssignedReportState = (report: ReportRecord, student: StudentLite) => {
+    const { classId, className } = resolveReportAssignmentClass(report, student);
+    const assignedReport: ReportRecord = {
+      ...report,
+      studentUid: student.uid,
+      studentName: student.name ?? "",
+      studentId: (student.studentId ?? "").trim() || null,
+      classId,
+      className,
+      assignmentStatus: "completed",
+      status: "completed",
+      matchMethod: "admin_manual_override",
+    };
+
+    setPendingReports((prev) => prev.filter((item) => item.id !== report.id));
+    setPublishedReports((prev) => upsertReport(prev, assignedReport));
+    setClassReports((prev) =>
+      selectedClass?.id === classId
+        ? upsertReport(prev, assignedReport)
+        : prev.filter((item) => item.id !== report.id),
+    );
+
+    return assignedReport;
+  };
+
   const handleAssignPending = async (report: ReportRecord) => {
     const studentDocId = pendingSelectedStudent[report.id];
     if (!studentDocId) {
@@ -832,14 +932,7 @@ const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
         return;
       }
       await assignReportToStudentOverride(report.id, target, user?.role, user?.uid);
-      const [pendingRows, classRows, publishedRows] = await Promise.all([
-        fetchPendingReports(),
-        selectedClass ? fetchReportsByClassId(selectedClass.id) : Promise.resolve(classReports),
-        fetchPublishedReports(),
-      ]);
-      setPendingReports(pendingRows);
-      setClassReports(classRows);
-      setPublishedReports(publishedRows);
+      updateAssignedReportState(report, target);
       toast({
         title: "연결 완료",
         description: `${formatStudentLabel(target)} 학생으로 리포트가 배정되었습니다.`,
@@ -905,12 +998,17 @@ const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
     setSavingFix(true);
     try {
       await fixAndAssignPendingReport(fixTarget.id, student, fixForm, user?.role, user?.uid);
-      const [classRows, publishedRows] = await Promise.all([
-        selectedClass ? fetchReportsByClassId(selectedClass.id) : Promise.resolve(classReports),
-        fetchPublishedReports(),
-      ]);
-      setClassReports(classRows);
-      setPublishedReports(publishedRows);
+      updateAssignedReportState(
+        {
+          ...fixTarget,
+          sourceName: fixForm.sourceName.trim(),
+          sourceStudentId: fixForm.sourceStudentId.trim() || null,
+          sourcePhoneSuffix: fixForm.sourcePhoneSuffix.trim() || null,
+          examDate: fixForm.examDate.trim(),
+          writtenAt: fixForm.examDate.trim(),
+        },
+        student,
+      );
       closeFixModal();
       toast({
         title: "수정 및 배정 완료",
@@ -953,14 +1051,7 @@ const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
         return;
       }
       await assignReportToStudentOverride(pendingMatchTarget.id, student, user?.role, user?.uid);
-      const [pendingRows, classRows, publishedRows] = await Promise.all([
-        fetchPendingReports(),
-        selectedClass ? fetchReportsByClassId(selectedClass.id) : Promise.resolve(classReports),
-        fetchPublishedReports(),
-      ]);
-      setPendingReports(pendingRows);
-      setClassReports(classRows);
-      setPublishedReports(publishedRows);
+      updateAssignedReportState(pendingMatchTarget, student);
       setPendingMatchTarget(null);
       setPendingMatchSearch("");
       setPendingMatchStudentDocId("");
@@ -1018,12 +1109,24 @@ const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
         feedback: editForm.feedback,
         scores: editForm.scores,
       });
-      const refreshed = await fetchPublishedReports();
-      setPublishedReports(refreshed);
-      if (selectedClass) {
-        const reports = await fetchReportsByClassId(selectedClass.id);
-        setClassReports(reports);
-      }
+      const normalizedScores: ScoreBreakdown = {
+        ...editForm.scores,
+        total: editForm.scores.total
+          ?? requiredScoreKeys.reduce((sum, key) => sum + (editForm.scores[key] ?? 0), 0),
+      };
+      const updatedReport: ReportRecord = {
+        ...editingReport,
+        reviewer: editForm.reviewer.trim(),
+        feedback: editForm.feedback.trim(),
+        scores: normalizedScores,
+        totalScore: normalizedScores.total ?? 0,
+      };
+      setPublishedReports((prev) => upsertReport(prev, updatedReport));
+      setClassReports((prev) =>
+        prev.some((report) => report.id === updatedReport.id)
+          ? upsertReport(prev, updatedReport)
+          : prev,
+      );
       setEditingReport(null);
       toast({
         title: "첨삭 내용 수정",
@@ -1074,14 +1177,17 @@ const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
     setDeletingReportId(report.id);
     try {
       await movePublishedReportToPending(report.id);
-      const [pendingRows, classRows, publishedRows] = await Promise.all([
-        fetchPendingReports(),
-        selectedClass ? fetchReportsByClassId(selectedClass.id) : Promise.resolve(classReports),
-        fetchPublishedReports(),
-      ]);
-      setPendingReports(pendingRows);
-      setClassReports(classRows);
-      setPublishedReports(publishedRows);
+      const pendingReport: ReportRecord = {
+        ...report,
+        studentUid: null,
+        studentId: null,
+        studentName: report.sourceName || report.studentName || "",
+        assignmentStatus: "unassigned_pending",
+        status: "pending",
+      };
+      setPendingReports((prev) => upsertReport(prev, pendingReport));
+      setClassReports((prev) => prev.filter((item) => item.id !== report.id));
+      setPublishedReports((prev) => prev.filter((item) => item.id !== report.id));
       toast({
         title: "리포트 연결 해제",
         description: "리포트를 미연결 상태로 되돌렸습니다. 올바른 학생으로 다시 연결할 수 있습니다.",
@@ -1570,7 +1676,7 @@ const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
           </div>
 
           <div className="mb-4 grid grid-cols-1 gap-2 md:grid-cols-3">
-            <Select value={archiveClassFilter} onValueChange={setArchiveClassFilter}>
+            <Select value={archiveClassFilter} onValueChange={handleArchiveClassFilterChange}>
               <SelectTrigger>
                 <SelectValue placeholder="반 필터" />
               </SelectTrigger>
@@ -1585,10 +1691,10 @@ const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
             </Select>
             <Input
               value={archiveStudentFilter}
-              onChange={(event) => setArchiveStudentFilter(event.target.value)}
+              onChange={(event) => handleArchiveKeywordChange(event.target.value)}
               placeholder="학생/파일명 검색"
             />
-            <Select value={archiveReadFilter} onValueChange={setArchiveReadFilter}>
+            <Select value={archiveReadFilter} onValueChange={handleArchiveReadFilterChange}>
               <SelectTrigger>
                 <SelectValue placeholder="읽음 상태" />
               </SelectTrigger>
@@ -1601,7 +1707,7 @@ const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
           </div>
 
           <div className="max-h-[400px] space-y-2 overflow-y-auto pr-1">
-            {filteredPublishedReports.map((report) => {
+            {archivePageResult.reports.map((report) => {
               return (
                 <div
                   key={report.id}
@@ -1666,6 +1772,31 @@ const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
               <p className="text-sm text-muted-foreground">검색 결과가 없습니다</p>
             ) : null}
           </div>
+          {filteredPublishedReports.length > 0 && (
+            <div className="mt-3 flex items-center justify-end gap-2 border-t border-border pt-3">
+              <span className="text-xs text-muted-foreground">
+                {archivePageResult.page} / {archivePageCount}페이지
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={archivePageResult.page <= 1}
+                onClick={() => handleArchivePageChange(archivePageResult.page - 1)}
+              >
+                이전
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={archivePageResult.page >= archivePageCount}
+                onClick={() => handleArchivePageChange(archivePageResult.page + 1)}
+              >
+                다음
+              </Button>
+            </div>
+          )}
         </div>
 
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">
