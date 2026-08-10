@@ -1,3 +1,18 @@
+import {
+  collection,
+  getDocs,
+  query,
+  where,
+} from "firebase/firestore";
+import { db } from "@/lib/firebase";
+import { getPhoneLast4 } from "@/lib/phoneIdentity";
+import { normalizeClassIds } from "@/services/classTransferService";
+import {
+  extractPhoneIdentityHints,
+  resolveStudentIdentity,
+  type StudentIdentityCandidate,
+  type StudentIdentitySource,
+} from "@/services/studentIdentityResolver";
 import * as hotfix from "./pdfProcessorHotfix";
 import type {
   ParsedPdfData,
@@ -34,6 +49,23 @@ const emptyScores = (): ScoreBreakdown => ({
 const requiredKeys = SCORE_ROWS.map((row) => row.key);
 const sumRequired = (scores: ScoreBreakdown) =>
   requiredKeys.reduce((sum, key) => sum + (scores[key] ?? 0), 0);
+
+type PhoneIdentityStudent = StudentLite & StudentIdentityCandidate & {
+  studentPhone?: string | null;
+  parentPhone?: string | null;
+  studentPhoneLast4?: string | null;
+  parentPhoneLast4?: string | null;
+};
+
+type PhoneIdentityParsed = ParsedPdfData & {
+  studentPhoneLast4?: string | null;
+  parentPhoneSuffix?: string | null;
+};
+
+type PhoneIdentityReport = ReportRecord & {
+  sourceParentPhoneSuffix?: string | null;
+  parsedJson?: PhoneIdentityParsed;
+};
 
 const parseScoreRows = (rawText: string) => {
   const text = rawText.replace(/\s+/g, " ").trim();
@@ -132,6 +164,125 @@ export const hydrateReportRecord = (
   };
 };
 
+export const fetchStudents = async (): Promise<StudentLite[]> => {
+  const snapshot = await getDocs(
+    query(collection(db, "users"), where("role", "in", ["student", "STUDENT"])),
+  );
+
+  return snapshot.docs.map((docSnap) => {
+    const data = docSnap.data() as {
+      uid?: string;
+      name?: string;
+      email?: string;
+      classId?: string | null;
+      classIds?: unknown;
+      className?: string | null;
+      studentId?: string | null;
+      phoneNumber?: string | null;
+      phoneSuffix?: string | null;
+      studentPhone?: string | null;
+      parentPhone?: string | null;
+      studentPhoneLast4?: string | null;
+      parentPhoneLast4?: string | null;
+    };
+    const studentPhoneLast4 =
+      data.studentPhoneLast4 ||
+      getPhoneLast4(data.studentPhone) ||
+      getPhoneLast4(data.phoneNumber) ||
+      data.phoneSuffix ||
+      (/^\d{4}$/.test(data.studentId ?? "") ? data.studentId : null);
+    const parentPhoneLast4 = data.parentPhoneLast4 || getPhoneLast4(data.parentPhone) || null;
+    const classIds = normalizeClassIds(data.classIds, data.classId ?? null);
+
+    return {
+      docId: docSnap.id,
+      uid: data.uid ?? docSnap.id,
+      name: data.name ?? "이름없음",
+      email: data.email ?? "",
+      classId: data.classId ?? null,
+      classIds,
+      className: data.className ?? null,
+      studentId: data.studentId ?? studentPhoneLast4 ?? null,
+      phoneNumber: data.phoneNumber ?? data.studentPhone ?? null,
+      phoneSuffix: data.phoneSuffix ?? studentPhoneLast4 ?? null,
+      studentPhone: data.studentPhone ?? null,
+      parentPhone: data.parentPhone ?? null,
+      studentPhoneLast4: studentPhoneLast4 ?? null,
+      parentPhoneLast4,
+    } as PhoneIdentityStudent;
+  });
+};
+
+const resolvePhoneSource = (
+  parsed: Pick<ParsedPdfData, "studentId" | "phoneSuffix"> &
+    Partial<PhoneIdentityParsed> & { rawText?: string },
+): StudentIdentitySource => {
+  const fallbackStudentLast4 =
+    parsed.studentPhoneLast4 ||
+    parsed.phoneSuffix ||
+    (/^\d{4}$/.test(parsed.studentId ?? "") ? parsed.studentId : "");
+  const hints = extractPhoneIdentityHints(parsed.rawText ?? "", fallbackStudentLast4);
+
+  return {
+    studentPhoneLast4: hints.studentPhoneLast4,
+    parentPhoneLast4: parsed.parentPhoneSuffix || hints.parentPhoneLast4,
+  };
+};
+
+export const resolveMatchStatus = (
+  parsed: Pick<ParsedPdfData, "name" | "className" | "studentId" | "phoneSuffix"> &
+    Partial<PhoneIdentityParsed> & { rawText?: string },
+  classStudents: StudentLite[],
+  allStudents: StudentLite[],
+): Pick<UploadCandidate, "status" | "candidates" | "selectedStudentUid" | "matchReason"> => {
+  const source = resolvePhoneSource(parsed);
+
+  if (source.studentPhoneLast4) {
+    const resolution = resolveStudentIdentity(
+      allStudents as PhoneIdentityStudent[],
+      source,
+    );
+
+    if (resolution.status === "matched" && resolution.student) {
+      const resolved = allStudents.find((student) => student.uid === resolution.student?.uid) ?? null;
+      if (!resolved) {
+        return {
+          status: "unregistered",
+          candidates: [],
+          selectedStudentUid: null,
+          matchReason: "전화번호로 확인된 학생 정보를 다시 찾지 못해 자동 연결하지 않았습니다.",
+        };
+      }
+
+      const belongsToSelectedClass = classStudents.some((student) => student.uid === resolved.uid);
+      if (!belongsToSelectedClass) {
+        return {
+          status: "unregistered",
+          candidates: [resolved],
+          selectedStudentUid: null,
+          matchReason: `${resolution.reason} 선택한 반 소속은 확인이 필요해 미연결로 보관합니다.`,
+        };
+      }
+
+      return {
+        status: "ready",
+        candidates: [resolved],
+        selectedStudentUid: resolved.uid,
+        matchReason: `${resolution.reason} 전화번호 기준으로 자동 매칭했습니다.`,
+      };
+    }
+
+    return {
+      status: "unregistered",
+      candidates: resolution.candidates as StudentLite[],
+      selectedStudentUid: null,
+      matchReason: `${resolution.reason} 자동 연결하지 않고 확인 대상으로 보관합니다.`,
+    };
+  }
+
+  return hotfix.resolveMatchStatus(parsed, classStudents, allStudents);
+};
+
 export const prepareUploadCandidates = async (
   files: File[],
   classStudents: StudentLite[],
@@ -140,11 +291,80 @@ export const prepareUploadCandidates = async (
   const rows = await hotfix.prepareUploadCandidates(files, classStudents, allStudents);
 
   return rows.map((row) => {
-    const parsed = stabilizeParsedScores(row.parsed);
+    const stabilized = stabilizeParsedScores(row.parsed);
+    const hints = extractPhoneIdentityHints(stabilized.rawText, stabilized.phoneSuffix);
+    const parsed: PhoneIdentityParsed = {
+      ...stabilized,
+      phoneSuffix: hints.studentPhoneLast4 || stabilized.phoneSuffix,
+      studentPhoneLast4: hints.studentPhoneLast4 || null,
+      parentPhoneSuffix: hints.parentPhoneLast4 || null,
+    };
+    const match = resolveMatchStatus(parsed, classStudents, allStudents);
+
     return {
       ...row,
       parsed,
+      ...match,
       parseError: hotfix.getUploadCandidateValidationError(parsed) ?? undefined,
     };
   });
 };
+
+const pendingAutoAssigning = new Set<string>();
+
+export const subscribePendingReports = (
+  onChange: (reports: ReportRecord[]) => void,
+  onError?: (error: Error) => void,
+) => hotfix.subscribePendingReports(
+  (reports) => {
+    onChange(reports);
+
+    void fetchStudents()
+      .then(async (students) => {
+        await Promise.all(
+          reports.map(async (report) => {
+            if (pendingAutoAssigning.has(report.id)) return;
+
+            const phoneReport = report as PhoneIdentityReport;
+            const parsed = phoneReport.parsedJson;
+            const source = resolvePhoneSource({
+              studentId: report.sourceStudentId ?? parsed?.studentId ?? "",
+              phoneSuffix: report.sourcePhoneSuffix ?? parsed?.phoneSuffix ?? "",
+              studentPhoneLast4: parsed?.studentPhoneLast4,
+              parentPhoneSuffix:
+                phoneReport.sourceParentPhoneSuffix ?? parsed?.parentPhoneSuffix ?? null,
+              rawText: parsed?.rawText ?? "",
+            });
+            const resolution = resolveStudentIdentity(
+              students as PhoneIdentityStudent[],
+              source,
+            );
+            if (resolution.status !== "matched" || !resolution.student) return;
+
+            const student = students.find((row) => row.uid === resolution.student?.uid);
+            if (!student) return;
+
+            pendingAutoAssigning.add(report.id);
+            try {
+              await hotfix.assignPendingReportToStudent(report.id, student);
+            } catch (error) {
+              console.error("Failed to auto-assign pending report by phone identity", {
+                reportId: report.id,
+                error,
+              });
+            } finally {
+              pendingAutoAssigning.delete(report.id);
+            }
+          }),
+        );
+      })
+      .catch((error) => {
+        onError?.(
+          error instanceof Error
+            ? error
+            : new Error("전화번호 기반 미연결 리포트 확인에 실패했습니다."),
+        );
+      });
+  },
+  onError,
+);
