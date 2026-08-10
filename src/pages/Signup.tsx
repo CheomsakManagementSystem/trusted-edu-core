@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/sonner";
 import type { CanonicalRole } from "@/lib/authz";
+import { isSupportedPhoneNumber } from "@/lib/phoneIdentity";
 import {
   completeSignupProfile,
   fetchCompletedSignupRole,
@@ -21,7 +22,8 @@ import {
 const Signup = () => {
   const navigate = useNavigate();
   const [name, setName] = useState("");
-  const [phoneSuffix, setPhoneSuffix] = useState("");
+  const [studentPhone, setStudentPhone] = useState("");
+  const [parentPhone, setParentPhone] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [instructorCode, setInstructorCode] = useState("");
@@ -36,7 +38,9 @@ const Signup = () => {
       case "auth/weak-password":
         return "비밀번호는 최소 6자 이상이어야 합니다.";
       case "functions/already-exists":
-        return "이미 사용 중인 4자리 ID입니다. 다른 숫자로 변경해 주세요.";
+        return "이미 가입에 사용된 학생 전화번호입니다. 관리자에게 문의해주세요.";
+      case "functions/invalid-argument":
+        return "학생 가입 시 학생 전화번호와 학부모 전화번호를 확인해주세요.";
       case "functions/unauthenticated":
         return "회원가입 인증 상태를 확인할 수 없습니다. 다시 시도해주세요.";
       case "functions/not-found":
@@ -68,8 +72,13 @@ const Signup = () => {
     e.preventDefault();
     setError(null);
 
-    if (!/^\d{4}$/.test(phoneSuffix)) {
-      setError("학생 ID는 숫자 4자리여야 합니다.");
+    const hasPhoneInput = Boolean(studentPhone.trim() || parentPhone.trim());
+    const definitelyStudent = !instructorCode.trim() && !masterCode.trim();
+    if (
+      (definitelyStudent || hasPhoneInput) &&
+      (!isSupportedPhoneNumber(studentPhone) || !isSupportedPhoneNumber(parentPhone))
+    ) {
+      setError("학생 가입 시 학생 전화번호와 학부모 전화번호를 정확히 입력해주세요.");
       return;
     }
 
@@ -84,7 +93,8 @@ const Signup = () => {
       const role = await completeSignupProfile({
         name,
         email,
-        phoneSuffix,
+        studentPhone,
+        parentPhone,
         instructorCode,
         masterCode,
       });
@@ -165,17 +175,35 @@ const Signup = () => {
 
             <div className="space-y-1">
               <label className="text-sm font-medium text-card-foreground">
-                학생 ID (4자리 숫자)
+                학생 전화번호 (학생 가입 시 필수)
               </label>
               <Input
-                value={phoneSuffix}
-                onChange={(e) => setPhoneSuffix(e.target.value)}
-                placeholder="나만의 고유 ID 4자리"
-                maxLength={4}
-                required
+                type="tel"
+                inputMode="tel"
+                value={studentPhone}
+                onChange={(e) => setStudentPhone(e.target.value)}
+                placeholder="010-1234-5678"
+                maxLength={13}
               />
               <p className="text-xs text-muted-foreground">
-                중복되지 않는 나만의 숫자 4자리를 정해 주세요.
+                학생 전화번호 뒷자리 4자리를 기본 식별값으로 사용합니다.
+              </p>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-card-foreground">
+                학부모 전화번호 (학생 가입 시 필수)
+              </label>
+              <Input
+                type="tel"
+                inputMode="tel"
+                value={parentPhone}
+                onChange={(e) => setParentPhone(e.target.value)}
+                placeholder="010-9876-5432"
+                maxLength={13}
+              />
+              <p className="text-xs text-muted-foreground">
+                학생 번호 뒷자리가 중복될 때 학부모 번호 뒷자리로 구분합니다.
               </p>
             </div>
 
