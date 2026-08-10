@@ -1,6 +1,8 @@
 const functions = require("firebase-functions");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const cors = require("cors")({ origin: true });
+const { runReportAutoMatchJob } = require("./reportAutoMatchJob");
 
 // Initialize once per runtime instance.
 if (!admin.apps.length) {
@@ -95,3 +97,15 @@ const deleteUserHandler = async (req, res) => {
 
 exports.adminDeleteUser = functions.https.onRequest(withGlobalCors(deleteUserHandler));
 exports.deleteUserByUid = functions.https.onRequest(withGlobalCors(deleteUserHandler));
+
+exports.autoMatchPendingReports = onSchedule(
+  {
+    schedule: "0 2 * * *",
+    timeZone: "Asia/Seoul",
+    region: "us-central1",
+    timeoutSeconds: 540,
+    memory: "512MiB",
+    maxInstances: 1,
+  },
+  async () => runReportAutoMatchJob({ admin }),
+);

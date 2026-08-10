@@ -6,8 +6,10 @@
     "node": "20"
   },
   "scripts": {
+    "check": "node --check index.js && node --check reportAutoMatcher.js && node --check reportAutoMatchJob.js",
     "deploy": "firebase deploy --only functions",
-    "serve": "firebase emulators:start --only functions"
+    "serve": "firebase emulators:start --only functions",
+    "test": "node --test"
   },
   "dependencies": {
     "cors": "^2.8.6",
