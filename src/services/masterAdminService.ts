@@ -19,11 +19,6 @@ import { deleteManagedUserCompletely } from "@/services/accountDeletionService";
 
 export { deleteManagedUserCompletely };
 
-export const MASTER_ADMIN_CODE =
-  "Admin_Master_#92!vXp7@K3nR5$tW6*bYc9uL1&qJ4^sE7%hG2_Z8mQ_A7xP9@L#2026_Secured";
-
-const DEFAULT_INSTRUCTOR_SIGNUP_CODE =
-  "A8z#mQ92!vXp7@K3nR5$tW6*bYc9uL1&qJ4^sE7%hG2(V0)Nf8_mZ1+pQ5#kR9";
 const SYSTEM_SETTINGS_COLLECTION = "systemSettings";
 const MASTER_CONTROLS_DOC_ID = "masterControls";
 const MAX_BATCH_WRITES = 400;
@@ -87,7 +82,7 @@ export const getMasterControls = async (): Promise<MasterControls> => {
 
   if (!snap.exists()) {
     return {
-      instructorSignupCode: DEFAULT_INSTRUCTOR_SIGNUP_CODE,
+      instructorSignupCode: "",
       autoNotifyOnFeedbackComplete: true,
     };
   }
@@ -95,7 +90,7 @@ export const getMasterControls = async (): Promise<MasterControls> => {
   const data = snap.data() as Partial<MasterControls>;
 
   return {
-    instructorSignupCode: data.instructorSignupCode || DEFAULT_INSTRUCTOR_SIGNUP_CODE,
+    instructorSignupCode: data.instructorSignupCode || "",
     autoNotifyOnFeedbackComplete: Boolean(data.autoNotifyOnFeedbackComplete),
     updatedAt: data.updatedAt,
     updatedBy: data.updatedBy,
