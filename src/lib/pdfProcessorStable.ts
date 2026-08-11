@@ -124,7 +124,7 @@ export const prepareUploadCandidates = async (
     const parsed = stabilizeParsedScores(row.parsed);
     return {
       ...row,
-      parsed,
+      parsed: { ...parsed, rawText: "" },
       parseError: hotfix.getUploadCandidateValidationError(parsed) ?? undefined,
     };
   });

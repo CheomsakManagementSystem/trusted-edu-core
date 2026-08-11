@@ -49,7 +49,6 @@ import {
   normalizeDateString,
   prepareUploadCandidates,
   publishReportBatch,
-  readPdfFileBuffer,
   resolveReportAssignmentClass,
   resolveMatchStatus,
   subscribeOpenReportClaims,
@@ -224,7 +223,7 @@ const UploadDashboard = () => {
   const buildFileKey = (file: File) => `${file.name}:${file.lastModified}:${file.size}`;
 
   const computeFileHash = async (file: File) => {
-    const buffer = await readPdfFileBuffer(file);
+    const buffer = await file.arrayBuffer();
     const digest = await window.crypto.subtle.digest("SHA-256", buffer);
     return Array.from(new Uint8Array(digest))
       .map((byte) => byte.toString(16).padStart(2, "0"))
@@ -467,13 +466,14 @@ const UploadDashboard = () => {
     const measurement = startPerformanceTrace("pdf_parse_batch", { source: "admin_upload" });
 
     try {
-      const hashes = await Promise.all(
-        files.map(async (file) => ({
+      const hashes: Array<{ file: File; key: string; hash: string }> = [];
+      for (const file of files) {
+        hashes.push({
           file,
           key: buildFileKey(file),
           hash: await computeFileHash(file),
-        })),
-      );
+        });
+      }
 
       const hashByKey = new Map(hashes.map((item) => [item.key, item.hash]));
       const parsedRows = await prepareUploadCandidates(files, classStudents, students);

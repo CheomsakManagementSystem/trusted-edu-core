@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   getParsedScoreValidationError,
+  compactParsedPdfData,
+  hydrateReportRecord,
   parseScoreTableFromTokens,
   resolveMatchStatus,
   resolveParsedTotalScore,
   resolveReportAssignmentClass,
   readPdfFileBuffer,
+  releasePdfFileBuffer,
   type PageToken,
   type ScoreBreakdown,
   type StudentLite,
@@ -25,6 +28,50 @@ describe("PDF file buffer cache", () => {
     expect(first).toBe(buffer);
     expect(second).toBe(buffer);
     expect(arrayBuffer).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases a cached buffer after PDF processing", async () => {
+    const arrayBuffer = vi.fn().mockResolvedValue(new ArrayBuffer(8));
+    const file = { arrayBuffer } as unknown as File;
+
+    await readPdfFileBuffer(file);
+    releasePdfFileBuffer(file);
+    await readPdfFileBuffer(file);
+
+    expect(arrayBuffer).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("report memory compaction", () => {
+  it("does not persist duplicated PDF raw text", () => {
+    const parsed = {
+      name: "홍길동",
+      className: "A반",
+      studentId: "1234",
+      phoneSuffix: "1234",
+      writtenAt: "2026-08-11",
+      essayTopic: "주제",
+      grade: "A",
+      reviewer: "첨삭자",
+      feedback: "총평",
+      scores: { reading: 20, comprehension: 30, problemUnderstanding: 20, organization: 20, expression: 10, total: 100 },
+      averageScores: { reading: 20, comprehension: 30, problemUnderstanding: 20, organization: 20, expression: 10, total: 100 },
+      convertedScores: { reading: 20, comprehension: 30, problemUnderstanding: 20, organization: 20, expression: 10, total: 100 },
+      rawText: "매우 긴 PDF 원문",
+    };
+
+    expect(compactParsedPdfData(parsed)).not.toHaveProperty("rawText");
+  });
+
+  it("drops parsedJson from list records after hydration", () => {
+    const report = hydrateReportRecord("report-1", {
+      parsedJson: { rawText: "매우 긴 PDF 원문" },
+      scores: null,
+      averageScores: null,
+      convertedScores: null,
+    } as never);
+
+    expect(report).not.toHaveProperty("parsedJson");
   });
 });
 

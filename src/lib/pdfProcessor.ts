@@ -43,6 +43,10 @@ export const readPdfFileBuffer = (file: File): Promise<ArrayBuffer> => {
   return read;
 };
 
+export const releasePdfFileBuffer = (file: File): void => {
+  pdfFileBufferCache.delete(file);
+};
+
 export type MatchStatus = "ready" | "unregistered";
 export type JoinRequestStatus = "pending" | "approved" | "rejected";
 export type ReportAssignmentStatus = "completed" | "duplicate_pending" | "unassigned_pending";
@@ -110,6 +114,16 @@ export type ParsedPdfData = {
   rawText: string;
 };
 
+export type PersistedParsedPdfData = Omit<ParsedPdfData, "rawText"> & {
+  /** 기존 문서 호환용. 신규 저장에서는 원문 중복본을 보관하지 않는다. */
+  rawText?: string;
+};
+
+export const compactParsedPdfData = (parsed: ParsedPdfData): PersistedParsedPdfData => {
+  const { rawText: _rawText, ...persisted } = parsed;
+  return persisted;
+};
+
 export type UploadCandidate = {
   id: string;
   file: File;
@@ -156,7 +170,7 @@ export type ReportRecord = {
   scores: ScoreBreakdown;
   averageScores?: ScoreBreakdown;
   convertedScores?: ScoreBreakdown;
-  parsedJson?: ParsedPdfData;
+  parsedJson?: PersistedParsedPdfData;
   totalScore: number;
   isRead: boolean;
   fileUrl: string;
@@ -359,9 +373,11 @@ export const hydrateReportRecord = (
     organization: null, expression: null, total: null,
   };
 
+  const { parsedJson: _parsedJson, ...listData } = data;
+
   return {
     id,
-    ...data,
+    ...listData,
     examDate,
     isRead: Boolean(data.isRead),
     scores: ((data.scores as ScoreBreakdown | null | undefined) ?? NULL_SCORES),
@@ -755,6 +771,7 @@ type PdfJsModule = {
   getDocument: (params: { data?: ArrayBuffer; url?: string }) => {
     promise: Promise<{
       numPages: number;
+      destroy?: () => Promise<void>;
       getPage: (pageNumber: number) => Promise<{
         getViewport?: (params: { scale: number }) => { width: number; height: number };
         render?: (params: { canvasContext: CanvasRenderingContext2D; viewport: { width: number; height: number } }) => {
@@ -763,6 +780,7 @@ type PdfJsModule = {
         getTextContent: () => Promise<{
           items: Array<{ str?: string; transform?: number[]; width?: number; height?: number }>;
         }>;
+        cleanup?: () => void;
       }>;
     }>;
   };
@@ -1387,36 +1405,40 @@ const extractPageScope = async (
   pageIndex: number,
 ): Promise<PageScope> => {
   const page = await pdf.getPage(pageIndex);
-  const viewport = page.getViewport?.({ scale: 1 });
-  const pageHeight = viewport?.height ?? 0;
-  const content = await page.getTextContent();
+  try {
+    const viewport = page.getViewport?.({ scale: 1 });
+    const pageHeight = viewport?.height ?? 0;
+    const content = await page.getTextContent();
 
-  const tokens = (content.items as Array<{ str?: string; transform?: number[]; width?: number; height?: number }>)
-    .map((item) => {
-      const text = (item.str ?? "").replace(/\s+/g, " ").trim();
-      const transform = item.transform ?? [];
-      const rawX = transform[4] ?? 0;
-      const rawY = transform[5] ?? 0;
-      const y = pageHeight > 0 ? pageHeight - rawY : rawY;
-      return {
-        text,
-        x: rawX,
-        y,
-        width: item.width ?? 0,
-        height: item.height ?? Math.abs(transform[3] ?? 0),
-      };
-    })
-    .filter((token) => token.text.length > 0);
+    const tokens = (content.items as Array<{ str?: string; transform?: number[]; width?: number; height?: number }>)
+      .map((item) => {
+        const text = (item.str ?? "").replace(/\s+/g, " ").trim();
+        const transform = item.transform ?? [];
+        const rawX = transform[4] ?? 0;
+        const rawY = transform[5] ?? 0;
+        const y = pageHeight > 0 ? pageHeight - rawY : rawY;
+        return {
+          text,
+          x: rawX,
+          y,
+          width: item.width ?? 0,
+          height: item.height ?? Math.abs(transform[3] ?? 0),
+        };
+      })
+      .filter((token) => token.text.length > 0);
 
-  const lines = groupTokensByLine(tokens);
-  const rawText = lines.map(toLineText).join("\n").trim();
+    const lines = groupTokensByLine(tokens);
+    const rawText = lines.map(toLineText).join("\n").trim();
 
-  return {
-    pageIndex,
-    rawText,
-    normalizedText: normalizeText(rawText),
-    tokens,
-  };
+    return {
+      pageIndex,
+      rawText,
+      normalizedText: normalizeText(rawText),
+      tokens,
+    };
+  } finally {
+    page.cleanup?.();
+  }
 };
 
 const extractPdfDataByStudent = async (
@@ -1429,17 +1451,25 @@ const extractPdfDataByStudent = async (
   const pdfjs = await loadPdfJs();
   const bytes = await readPdfFileBuffer(file);
   const pdf = await pdfjs.getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
-  const pageScopes = await Promise.all(
-    Array.from({ length: pdf.numPages }, (_, index) => extractPageScope(pdf, index + 1)),
-  );
+  const markerResults: Array<{ parsed: ParsedPdfData; sourcePage: number }> = [];
+  const fallbackResults: Array<{ parsed: ParsedPdfData; sourcePage: number }> = [];
 
-  const markerPages = pageScopes.filter((scope) => STUDENT_SECTION_MARKER.test(scope.rawText));
-  const targetPages = markerPages.length > 0 ? markerPages : pageScopes.filter((scope) => scope.normalizedText);
+  try {
+    for (let pageIndex = 1; pageIndex <= pdf.numPages; pageIndex += 1) {
+      const scope = await extractPageScope(pdf, pageIndex);
 
-  return targetPages.map((scope) => ({
-    parsed: parsePdfPage(scope),
-    sourcePage: scope.pageIndex,
-  }));
+      if (STUDENT_SECTION_MARKER.test(scope.rawText)) {
+        if (markerResults.length === 0) fallbackResults.length = 0;
+        markerResults.push({ parsed: parsePdfPage(scope), sourcePage: scope.pageIndex });
+      } else if (markerResults.length === 0 && scope.normalizedText) {
+        fallbackResults.push({ parsed: parsePdfPage(scope), sourcePage: scope.pageIndex });
+      }
+    }
+
+    return markerResults.length > 0 ? markerResults : fallbackResults;
+  } finally {
+    await pdf.destroy?.();
+  }
 };
 
 const byName = (students: StudentLite[], name: string) => {
@@ -1685,6 +1715,8 @@ export const prepareUploadCandidates = async (
             selectedStudentUid: null,
             parseError: error instanceof Error ? error.message : "파싱 오류가 발생했습니다.",
           });
+        } finally {
+          releasePdfFileBuffer(file);
         }
         results[index] = candidates;
       }
@@ -1937,7 +1969,7 @@ export const publishReportBatch = async (
         averageScores: row.parsed.averageScores,
         convertedScores: row.parsed.convertedScores,
         parsedJson: {
-          ...row.parsed,
+          ...compactParsedPdfData(row.parsed),
           scores: { ...row.parsed.scores, total: totalScore },
         },
         totalScore,
@@ -2579,11 +2611,12 @@ export const fetchPublishedReports = async (
       );
       pageCount += 1;
 
-      const sortedReports = [...reports].sort(compareReportsByExamDateDesc);
-      onProgress?.(sortedReports, pageCount);
+      if (pageCount === 1) {
+        onProgress?.([...reports].sort(compareReportsByExamDateDesc), pageCount);
+      }
 
       if (snapshot.docs.length < PUBLISHED_REPORT_PAGE_SIZE) {
-        return sortedReports;
+        return reports.sort(compareReportsByExamDateDesc);
       }
       cursor = snapshot.docs.at(-1) ?? null;
     }

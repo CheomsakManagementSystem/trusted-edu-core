@@ -415,7 +415,7 @@ export const publishReportBatch = async (
         averageScores: row.parsed.averageScores,
         convertedScores: row.parsed.convertedScores,
         parsedJson: {
-          ...row.parsed,
+          ...legacy.compactParsedPdfData(row.parsed),
           scores: { ...row.parsed.scores, total: totalScore },
         },
         totalScore,
