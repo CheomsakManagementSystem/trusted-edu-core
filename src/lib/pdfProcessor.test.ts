@@ -73,6 +73,18 @@ describe("report memory compaction", () => {
 
     expect(report).not.toHaveProperty("parsedJson");
   });
+
+  it("keeps only fields used by report lists", () => {
+    const report = hydrateReportRecord("report-1", {
+      studentName: "홍길동",
+      legacyPdfText: "매우 긴 과거 원문",
+      legacyPayload: { nested: "대형 데이터" },
+    } as never);
+
+    expect(report.studentName).toBe("홍길동");
+    expect(report).not.toHaveProperty("legacyPdfText");
+    expect(report).not.toHaveProperty("legacyPayload");
+  });
 });
 
 const student = (overrides: Partial<StudentLite>): StudentLite => ({

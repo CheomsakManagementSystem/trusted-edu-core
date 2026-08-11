@@ -18,7 +18,7 @@ import {
   formatExamDate,
   formatExamDateShort,
   getReportExamTitle,
-  hydrateReportRecord,
+  hydrateReportRecords,
   type ReportRecord,
 } from "@/lib/pdfProcessor";
 import { formatStudentName } from "@/lib/studentName";
@@ -128,23 +128,19 @@ const ReportView = () => {
     };
 
     const toRows = (docs: Array<{ id: string; data: () => unknown }>): ReportRecord[] =>
-      docs
-        .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-        .filter((row) =>
+      hydrateReportRecords(docs, (row) =>
           row.assignmentStatus !== "duplicate_pending" &&
           row.assignmentStatus !== "unassigned_pending" &&
           (row.assignmentStatus as string) !== "unassigned",
-        )
-        .sort(compareReportsByExamDateDesc);
+      );
 
-    const mergeReports = (...groups: ReportRecord[][]) =>
-      Array.from(
-        new Map(
-          groups
-            .flat()
-            .map((report) => [report.id, report]),
-        ).values(),
-      ).sort(compareReportsByExamDateDesc);
+    const mergeReports = (...groups: ReportRecord[][]) => {
+      const reportsById = new Map<string, ReportRecord>();
+      for (const group of groups) {
+        for (const report of group) reportsById.set(report.id, report);
+      }
+      return Array.from(reportsById.values()).sort(compareReportsByExamDateDesc);
+    };
 
     const reportsRef = collection(db, "reports");
     const studentId = user.studentId?.trim() || null;
@@ -250,8 +246,7 @@ const ReportView = () => {
             !claimedReportIds.has(report.id) &&
             (report.studentUid === user?.uid ||
               (Boolean(user?.studentId) && report.studentId === user?.studentId)),
-        )
-        .sort(compareReportsByExamDateDesc),
+        ),
     [reports, user?.studentId, user?.uid, claimedReportIds],
   );
 
@@ -297,8 +292,7 @@ const ReportView = () => {
 
   const trendData = useMemo(
     () =>
-      [...studentReports]
-        .map((report) => ({
+      studentReports.map((report) => ({
           examDateLabel: formatExamDateShort(report.examDate),
           score: report.totalScore,
           reportId: report.id,

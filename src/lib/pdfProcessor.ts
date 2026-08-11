@@ -373,21 +373,58 @@ export const hydrateReportRecord = (
     organization: null, expression: null, total: null,
   };
 
-  const { parsedJson: _parsedJson, ...listData } = data;
-
   return {
     id,
-    ...listData,
+    uid: typeof data.uid === "string" ? data.uid : "",
+    classId: typeof data.classId === "string" ? data.classId : null,
+    className: typeof data.className === "string" ? data.className : null,
     examDate,
+    fileHash: typeof data.fileHash === "string" ? data.fileHash : null,
+    studentUid: typeof data.studentUid === "string" ? data.studentUid : null,
+    studentId: typeof data.studentId === "string" ? data.studentId : null,
+    studentName: typeof data.studentName === "string" ? data.studentName : "",
+    assignmentStatus: data.assignmentStatus as ReportAssignmentStatus | undefined,
+    status: data.status as ReportRecord["status"],
+    assignedAt: (data.assignedAt as Timestamp | null | undefined) ?? null,
+    sourcePage: typeof data.sourcePage === "number" ? data.sourcePage : undefined,
+    pageNumber: typeof data.pageNumber === "number" ? data.pageNumber : undefined,
+    sourceName: typeof data.sourceName === "string" ? data.sourceName : "",
+    sourceStudentId: typeof data.sourceStudentId === "string" ? data.sourceStudentId : null,
+    sourcePhoneSuffix: typeof data.sourcePhoneSuffix === "string" ? data.sourcePhoneSuffix : null,
+    sourceClassName: typeof data.sourceClassName === "string" ? data.sourceClassName : null,
+    matchMethod: typeof data.matchMethod === "string" ? data.matchMethod : null,
+    matchReason: typeof data.matchReason === "string" ? data.matchReason : null,
+    writtenAt: typeof data.writtenAt === "string" ? data.writtenAt : "",
+    reviewer: typeof data.reviewer === "string" ? data.reviewer : "",
+    essayTopic: typeof data.essayTopic === "string" ? data.essayTopic : "",
+    grade: typeof data.grade === "string" ? data.grade : "",
+    feedback: typeof data.feedback === "string" ? data.feedback : "",
     isRead: Boolean(data.isRead),
     scores: ((data.scores as ScoreBreakdown | null | undefined) ?? NULL_SCORES),
     averageScores: ((data.averageScores as ScoreBreakdown | null | undefined) ?? NULL_SCORES),
     convertedScores: ((data.convertedScores as ScoreBreakdown | null | undefined) ?? NULL_SCORES),
     totalScore: (data.totalScore as number | null | undefined) ?? 0,
-    studentName: (data.studentName as string | null | undefined) ?? "",
-    feedback: (data.feedback as string | null | undefined) ?? "",
-    fileName: (data.fileName as string | null | undefined) ?? "",
+    fileUrl: typeof data.fileUrl === "string" ? data.fileUrl : "",
+    fileName: typeof data.fileName === "string" ? data.fileName : "",
+    createdAt: (data.createdAt as Timestamp | null | undefined) ?? null,
   };
+};
+
+type ReportDocumentLike = { id: string; data: () => unknown };
+
+export const hydrateReportRecords = (
+  docs: ReportDocumentLike[],
+  include?: (report: ReportRecord) => boolean,
+): ReportRecord[] => {
+  const reports: ReportRecord[] = [];
+  for (const docSnap of docs) {
+    const report = hydrateReportRecord(
+      docSnap.id,
+      docSnap.data() as Omit<ReportRecord, "id">,
+    );
+    if (!include || include(report)) reports.push(report);
+  }
+  return reports.sort(compareReportsByExamDateDesc);
 };
 
 const parseFileNameHint = (
@@ -2230,21 +2267,15 @@ export const approveClassJoinRequest = async (
 
 export const fetchReportsByStudentUid = async (studentUid: string): Promise<ReportRecord[]> => {
   const reportsRef = collection(db, "reports");
+  const isPublished = (row: ReportRecord) =>
+    row.assignmentStatus !== "duplicate_pending" && row.assignmentStatus !== "unassigned_pending";
 
   try {
     const snapshot = await getDocs(query(reportsRef, where("studentUid", "==", studentUid), orderBy("createdAt", "desc")));
-
-    return snapshot.docs
-        .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-        .filter((row) => row.assignmentStatus !== "duplicate_pending" && row.assignmentStatus !== "unassigned_pending")
-        .sort(compareReportsByExamDateDesc);
+    return hydrateReportRecords(snapshot.docs, isPublished);
   } catch {
     const snapshot = await getDocs(query(reportsRef, where("studentUid", "==", studentUid)));
-
-    return snapshot.docs
-      .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-      .filter((row) => row.assignmentStatus !== "duplicate_pending" && row.assignmentStatus !== "unassigned_pending")
-      .sort(compareReportsByExamDateDesc);
+    return hydrateReportRecords(snapshot.docs, isPublished);
   }
 };
 
@@ -2254,9 +2285,7 @@ export const fetchPendingReports = async (): Promise<ReportRecord[]> => {
     query(collection(db, "reports"), where("assignmentStatus", "in", statuses)),
   );
 
-  return snapshot.docs
-    .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-    .sort(compareReportsByExamDateDesc);
+  return hydrateReportRecords(snapshot.docs);
 };
 
 export const subscribePendingReports = (
@@ -2270,11 +2299,7 @@ export const subscribePendingReports = (
   return onSnapshot(
     pendingQuery,
     (snapshot) => {
-      onChange(
-        snapshot.docs
-          .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-          .sort(compareReportsByExamDateDesc),
-      );
+      onChange(hydrateReportRecords(snapshot.docs));
     },
     (error) => onError?.(error),
   );
@@ -2567,9 +2592,7 @@ export const fetchReportsByClassId = async (classId: string): Promise<ReportReco
     const snapshot = await getDocs(
       query(reportsRef, where("classId", "==", classId), orderBy("createdAt", "desc")),
     );
-    return snapshot.docs
-      .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-      .sort(compareReportsByExamDateDesc);
+    return hydrateReportRecords(snapshot.docs);
   } catch (error) {
     if (
       !error
@@ -2580,9 +2603,7 @@ export const fetchReportsByClassId = async (classId: string): Promise<ReportReco
       throw error;
     }
     const snapshot = await getDocs(query(reportsRef, where("classId", "==", classId)));
-    return snapshot.docs
-      .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-      .sort(compareReportsByExamDateDesc);
+    return hydrateReportRecords(snapshot.docs);
   }
 };
 
@@ -2604,11 +2625,11 @@ export const fetchPublishedReports = async (
         limit(PUBLISHED_REPORT_PAGE_SIZE),
       ];
       const snapshot = await getDocs(query(reportsRef, ...constraints));
-      reports.push(
-        ...snapshot.docs.map((docSnap) =>
+      for (const docSnap of snapshot.docs) {
+        reports.push(
           hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">),
-        ),
-      );
+        );
+      }
       pageCount += 1;
 
       if (pageCount === 1) {

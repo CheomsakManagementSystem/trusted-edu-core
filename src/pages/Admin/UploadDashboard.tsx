@@ -614,9 +614,9 @@ const UploadDashboard = () => {
   );
   const reportById = useMemo(() => {
     const map = new Map<string, ReportRecord>();
-    [...publishedReports, ...classReports, ...pendingReports].forEach((report) => {
-      map.set(report.id, report);
-    });
+    for (const reports of [publishedReports, classReports, pendingReports]) {
+      for (const report of reports) map.set(report.id, report);
+    }
     return map;
   }, [classReports, pendingReports, publishedReports]);
   const cleanupPendingReports = useMemo(
@@ -628,7 +628,7 @@ const UploadDashboard = () => {
   );
   const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
   const searchablePublishedReports = useMemo(
-    () => buildReportArchiveSearchIndex([...publishedReports].sort(compareReportsByExamDateDesc)),
+    () => buildReportArchiveSearchIndex(publishedReports),
     [publishedReports],
   );
   const filteredPublishedReports = useMemo(
@@ -717,7 +717,7 @@ const UploadDashboard = () => {
   );
 
   const recentClassReports = useMemo(
-    () => [...classReports].sort(compareReportsByExamDateDesc).slice(0, 20),
+    () => classReports.slice(0, 20),
     [classReports],
   );
 
