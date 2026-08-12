@@ -6,6 +6,7 @@ import {
   deleteDoc,
   doc,
   documentId,
+  getCountFromServer,
   getDoc,
   getDocFromServer,
   getDocs,
@@ -18,6 +19,8 @@ import {
   serverTimestamp,
   updateDoc,
   where,
+  type DocumentData,
+  type QueryDocumentSnapshot,
   type WriteBatch,
 } from "firebase/firestore";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -29,6 +32,7 @@ const STORAGE_UPLOAD_TIMEOUT_MS = 60_000;
 const PDFJS_VERSION = "4.10.38";
 const PUBLISHED_REPORT_PAGE_SIZE = 100;
 const PDF_PARSE_CONCURRENCY = 2;
+const PDF_PAGE_PARSE_CONCURRENCY = 4;
 const pdfFileBufferCache = new WeakMap<File, Promise<ArrayBuffer>>();
 
 export const readPdfFileBuffer = (file: File): Promise<ArrayBuffer> => {
@@ -1429,9 +1433,18 @@ const extractPdfDataByStudent = async (
   const pdfjs = await loadPdfJs();
   const bytes = await readPdfFileBuffer(file);
   const pdf = await pdfjs.getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
-  const pageScopes = await Promise.all(
-    Array.from({ length: pdf.numPages }, (_, index) => extractPageScope(pdf, index + 1)),
+  const pageScopes = new Array<PageScope>(pdf.numPages);
+  let nextPageIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(PDF_PAGE_PARSE_CONCURRENCY, pdf.numPages) },
+    async () => {
+      while (nextPageIndex < pdf.numPages) {
+        const pageIndex = nextPageIndex++;
+        pageScopes[pageIndex] = await extractPageScope(pdf, pageIndex + 1);
+      }
+    },
   );
+  await Promise.all(workers);
 
   const markerPages = pageScopes.filter((scope) => STUDENT_SECTION_MARKER.test(scope.rawText));
   const targetPages = markerPages.length > 0 ? markerPages : pageScopes.filter((scope) => scope.normalizedText);
@@ -2227,6 +2240,54 @@ export const fetchPendingReports = async (): Promise<ReportRecord[]> => {
     .sort(compareReportsByExamDateDesc);
 };
 
+export type PendingReportCursor = QueryDocumentSnapshot<DocumentData>;
+
+export type PendingReportsPage = {
+  reports: ReportRecord[];
+  nextCursor: PendingReportCursor | null;
+  hasNextPage: boolean;
+};
+
+export const fetchPendingReportCount = async (): Promise<number> => {
+  const statuses: ReportAssignmentStatus[] = ["duplicate_pending", "unassigned_pending"];
+  const snapshot = await getCountFromServer(
+    query(collection(db, "reports"), where("assignmentStatus", "in", statuses)),
+  );
+  return snapshot.data().count;
+};
+
+export const subscribePendingReportsPage = (
+  cursor: PendingReportCursor | null,
+  pageSize: number,
+  onChange: (page: PendingReportsPage) => void,
+  onError?: (error: Error) => void,
+) => {
+  const reportsRef = collection(db, "reports");
+  const statuses: ReportAssignmentStatus[] = ["duplicate_pending", "unassigned_pending"];
+  const pendingQuery = query(
+    reportsRef,
+    where("assignmentStatus", "in", statuses),
+    orderBy("createdAt", "desc"),
+    ...(cursor ? [startAfter(cursor)] : []),
+    limit(pageSize + 1),
+  );
+
+  return onSnapshot(
+    pendingQuery,
+    (snapshot) => {
+      const pageDocs = snapshot.docs.slice(0, pageSize);
+      onChange({
+        reports: pageDocs.map((docSnap) =>
+          hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">),
+        ),
+        nextCursor: pageDocs.at(-1) ?? null,
+        hasNextPage: snapshot.docs.length > pageSize,
+      });
+    },
+    (error) => onError?.(error),
+  );
+};
+
 export const subscribePendingReports = (
   onChange: (reports: ReportRecord[]) => void,
   onError?: (error: Error) => void,
@@ -2602,6 +2663,45 @@ export const fetchPublishedReports = async (
     }
     return loadPages(false);
   }
+};
+
+export type PublishedReportCursor = QueryDocumentSnapshot<DocumentData>;
+
+export type PublishedReportsPage = {
+  reports: ReportRecord[];
+  nextCursor: PublishedReportCursor | null;
+  hasNextPage: boolean;
+};
+
+export const fetchPublishedReportCount = async (): Promise<number> => {
+  const snapshot = await getCountFromServer(
+    query(collection(db, "reports"), where("assignmentStatus", "==", "completed")),
+  );
+  return snapshot.data().count;
+};
+
+export const fetchPublishedReportsPage = async (
+  cursor: PublishedReportCursor | null,
+  pageSize: number,
+): Promise<PublishedReportsPage> => {
+  const constraints = [
+    where("assignmentStatus", "==", "completed"),
+    orderBy("createdAt", "desc"),
+    ...(cursor ? [startAfter(cursor)] : []),
+    limit(pageSize + 1),
+  ];
+  const snapshot = await getDocs(query(collection(db, "reports"), ...constraints));
+  const pageDocs = snapshot.docs.slice(0, pageSize);
+
+  return {
+    reports: pageDocs
+      .map((docSnap) =>
+        hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">),
+      )
+      .sort(compareReportsByExamDateDesc),
+    nextCursor: pageDocs.at(-1) ?? null,
+    hasNextPage: snapshot.docs.length > pageSize,
+  };
 };
 
 export const updatePublishedReport = async (

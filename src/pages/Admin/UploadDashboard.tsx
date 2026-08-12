@@ -37,8 +37,10 @@ import {
   deletePublishedReport,
   deleteReportRecord,
   fetchClasses,
-  fetchPendingReports,
+  fetchPendingReportCount,
+  fetchPublishedReportCount,
   fetchPublishedReports,
+  fetchPublishedReportsPage,
   fetchReportsByClassId,
   fetchStudents,
   formatExamDate,
@@ -54,8 +56,11 @@ import {
   resolveMatchStatus,
   subscribeOpenReportClaims,
   subscribePendingReports,
+  subscribePendingReportsPage,
   updatePublishedReport,
   type ClassLite,
+  type PendingReportCursor,
+  type PublishedReportCursor,
   type ReportClaimTriageRecord,
   type ReportRecord,
   type ScoreBreakdown,
@@ -95,6 +100,9 @@ const requiredScoreKeys: Array<keyof ScoreBreakdown> = [
   "organization",
   "expression",
 ];
+const PENDING_REPORT_PAGE_SIZE = 30;
+const PUBLISHED_REPORT_PAGE_SIZE = 50;
+const FILE_HASH_CONCURRENCY = 2;
 
 const statusLabel = {
   ready: "자동 매칭 완료",
@@ -103,6 +111,33 @@ const statusLabel = {
 
 const upsertReport = (reports: ReportRecord[], report: ReportRecord): ReportRecord[] =>
   [report, ...reports.filter((item) => item.id !== report.id)].sort(compareReportsByExamDateDesc);
+
+const buildFileKey = (file: File) => `${file.name}:${file.lastModified}:${file.size}`;
+
+const computeFileHash = async (file: File) => {
+  const buffer = await readPdfFileBuffer(file);
+  const digest = await window.crypto.subtle.digest("SHA-256", buffer);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+};
+
+const computeFileHashes = async (files: File[]) => {
+  const hashes = new Array<{ file: File; key: string; hash: string }>(files.length);
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(FILE_HASH_CONCURRENCY, files.length) },
+    async () => {
+      while (nextIndex < files.length) {
+        const index = nextIndex++;
+        const file = files[index];
+        hashes[index] = { file, key: buildFileKey(file), hash: await computeFileHash(file) };
+      }
+    },
+  );
+  await Promise.all(workers);
+  return hashes;
+};
 
 type SearchableStudent = StudentLite & {
   searchText: string;
@@ -124,7 +159,6 @@ const UploadDashboard = () => {
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const archiveSectionRef = useRef<HTMLDivElement | null>(null);
-  const publishedLoadStateRef = useRef<"idle" | "loading" | "loaded">("idle");
   const archiveSearchMeasurementRef = useRef<ReturnType<typeof startPerformanceTrace> | null>(null);
   const toastRef = useRef(toast);
   const canManageReports = isStaffRole(user?.role);
@@ -135,7 +169,18 @@ const UploadDashboard = () => {
   const [publishedReports, setPublishedReports] = useState<ReportRecord[]>([]);
   const [publishedReportsLoading, setPublishedReportsLoading] = useState(false);
   const [publishedReportsLoaded, setPublishedReportsLoaded] = useState(false);
+  const [publishedSearchLoaded, setPublishedSearchLoaded] = useState(false);
+  const [publishedReportCount, setPublishedReportCount] = useState(0);
+  const [publishedHasNextPage, setPublishedHasNextPage] = useState(false);
+  const [publishedNextCursor, setPublishedNextCursor] = useState<PublishedReportCursor | null>(null);
+  const [publishedPageCursors, setPublishedPageCursors] = useState<Array<PublishedReportCursor | null>>([null]);
+  const [archiveVisible, setArchiveVisible] = useState(false);
   const [pendingReports, setPendingReports] = useState<ReportRecord[]>([]);
+  const [pendingReportsLoading, setPendingReportsLoading] = useState(true);
+  const [pendingReportCount, setPendingReportCount] = useState(0);
+  const [pendingHasNextPage, setPendingHasNextPage] = useState(false);
+  const [pendingNextCursor, setPendingNextCursor] = useState<PendingReportCursor | null>(null);
+  const [pendingPageCursors, setPendingPageCursors] = useState<Array<PendingReportCursor | null>>([null]);
   const [selectedClassId, setSelectedClassId] = useState<string>("none");
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(() => new Date());
   const [rows, setRows] = useState<UploadCandidate[]>([]);
@@ -152,6 +197,7 @@ const UploadDashboard = () => {
   const [archiveReadFilter, setArchiveReadFilter] = useState<string>("all");
   const [archivePage, setArchivePage] = useState(1);
   const [cleanupSearch, setCleanupSearch] = useState("");
+  const [cleanupPage, setCleanupPage] = useState(1);
   const [pendingMatchTarget, setPendingMatchTarget] = useState<ReportRecord | null>(null);
   const [pendingMatchSearch, setPendingMatchSearch] = useState("");
   const [pendingMatchStudentDocId, setPendingMatchStudentDocId] = useState<string>("");
@@ -185,6 +231,18 @@ const UploadDashboard = () => {
     sourcePhoneSuffix: "",
     examDate: "",
   });
+  const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
+  const isArchiveSearchActive = archiveClassFilter !== "all"
+    || deferredArchiveStudentFilter.trim().length > 0
+    || archiveReadFilter !== "all";
+  const publishedPageCursor = isArchiveSearchActive
+    ? null
+    : publishedPageCursors[archivePage - 1] ?? null;
+  const deferredCleanupSearch = useDeferredValue(cleanupSearch);
+  const isPendingSearchActive = deferredCleanupSearch.trim().length > 0;
+  const pendingPageCursor = isPendingSearchActive
+    ? null
+    : pendingPageCursors[cleanupPage - 1] ?? null;
 
   useEffect(() => {
     toastRef.current = toast;
@@ -220,16 +278,6 @@ const UploadDashboard = () => {
         })),
     [students],
   );
-
-  const buildFileKey = (file: File) => `${file.name}:${file.lastModified}:${file.size}`;
-
-  const computeFileHash = async (file: File) => {
-    const buffer = await readPdfFileBuffer(file);
-    const digest = await window.crypto.subtle.digest("SHA-256", buffer);
-    return Array.from(new Uint8Array(digest))
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("");
-  };
 
   const formatStudentLabel = (student: StudentLite) =>
     formatStudentName(student.name, {
@@ -294,95 +342,161 @@ const UploadDashboard = () => {
     void run();
   }, []);
 
+  const refreshPendingReportCount = useCallback(async () => {
+    const count = await fetchPendingReportCount();
+    setPendingReportCount(count);
+    return count;
+  }, []);
+
+  const refreshPublishedReportCount = useCallback(async () => {
+    const count = await fetchPublishedReportCount();
+    setPublishedReportCount(count);
+    return count;
+  }, []);
+
   useEffect(() => {
-    const measurement = startPerformanceTrace("admin_pending_load");
+    const measurement = startPerformanceTrace("admin_pending_load", {
+      mode: isPendingSearchActive ? "search" : "page",
+      page: cleanupPage,
+    });
     let recorded = false;
+    let active = true;
+    setPendingReportsLoading(true);
+
     const record = (status: "success" | "error" | "cancelled", reportCount = 0) => {
       if (recorded) return;
       recorded = true;
-      measurement.stop({ status, metrics: { report_count: reportCount } });
+      const options = { status, metrics: { report_count: reportCount } };
+      if (status === "success") {
+        stopPerformanceTraceAfterPaint(measurement, options);
+      } else {
+        measurement.stop(options);
+      }
     };
-    const unsubscribe = subscribePendingReports(
-      (reports) => {
-        setPendingReports(reports);
-        record("success", reports.length);
-      },
-      (pendingError) => {
-        record("error");
-        toastRef.current({
-          variant: "destructive",
-          title: "미연결 자료 조회 실패",
-          description: pendingError.message,
-        });
-      },
-    );
+    const handleError = (pendingError: Error) => {
+      if (!active) return;
+      setPendingReportsLoading(false);
+      record("error");
+      toastRef.current({
+        variant: "destructive",
+        title: "미연결 자료 조회 실패",
+        description: pendingError.message,
+      });
+    };
+
+    const unsubscribe = isPendingSearchActive
+      ? subscribePendingReports(
+        (reports) => {
+          if (!active) return;
+          setPendingReports(reports);
+          setPendingReportCount(reports.length);
+          setPendingHasNextPage(false);
+          setPendingNextCursor(null);
+          setPendingReportsLoading(false);
+          record("success", reports.length);
+        },
+        handleError,
+      )
+      : subscribePendingReportsPage(
+        pendingPageCursor,
+        PENDING_REPORT_PAGE_SIZE,
+        (page) => {
+          if (!active) return;
+          setPendingReports(page.reports);
+          setPendingReportCount((current) => current || (
+            page.reports.length + (page.hasNextPage ? 1 : 0)
+          ));
+          setPendingHasNextPage(page.hasNextPage);
+          setPendingNextCursor(page.nextCursor);
+          setPendingReportsLoading(false);
+          void refreshPendingReportCount().catch(() => undefined);
+          record("success", page.reports.length);
+        },
+        handleError,
+      );
 
     return () => {
+      active = false;
       record("cancelled");
       unsubscribe();
     };
-  }, []);
+  }, [cleanupPage, isPendingSearchActive, pendingPageCursor, refreshPendingReportCount]);
 
-  const loadPublishedReports = useCallback(async (force = false): Promise<ReportRecord[]> => {
-    if (!force && publishedLoadStateRef.current !== "idle") {
-      return publishedReports;
-    }
-
-    publishedLoadStateRef.current = "loading";
+  const loadPublishedReportsPage = useCallback(async () => {
     setPublishedReportsLoading(true);
-    const measurement = startPerformanceTrace("admin_published_load");
-    const firstPageMeasurement = startPerformanceTrace("admin_published_first_page");
-    let firstPageRecorded = false;
-    let loadedPageCount = 0;
+    const measurement = startPerformanceTrace("admin_published_load", {
+      mode: "page",
+      page: archivePage,
+    });
     try {
-      const reports = await fetchPublishedReports((progressReports, pageCount) => {
-        loadedPageCount = pageCount;
-        setPublishedReports(progressReports);
-        if (!firstPageRecorded) {
-          firstPageRecorded = true;
-          stopPerformanceTraceAfterPaint(firstPageMeasurement, {
-            status: "success",
-            metrics: { report_count: progressReports.length },
-          });
-        }
-      });
-      setPublishedReports(reports);
+      const [page, count] = await Promise.all([
+        fetchPublishedReportsPage(publishedPageCursor, PUBLISHED_REPORT_PAGE_SIZE),
+        fetchPublishedReportCount(),
+      ]);
+      setPublishedReports(page.reports);
+      setPublishedReportCount(count);
+      setPublishedHasNextPage(page.hasNextPage);
+      setPublishedNextCursor(page.nextCursor);
+      setPublishedSearchLoaded(false);
       setPublishedReportsLoaded(true);
-      publishedLoadStateRef.current = "loaded";
       stopPerformanceTraceAfterPaint(measurement, {
         status: "success",
-        metrics: { report_count: reports.length, page_count: loadedPageCount },
+        metrics: { report_count: page.reports.length, total_count: count },
       });
-      return reports;
     } catch (error) {
-      publishedLoadStateRef.current = "idle";
-      if (!firstPageRecorded) {
-        firstPageMeasurement.stop({ status: "error" });
-      }
       measurement.stop({ status: "error" });
       toastRef.current({
         variant: "destructive",
         title: "리포트 보관함 조회 실패",
         description: error instanceof Error ? error.message : "배포된 리포트를 불러오지 못했습니다.",
       });
-      return [];
     } finally {
       setPublishedReportsLoading(false);
     }
-  }, [publishedReports]);
+  }, [archivePage, publishedPageCursor]);
+
+  const loadPublishedReportsForSearch = useCallback(async (force = false) => {
+    if (publishedSearchLoaded && !force) return;
+
+    setPublishedReportsLoading(true);
+    const measurement = startPerformanceTrace("admin_published_load", { mode: "search" });
+    let loadedPageCount = 0;
+    try {
+      const reports = await fetchPublishedReports((progressReports, pageCount) => {
+        loadedPageCount = pageCount;
+        setPublishedReports(progressReports);
+      });
+      setPublishedReports(reports);
+      setPublishedReportCount(reports.length);
+      setPublishedSearchLoaded(true);
+      setPublishedReportsLoaded(true);
+      stopPerformanceTraceAfterPaint(measurement, {
+        status: "success",
+        metrics: { report_count: reports.length, page_count: loadedPageCount },
+      });
+    } catch (error) {
+      measurement.stop({ status: "error" });
+      toastRef.current({
+        variant: "destructive",
+        title: "리포트 보관함 조회 실패",
+        description: error instanceof Error ? error.message : "배포된 리포트를 불러오지 못했습니다.",
+      });
+    } finally {
+      setPublishedReportsLoading(false);
+    }
+  }, [publishedSearchLoaded]);
 
   useEffect(() => {
-    if (publishedReportsLoaded) return;
     const target = archiveSectionRef.current;
     if (!target || typeof IntersectionObserver === "undefined") {
-      void loadPublishedReports();
+      setArchiveVisible(true);
       return;
     }
 
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) {
-          void loadPublishedReports();
+          setArchiveVisible(true);
           observer.disconnect();
         }
       },
@@ -390,7 +504,21 @@ const UploadDashboard = () => {
     );
     observer.observe(target);
     return () => observer.disconnect();
-  }, [loadPublishedReports, publishedReportsLoaded]);
+  }, []);
+
+  useEffect(() => {
+    if (!archiveVisible) return;
+    if (isArchiveSearchActive) {
+      void loadPublishedReportsForSearch();
+      return;
+    }
+    void loadPublishedReportsPage();
+  }, [
+    archiveVisible,
+    isArchiveSearchActive,
+    loadPublishedReportsForSearch,
+    loadPublishedReportsPage,
+  ]);
 
   useEffect(() => {
     const unsubscribe = subscribeOpenReportClaims(
@@ -467,13 +595,7 @@ const UploadDashboard = () => {
     const measurement = startPerformanceTrace("pdf_parse_batch", { source: "admin_upload" });
 
     try {
-      const hashes = await Promise.all(
-        files.map(async (file) => ({
-          file,
-          key: buildFileKey(file),
-          hash: await computeFileHash(file),
-        })),
-      );
+      const hashes = await computeFileHashes(files);
 
       const hashByKey = new Map(hashes.map((item) => [item.key, item.hash]));
       const parsedRows = await prepareUploadCandidates(files, classStudents, students);
@@ -626,7 +748,6 @@ const UploadDashboard = () => {
         .sort(compareReportsByExamDateDesc),
     [pendingReports],
   );
-  const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
   const searchablePublishedReports = useMemo(
     () => buildReportArchiveSearchIndex([...publishedReports].sort(compareReportsByExamDateDesc)),
     [publishedReports],
@@ -640,10 +761,15 @@ const UploadDashboard = () => {
       }),
     [archiveClassFilter, archiveReadFilter, deferredArchiveStudentFilter, searchablePublishedReports],
   );
-  const archivePageCount = getReportArchivePageCount(filteredPublishedReports.length);
+  const archivePageCount = getReportArchivePageCount(
+    isArchiveSearchActive ? filteredPublishedReports.length : publishedReportCount,
+    PUBLISHED_REPORT_PAGE_SIZE,
+  );
   const archivePageResult = useMemo(
-    () => getReportArchivePage(filteredPublishedReports, archivePage),
-    [archivePage, filteredPublishedReports],
+    () => isArchiveSearchActive
+      ? getReportArchivePage(filteredPublishedReports, archivePage, PUBLISHED_REPORT_PAGE_SIZE)
+      : { page: archivePage, reports: filteredPublishedReports },
+    [archivePage, filteredPublishedReports, isArchiveSearchActive],
   );
 
   const beginArchiveSearchMeasurement = useCallback((trigger: "class" | "keyword" | "page" | "read") => {
@@ -655,22 +781,33 @@ const UploadDashboard = () => {
     beginArchiveSearchMeasurement("class");
     setArchiveClassFilter(value);
     setArchivePage(1);
+    setPublishedPageCursors([null]);
   };
 
   const handleArchiveKeywordChange = (value: string) => {
     beginArchiveSearchMeasurement("keyword");
     setArchiveStudentFilter(value);
     setArchivePage(1);
+    setPublishedPageCursors([null]);
   };
 
   const handleArchiveReadFilterChange = (value: string) => {
     beginArchiveSearchMeasurement("read");
     setArchiveReadFilter(value);
     setArchivePage(1);
+    setPublishedPageCursors([null]);
   };
 
   const handleArchivePageChange = (nextPage: number) => {
     beginArchiveSearchMeasurement("page");
+    if (!isArchiveSearchActive && nextPage > archivePage) {
+      if (!publishedNextCursor) return;
+      setPublishedPageCursors((prev) => {
+        const cursors = prev.slice(0, archivePage);
+        cursors[archivePage] = publishedNextCursor;
+        return cursors;
+      });
+    }
     setArchivePage(nextPage);
   };
 
@@ -722,7 +859,7 @@ const UploadDashboard = () => {
   );
 
   const filteredCleanupPendingReports = useMemo(() => {
-    const keyword = cleanupSearch.trim().toLowerCase();
+    const keyword = deferredCleanupSearch.trim().toLowerCase();
     if (!keyword) {
       return cleanupPendingReports;
     }
@@ -731,7 +868,55 @@ const UploadDashboard = () => {
       const target = `${report.sourceName} ${report.fileName} ${report.essayTopic} ${report.reviewer}`.toLowerCase();
       return target.includes(keyword);
     });
-  }, [cleanupPendingReports, cleanupSearch]);
+  }, [cleanupPendingReports, deferredCleanupSearch]);
+  const cleanupPageCount = getReportArchivePageCount(
+    isPendingSearchActive ? filteredCleanupPendingReports.length : pendingReportCount,
+    PENDING_REPORT_PAGE_SIZE,
+  );
+  const cleanupPageResult = useMemo(
+    () => isPendingSearchActive
+      ? getReportArchivePage(
+        filteredCleanupPendingReports,
+        cleanupPage,
+        PENDING_REPORT_PAGE_SIZE,
+      )
+      : { page: cleanupPage, reports: filteredCleanupPendingReports },
+    [cleanupPage, filteredCleanupPendingReports, isPendingSearchActive],
+  );
+
+  const handleCleanupSearchChange = (value: string) => {
+    setCleanupSearch(value);
+    setCleanupPage(1);
+    setPendingPageCursors([null]);
+  };
+
+  const handleCleanupPageChange = (nextPage: number) => {
+    if (isPendingSearchActive) {
+      setCleanupPage(nextPage);
+      return;
+    }
+
+    if (nextPage > cleanupPage) {
+      if (!pendingNextCursor) return;
+      setPendingPageCursors((prev) => {
+        const cursors = prev.slice(0, cleanupPage);
+        cursors[cleanupPage] = pendingNextCursor;
+        return cursors;
+      });
+    }
+    setCleanupPage(nextPage);
+  };
+
+  useEffect(() => {
+    if (
+      isPendingSearchActive
+      || pendingReportsLoading
+      || cleanupPage <= 1
+      || cleanupPageResult.reports.length > 0
+    ) return;
+
+    setCleanupPage((page) => Math.max(1, page - 1));
+  }, [cleanupPage, cleanupPageResult.reports.length, isPendingSearchActive, pendingReportsLoading]);
 
   const pendingMatchCandidates = useMemo(() => {
     const keyword = pendingMatchSearch.trim();
@@ -862,12 +1047,14 @@ const UploadDashboard = () => {
         });
       }
 
-      const [reports, pending] = await Promise.all([
+      const [reports, pendingCount, publishedCount] = await Promise.all([
         fetchReportsByClassId(selectedClass.id),
-        fetchPendingReports(),
+        fetchPendingReportCount(),
+        fetchPublishedReportCount(),
       ]);
       setClassReports(reports);
-      setPendingReports(pending);
+      setPendingReportCount(pendingCount);
+      setPublishedReportCount(publishedCount);
       measurement.stop({
         status: result.failureCount > 0 ? "partial" : "success",
         metrics: {
@@ -894,14 +1081,15 @@ const UploadDashboard = () => {
   };
 
   const handleRefreshReadStatus = async () => {
-    const [published, reports, pending] = await Promise.all([
-      loadPublishedReports(true),
+    const [, reports, pendingCount] = await Promise.all([
+      isArchiveSearchActive
+        ? loadPublishedReportsForSearch(true)
+        : loadPublishedReportsPage(),
       selectedClass ? fetchReportsByClassId(selectedClass.id) : Promise.resolve(classReports),
-      fetchPendingReports(),
+      fetchPendingReportCount(),
     ]);
-    setPublishedReports(published);
     setClassReports(reports);
-    setPendingReports(pending);
+    setPendingReportCount(pendingCount);
   };
 
   const getPendingCandidates = (report: ReportRecord) => {
@@ -909,6 +1097,8 @@ const UploadDashboard = () => {
   };
 
   const updateAssignedReportState = (report: ReportRecord, student: StudentLite) => {
+    const wasPending = report.assignmentStatus === "duplicate_pending"
+      || report.assignmentStatus === "unassigned_pending";
     const { classId, className } = resolveReportAssignmentClass(report, student);
     const assignedReport: ReportRecord = {
       ...report,
@@ -929,6 +1119,10 @@ const UploadDashboard = () => {
         ? upsertReport(prev, assignedReport)
         : prev.filter((item) => item.id !== report.id),
     );
+    if (wasPending) {
+      void refreshPendingReportCount().catch(() => undefined);
+      void refreshPublishedReportCount().catch(() => undefined);
+    }
 
     return assignedReport;
   };
@@ -1182,6 +1376,7 @@ const UploadDashboard = () => {
       setPublishedReports((prev) => prev.filter((report) => report.id !== reportId));
       setClassReports((prev) => prev.filter((report) => report.id !== reportId));
       setPendingReports((prev) => prev.filter((report) => report.id !== reportId));
+      void refreshPublishedReportCount().catch(() => undefined);
       toast({
         title: "리포트 회수/삭제",
         description: "리포트가 삭제되었습니다.",
@@ -1216,6 +1411,8 @@ const UploadDashboard = () => {
       setPendingReports((prev) => upsertReport(prev, pendingReport));
       setClassReports((prev) => prev.filter((item) => item.id !== report.id));
       setPublishedReports((prev) => prev.filter((item) => item.id !== report.id));
+      void refreshPendingReportCount().catch(() => undefined);
+      void refreshPublishedReportCount().catch(() => undefined);
       toast({
         title: "리포트 연결 해제",
         description: "리포트를 미연결 상태로 되돌렸습니다. 올바른 학생으로 다시 연결할 수 있습니다.",
@@ -1254,6 +1451,9 @@ const UploadDashboard = () => {
       setPublishedReports((prev) => prev.filter((report) => report.id !== row.sentReportId));
       setClassReports((prev) => prev.filter((report) => report.id !== row.sentReportId));
       setPendingReports((prev) => prev.filter((report) => report.id !== row.sentReportId));
+      if (!isConnected) {
+        void refreshPendingReportCount().catch(() => undefined);
+      }
       toast({
         title: "삭제 완료",
         description: "선택한 항목만 삭제되었습니다.",
@@ -1275,6 +1475,7 @@ const UploadDashboard = () => {
     try {
       await deleteReportRecord(report.id);
       setPendingReports((prev) => prev.filter((item) => item.id !== report.id));
+      void refreshPendingReportCount().catch(() => undefined);
       toast({
         title: "삭제 완료",
         description: "이 미배정 리포트만 삭제했습니다.",
@@ -1699,7 +1900,9 @@ const UploadDashboard = () => {
           <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <h3 className="text-sm font-semibold text-card-foreground">배포된 리포트 보관함</h3>
             <p className="text-xs text-muted-foreground">
-              {publishedReportsLoading && !publishedReportsLoaded ? "불러오는 중..." : `총 ${filteredPublishedReports.length}건`}
+              {publishedReportsLoading && !publishedReportsLoaded
+                ? "불러오는 중..."
+                : `총 ${isArchiveSearchActive ? filteredPublishedReports.length : publishedReportCount}건`}
             </p>
           </div>
 
@@ -1818,7 +2021,9 @@ const UploadDashboard = () => {
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={archivePageResult.page >= archivePageCount}
+                disabled={isArchiveSearchActive
+                  ? archivePageResult.page >= archivePageCount
+                  : !publishedHasNextPage}
                 onClick={() => handleArchivePageChange(archivePageResult.page + 1)}
               >
                 다음
@@ -1830,7 +2035,11 @@ const UploadDashboard = () => {
         <div className="rounded-lg border border-border bg-card p-5 shadow-card">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-card-foreground">미연결 학습 자료 정리</h3>
-            <p className="text-xs text-muted-foreground">대기 {filteredCleanupPendingReports.length}건</p>
+            <p className="text-xs text-muted-foreground">
+              {pendingReportsLoading
+                ? "불러오는 중..."
+                : `대기 ${isPendingSearchActive ? filteredCleanupPendingReports.length : pendingReportCount}건`}
+            </p>
           </div>
           <p className="mb-3 text-xs text-muted-foreground">
             이제 전체 초기화 대신, 필요한 데이터만 선택적으로 삭제하여 안전하게 관리할 수 있습니다.
@@ -1838,12 +2047,12 @@ const UploadDashboard = () => {
           <div className="mb-3">
             <Input
               value={cleanupSearch}
-              onChange={(event) => setCleanupSearch(event.target.value)}
+              onChange={(event) => handleCleanupSearchChange(event.target.value)}
               placeholder="학생 이름 또는 파일명 검색"
             />
           </div>
           <div className="max-h-[400px] space-y-2 overflow-y-auto pr-1">
-            {filteredCleanupPendingReports.map((report) => {
+            {cleanupPageResult.reports.map((report) => {
               const options = getPendingCandidates(report);
               const isDuplicate = report.assignmentStatus === "duplicate_pending";
               return (
@@ -1946,12 +2155,41 @@ const UploadDashboard = () => {
                 </div>
               );
             })}
-            {filteredCleanupPendingReports.length === 0 && (
+            {!pendingReportsLoading && filteredCleanupPendingReports.length === 0 && (
               <p className="text-sm text-muted-foreground">
-                {cleanupPendingReports.length === 0 ? "현재 보류 중인 리포트가 없습니다." : "검색 결과가 없습니다"}
+                {isPendingSearchActive && pendingReportCount > 0
+                  ? "검색 결과가 없습니다"
+                  : "현재 보류 중인 리포트가 없습니다."}
               </p>
             )}
           </div>
+          {!pendingReportsLoading && (pendingReportCount > 0 || filteredCleanupPendingReports.length > 0) && (
+            <div className="mt-3 flex items-center justify-end gap-2 border-t border-border pt-3">
+              <span className="text-xs text-muted-foreground">
+                {cleanupPageResult.page} / {cleanupPageCount}페이지
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={cleanupPageResult.page <= 1}
+                onClick={() => handleCleanupPageChange(cleanupPageResult.page - 1)}
+              >
+                이전
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={isPendingSearchActive
+                  ? cleanupPageResult.page >= cleanupPageCount
+                  : !pendingHasNextPage}
+                onClick={() => handleCleanupPageChange(cleanupPageResult.page + 1)}
+              >
+                다음
+              </Button>
+            </div>
+          )}
         </div>
 
         {message && (

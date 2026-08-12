@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
 import { sendPasswordResetEmail, signInWithEmailAndPassword, type AuthError } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
 import { Loader2 } from "lucide-react";
-import { auth, db } from "@/lib/firebase";
+import { auth } from "@/lib/firebase";
+import { useAuth } from "@/contexts/AuthContext";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -16,9 +16,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/sonner";
-import { normalizeRole } from "@/lib/authz";
 
 const Login = () => {
+  const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation() as { state?: { from?: Location } };
   const [email, setEmail] = useState("");
@@ -29,6 +29,20 @@ const Login = () => {
   const [resetEmail, setResetEmail] = useState("");
   const [resetError, setResetError] = useState<string | null>(null);
   const [resetLoading, setResetLoading] = useState(false);
+  const [awaitingProfile, setAwaitingProfile] = useState(false);
+
+  useEffect(() => {
+    if (!awaitingProfile || !user) return;
+
+    const redirectTo =
+      (location.state?.from as unknown as { pathname?: string } | undefined)?.pathname
+      ?? (user.role === "ADMIN"
+        ? "/admin/master"
+        : user.role === "INSTRUCTOR" ? "/admin" : "/dashboard");
+
+    toast.success("로그인되었습니다.");
+    navigate(redirectTo, { replace: true });
+  }, [awaitingProfile, location.state?.from, navigate, user]);
 
   const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 
@@ -52,31 +66,13 @@ const Login = () => {
     setLoading(true);
 
     try {
-      const credential = await signInWithEmailAndPassword(auth, email, password);
-      const uid = credential.user.uid;
-
-      const userRef = doc(db, "users", uid);
-      const snap = await getDoc(userRef);
-
-      let role = "STUDENT";
-
-      if (snap.exists()) {
-        const data = snap.data() as { role?: string };
-        role = normalizeRole(data.role);
-      }
-
-      const redirectTo =
-        (location.state?.from as unknown as { pathname?: string } | undefined)?.pathname ??
-        (role === "ADMIN" ? "/admin/master" : role === "INSTRUCTOR" ? "/admin" : "/dashboard");
-
-      toast.success("로그인되었습니다.");
-      navigate(redirectTo, { replace: true });
+      await signInWithEmailAndPassword(auth, email, password);
+      setAwaitingProfile(true);
     } catch (err) {
       console.error(err);
       const message = getLoginErrorMessage((err as AuthError).code);
       setError(message);
       toast.error(message);
-    } finally {
       setLoading(false);
     }
   };
