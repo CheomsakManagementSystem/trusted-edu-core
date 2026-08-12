@@ -44,12 +44,14 @@ type ClassFormState = {
   name: string;
 };
 
-const STUDENT_PAGE_SIZE = 50;
-const getPageCount = (count: number) => Math.max(1, Math.ceil(count / STUDENT_PAGE_SIZE));
-const getPageRows = <T,>(rows: T[], page: number) => {
-  const safePage = Math.min(Math.max(1, page), getPageCount(rows.length));
-  const start = (safePage - 1) * STUDENT_PAGE_SIZE;
-  return { page: safePage, rows: rows.slice(start, start + STUDENT_PAGE_SIZE) };
+const ASSIGNMENT_PAGE_SIZE = 50;
+const MANAGEMENT_PAGE_SIZE = 20;
+const getPageCount = (count: number, pageSize: number) =>
+  Math.max(1, Math.ceil(count / pageSize));
+const getPageRows = <T,>(rows: T[], page: number, pageSize: number) => {
+  const safePage = Math.min(Math.max(1, page), getPageCount(rows.length, pageSize));
+  const start = (safePage - 1) * pageSize;
+  return { page: safePage, rows: rows.slice(start, start + pageSize) };
 };
 
 const hydrateStudent = (id: string, data: Record<string, unknown>): StudentLite => {
@@ -129,7 +131,7 @@ const ClassManager = () => {
         metrics: {
           class_count: classDocs.length,
           student_count: studentDocs.length,
-          rendered_count: Math.min(studentDocs.length, STUDENT_PAGE_SIZE),
+          rendered_count: Math.min(studentDocs.length, MANAGEMENT_PAGE_SIZE),
         },
       });
     } catch (error) {
@@ -184,10 +186,10 @@ const ClassManager = () => {
     });
   }, [assignableStudents, deferredSearch]);
   const assignmentPageResult = useMemo(
-    () => getPageRows(filteredStudents, assignmentPage),
+    () => getPageRows(filteredStudents, assignmentPage, ASSIGNMENT_PAGE_SIZE),
     [assignmentPage, filteredStudents],
   );
-  const assignmentPageCount = getPageCount(filteredStudents.length);
+  const assignmentPageCount = getPageCount(filteredStudents.length, ASSIGNMENT_PAGE_SIZE);
 
   const classNameById = useMemo(() => {
     return new Map(classes.map((item) => [item.id, item.name]));
@@ -208,10 +210,18 @@ const ClassManager = () => {
     });
   }, [deferredAdminSearch, students]);
   const manageablePageResult = useMemo(
-    () => getPageRows(filteredManageableStudents, manageablePage),
+    () => getPageRows(filteredManageableStudents, manageablePage, MANAGEMENT_PAGE_SIZE),
     [filteredManageableStudents, manageablePage],
   );
-  const manageablePageCount = getPageCount(filteredManageableStudents.length);
+  const manageablePageCount = getPageCount(filteredManageableStudents.length, MANAGEMENT_PAGE_SIZE);
+  const checkedStudentDocIdSet = useMemo(
+    () => new Set(checkedStudentDocIds),
+    [checkedStudentDocIds],
+  );
+  const checkedManagedStudentDocIdSet = useMemo(
+    () => new Set(checkedManagedStudentDocIds),
+    [checkedManagedStudentDocIds],
+  );
 
   const beginClassSearchMeasurement = (trigger: "keyword" | "page") => {
     classSearchMeasurementRef.current?.stop({ status: "cancelled" });
@@ -333,7 +343,7 @@ const ClassManager = () => {
 
   const areAllManageableStudentsChecked =
     filteredManageableStudents.length > 0 &&
-    filteredManageableStudents.every((student) => checkedManagedStudentDocIds.includes(student.docId));
+    filteredManageableStudents.every((student) => checkedManagedStudentDocIdSet.has(student.docId));
 
   const handleToggleAllManagedStudents = (checked: boolean) => {
     if (checked) {
@@ -446,9 +456,7 @@ const ClassManager = () => {
       return;
     }
 
-    const assignedStudents = students.filter((student) =>
-      checkedStudentDocIds.includes(student.docId),
-    );
+    const assignedStudents = students.filter((student) => checkedStudentDocIdSet.has(student.docId));
     setLoading(true);
     setIsSyncing(true);
     setMessage("");
@@ -520,12 +528,12 @@ const ClassManager = () => {
     setMessage("");
     try {
       const targetStudents = students.filter((student) =>
-        checkedManagedStudentDocIds.includes(student.docId),
+        checkedManagedStudentDocIdSet.has(student.docId),
       );
       await bulkUpdateStudentClassIds(targetStudents, targetIds, firstClass);
       setStudents((prev) =>
         prev.map((student) =>
-          checkedManagedStudentDocIds.includes(student.docId)
+          checkedManagedStudentDocIdSet.has(student.docId)
             ? {
                 ...student,
                 classIds: targetIds,
@@ -688,7 +696,7 @@ const ClassManager = () => {
                       <p className="text-sm text-muted-foreground">아직 배정된 학생이 없습니다.</p>
                     ) : (
                       <div className="space-y-1">
-                        {getPageRows(members, expandedClassPage).rows.map((student) => (
+                        {getPageRows(members, expandedClassPage, ASSIGNMENT_PAGE_SIZE).rows.map((student) => (
                           <div
                             key={`member-${targetClass.id}-${student.docId}`}
                             className="flex flex-col gap-2 rounded border border-border px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
@@ -708,10 +716,10 @@ const ClassManager = () => {
                             </Button>
                           </div>
                         ))}
-                        {members.length > STUDENT_PAGE_SIZE && (
+                        {members.length > ASSIGNMENT_PAGE_SIZE && (
                           <div className="flex items-center justify-end gap-2 pt-2">
                             <span className="text-xs text-muted-foreground">
-                              {getPageRows(members, expandedClassPage).page} / {getPageCount(members.length)}페이지
+                              {getPageRows(members, expandedClassPage, ASSIGNMENT_PAGE_SIZE).page} / {getPageCount(members.length, ASSIGNMENT_PAGE_SIZE)}페이지
                             </span>
                             <Button
                               type="button"
@@ -726,7 +734,7 @@ const ClassManager = () => {
                               type="button"
                               size="sm"
                               variant="outline"
-                              disabled={expandedClassPage >= getPageCount(members.length)}
+                              disabled={expandedClassPage >= getPageCount(members.length, ASSIGNMENT_PAGE_SIZE)}
                               onClick={() => setExpandedClassPage((page) => page + 1)}
                             >
                               다음
@@ -776,7 +784,7 @@ const ClassManager = () => {
 
           <div className="mt-4 space-y-2">
             {assignmentPageResult.rows.map((student) => {
-              const checked = checkedStudentDocIds.includes(student.docId);
+              const checked = checkedStudentDocIdSet.has(student.docId);
               const currentClassNames = normalizeClassIds(student.classIds)
                 .map((classId) => classNameById.get(classId))
                 .filter((name): name is string => Boolean(name));
@@ -809,7 +817,7 @@ const ClassManager = () => {
             {filteredStudents.length === 0 && (
               <p className="text-sm text-muted-foreground">표시할 학생이 없습니다.</p>
             )}
-            {filteredStudents.length > STUDENT_PAGE_SIZE && (
+            {filteredStudents.length > ASSIGNMENT_PAGE_SIZE && (
               <div className="flex items-center justify-end gap-2 pt-2">
                 <span className="text-xs text-muted-foreground">
                   {assignmentPageResult.page} / {assignmentPageCount}페이지
@@ -855,7 +863,7 @@ const ClassManager = () => {
 
           <div className="mt-4 overflow-hidden rounded-lg border border-border bg-background">
             <div className="max-h-[680px] overflow-y-auto overscroll-contain pr-2 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-border/70 hover:scrollbar-thumb-border [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/70 hover:[&::-webkit-scrollbar-thumb]:bg-border">
-              <div className="sticky top-0 z-20 border-b border-border bg-background/95 px-3 py-3 backdrop-blur">
+              <div className="sticky top-0 z-20 border-b border-border bg-background px-3 py-3">
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div className="flex items-center gap-3">
                     <label className="flex items-center gap-2 text-sm text-card-foreground">
@@ -896,7 +904,7 @@ const ClassManager = () => {
 
               <div className="space-y-2 p-3">
                 {manageablePageResult.rows.map((student) => {
-                  const checked = checkedManagedStudentDocIds.includes(student.docId);
+                  const checked = checkedManagedStudentDocIdSet.has(student.docId);
                   const currentIds = normalizeClassIds(student.classIds).sort();
                   const pendingIds: string[] =
                     pendingClassSelections[student.docId] ?? currentIds;
@@ -967,7 +975,7 @@ const ClassManager = () => {
                 {filteredManageableStudents.length === 0 && (
                   <p className="py-6 text-sm text-muted-foreground">표시할 학생이 없습니다.</p>
                 )}
-                {filteredManageableStudents.length > STUDENT_PAGE_SIZE && (
+                {filteredManageableStudents.length > MANAGEMENT_PAGE_SIZE && (
                   <div className="flex items-center justify-end gap-2 pt-2">
                     <span className="text-xs text-muted-foreground">
                       {manageablePageResult.page} / {manageablePageCount}페이지

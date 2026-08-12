@@ -23,6 +23,41 @@ const enabled = import.meta.env.VITE_PERFORMANCE_ENABLED === "true";
 const buildLabel = import.meta.env.VITE_PERFORMANCE_BUILD_LABEL?.trim() || "unlabeled";
 let contextPromise: Promise<PerformanceContext | null> | null = null;
 
+export const detectPerformanceEnvironment = (userAgent: string) => {
+  const isNaver = /NAVER|naver\(inapp/i.test(userAgent);
+  const isWhale = /Whale/i.test(userAgent);
+  const isIos = /iP(?:hone|ad|od)/i.test(userAgent);
+  const iosMajor = userAgent.match(/(?:CPU (?:iPhone )?OS|iPhone OS) (\d+)[._]/i)?.[1];
+  const isIosWebView = isIos
+    && /AppleWebKit/i.test(userAgent)
+    && !/(?:Safari|CriOS|FxiOS|EdgiOS|OPiOS|Whale)/i.test(userAgent);
+
+  const browserFamily = isNaver
+    ? "naver"
+    : isWhale
+      ? "whale"
+      : /Edg(?:e|A|iOS)?\//i.test(userAgent)
+        ? "edge"
+        : /(?:Chrome|CriOS)\//i.test(userAgent)
+          ? "chrome"
+          : /(?:Firefox|FxiOS)\//i.test(userAgent)
+            ? "firefox"
+            : /Safari\//i.test(userAgent)
+              ? "safari"
+              : "other";
+
+  return {
+    browser_family: browserFamily,
+    browser_context: isNaver ? "naver_in_app" : isIosWebView ? "ios_webview" : "browser",
+    ios_major: iosMajor ?? "none",
+  };
+};
+
+const getPerformanceEnvironment = () =>
+  typeof navigator === "undefined"
+    ? { browser_family: "server", browser_context: "server", ios_major: "none" }
+    : detectPerformanceEnvironment(navigator.userAgent);
+
 const toAttributes = (values: Record<string, TraceValue>) =>
   Object.fromEntries(
     Object.entries(values)
@@ -93,6 +128,7 @@ export const startPerformanceTrace = (
           measurement.record(startedAt, duration, {
             attributes: toAttributes({
               build: buildLabel,
+              ...getPerformanceEnvironment(),
               ...attributes,
               ...options.attributes,
               status: options.status ?? "success",

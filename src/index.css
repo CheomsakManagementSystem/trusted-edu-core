@@ -60,9 +60,6 @@
 @layer base {
   * {
     @apply border-border;
-    transition-property: background-color, border-color, color, fill, stroke;
-    transition-duration: 120ms;
-    transition-timing-function: ease-out;
   }
 
   body {

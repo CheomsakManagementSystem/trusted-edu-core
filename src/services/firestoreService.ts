@@ -22,11 +22,11 @@ export const fetchStudents = async (): Promise<Student[]> => {
 
   const students: Student[] = [];
   snap.forEach((d) => {
-    const data = d.data() as any;
+    const data = d.data() as Partial<Student>;
     students.push({
       uid: data.uid ?? d.id,
-      name: data.name,
-      email: data.email,
+      name: data.name ?? "",
+      email: data.email ?? "",
       phoneSuffix: data.phoneSuffix,
       studentKey: data.studentKey,
     });

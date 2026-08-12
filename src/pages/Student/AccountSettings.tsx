@@ -41,7 +41,7 @@ const AccountSettings = () => {
   }, []);
 
   useEffect(() => {
-    setSelectedClassId(normalizeClassIds(user?.classIds).at(0) ?? "none");
+    setSelectedClassId(normalizeClassIds(user?.classIds)[0] ?? "none");
   }, [user?.classIds]);
 
   const selectedClass = useMemo(
@@ -49,11 +49,11 @@ const AccountSettings = () => {
     [classes, selectedClassId],
   );
   const currentClass = useMemo(() => {
-    const currentClassId = normalizeClassIds(user?.classIds).at(0);
+    const currentClassId = normalizeClassIds(user?.classIds)[0];
     return classes.find((item) => item.id === currentClassId) ?? null;
   }, [classes, user?.classIds]);
 
-  const hasClassSelectionChanged = (normalizeClassIds(user?.classIds).at(0) ?? "none") !== selectedClassId;
+  const hasClassSelectionChanged = (normalizeClassIds(user?.classIds)[0] ?? "none") !== selectedClassId;
 
   const handleClassChange = async () => {
     if (!user?.docPath || !hasClassSelectionChanged) {
@@ -84,7 +84,7 @@ const AccountSettings = () => {
         title: "반 변경에 실패했습니다",
         description: error instanceof Error ? error.message : "잠시 후 다시 시도해주세요.",
       });
-      setSelectedClassId(normalizeClassIds(user.classIds).at(0) ?? "none");
+      setSelectedClassId(normalizeClassIds(user.classIds)[0] ?? "none");
     } finally {
       setClassSaving(false);
     }

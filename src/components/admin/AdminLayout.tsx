@@ -32,7 +32,7 @@ const AdminLayout = ({ section, onSectionChange, children }: AdminLayoutProps) =
       {/* Sidebar */}
       <aside
         className={cn(
-          "hidden w-64 flex-col border-r border-slate-800 bg-slate-900/80 backdrop-blur md:flex"
+          "hidden w-64 flex-col border-r border-slate-800 bg-slate-900 md:flex"
         )}
       >
         <div className="flex h-16 items-center gap-2 border-b border-slate-800 px-5">
@@ -79,7 +79,7 @@ const AdminLayout = ({ section, onSectionChange, children }: AdminLayoutProps) =
       {/* Main */}
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top header (reuse AppHeader but with dark bg wrapper) */}
-        <div className="border-b border-slate-800 bg-slate-900/80 backdrop-blur">
+        <div className="border-b border-slate-800 bg-slate-900">
           <div className="flex items-center gap-2 px-4 md:hidden">
             <button
               className="mr-1 inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-800 text-slate-200 hover:bg-slate-800"

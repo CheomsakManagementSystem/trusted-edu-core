@@ -52,6 +52,7 @@ import {
   prepareUploadCandidates,
   publishReportBatch,
   readPdfFileBuffer,
+  releasePdfFileBuffer,
   resolveReportAssignmentClass,
   resolveMatchStatus,
   subscribeOpenReportClaims,
@@ -60,6 +61,7 @@ import {
   updatePublishedReport,
   type ClassLite,
   type PendingReportCursor,
+  type PublishedReportFilters,
   type PublishedReportCursor,
   type ReportClaimTriageRecord,
   type ReportRecord,
@@ -139,6 +141,30 @@ const computeFileHashes = async (files: File[]) => {
   return hashes;
 };
 
+const useNearViewport = (rootMargin = "800px 0px") => {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const target = ref.current;
+    if (!target || typeof IntersectionObserver === "undefined") {
+      setVisible(true);
+      return;
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setVisible(true);
+        observer.disconnect();
+      }
+    }, { rootMargin });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [rootMargin]);
+
+  return { ref, visible };
+};
+
 type SearchableStudent = StudentLite & {
   searchText: string;
 };
@@ -158,7 +184,9 @@ const UploadDashboard = () => {
   const { user } = useAuth();
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const archiveSectionRef = useRef<HTMLDivElement | null>(null);
+  const { ref: claimsSectionRef, visible: claimsVisible } = useNearViewport();
+  const { ref: archiveSectionRef, visible: archiveVisible } = useNearViewport();
+  const { ref: pendingSectionRef, visible: pendingVisible } = useNearViewport();
   const archiveSearchMeasurementRef = useRef<ReturnType<typeof startPerformanceTrace> | null>(null);
   const toastRef = useRef(toast);
   const canManageReports = isStaffRole(user?.role);
@@ -174,7 +202,6 @@ const UploadDashboard = () => {
   const [publishedHasNextPage, setPublishedHasNextPage] = useState(false);
   const [publishedNextCursor, setPublishedNextCursor] = useState<PublishedReportCursor | null>(null);
   const [publishedPageCursors, setPublishedPageCursors] = useState<Array<PublishedReportCursor | null>>([null]);
-  const [archiveVisible, setArchiveVisible] = useState(false);
   const [pendingReports, setPendingReports] = useState<ReportRecord[]>([]);
   const [pendingReportsLoading, setPendingReportsLoading] = useState(true);
   const [pendingReportCount, setPendingReportCount] = useState(0);
@@ -232,10 +259,12 @@ const UploadDashboard = () => {
     examDate: "",
   });
   const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
-  const isArchiveSearchActive = archiveClassFilter !== "all"
-    || deferredArchiveStudentFilter.trim().length > 0
-    || archiveReadFilter !== "all";
-  const publishedPageCursor = isArchiveSearchActive
+  const isArchiveKeywordActive = deferredArchiveStudentFilter.trim().length > 0;
+  const publishedFilters = useMemo<PublishedReportFilters>(() => ({
+    classId: archiveClassFilter === "all" ? null : archiveClassFilter,
+    isRead: archiveReadFilter === "all" ? null : archiveReadFilter === "read",
+  }), [archiveClassFilter, archiveReadFilter]);
+  const publishedPageCursor = isArchiveKeywordActive
     ? null
     : publishedPageCursors[archivePage - 1] ?? null;
   const deferredCleanupSearch = useDeferredValue(cleanupSearch);
@@ -349,12 +378,14 @@ const UploadDashboard = () => {
   }, []);
 
   const refreshPublishedReportCount = useCallback(async () => {
-    const count = await fetchPublishedReportCount();
+    const count = await fetchPublishedReportCount(publishedFilters);
     setPublishedReportCount(count);
     return count;
-  }, []);
+  }, [publishedFilters]);
 
   useEffect(() => {
+    if (!pendingVisible) return;
+
     const measurement = startPerformanceTrace("admin_pending_load", {
       mode: isPendingSearchActive ? "search" : "page",
       page: cleanupPage,
@@ -420,7 +451,7 @@ const UploadDashboard = () => {
       record("cancelled");
       unsubscribe();
     };
-  }, [cleanupPage, isPendingSearchActive, pendingPageCursor, refreshPendingReportCount]);
+  }, [cleanupPage, isPendingSearchActive, pendingPageCursor, pendingVisible, refreshPendingReportCount]);
 
   const loadPublishedReportsPage = useCallback(async () => {
     setPublishedReportsLoading(true);
@@ -429,20 +460,23 @@ const UploadDashboard = () => {
       page: archivePage,
     });
     try {
-      const [page, count] = await Promise.all([
-        fetchPublishedReportsPage(publishedPageCursor, PUBLISHED_REPORT_PAGE_SIZE),
-        fetchPublishedReportCount(),
-      ]);
+      const page = await fetchPublishedReportsPage(
+        publishedPageCursor,
+        PUBLISHED_REPORT_PAGE_SIZE,
+        publishedFilters,
+      );
       setPublishedReports(page.reports);
-      setPublishedReportCount(count);
       setPublishedHasNextPage(page.hasNextPage);
       setPublishedNextCursor(page.nextCursor);
       setPublishedSearchLoaded(false);
       setPublishedReportsLoaded(true);
       stopPerformanceTraceAfterPaint(measurement, {
         status: "success",
-        metrics: { report_count: page.reports.length, total_count: count },
+        metrics: { report_count: page.reports.length },
       });
+      void fetchPublishedReportCount(publishedFilters)
+        .then(setPublishedReportCount)
+        .catch(() => undefined);
     } catch (error) {
       measurement.stop({ status: "error" });
       toastRef.current({
@@ -453,19 +487,16 @@ const UploadDashboard = () => {
     } finally {
       setPublishedReportsLoading(false);
     }
-  }, [archivePage, publishedPageCursor]);
+  }, [archivePage, publishedFilters, publishedPageCursor]);
 
   const loadPublishedReportsForSearch = useCallback(async (force = false) => {
     if (publishedSearchLoaded && !force) return;
 
     setPublishedReportsLoading(true);
     const measurement = startPerformanceTrace("admin_published_load", { mode: "search" });
-    let loadedPageCount = 0;
     try {
-      const reports = await fetchPublishedReports((progressReports, pageCount) => {
-        loadedPageCount = pageCount;
-        setPublishedReports(progressReports);
-      });
+      const reports = await fetchPublishedReports();
+      const loadedPageCount = Math.ceil(reports.length / 100);
       setPublishedReports(reports);
       setPublishedReportCount(reports.length);
       setPublishedSearchLoaded(true);
@@ -487,40 +518,22 @@ const UploadDashboard = () => {
   }, [publishedSearchLoaded]);
 
   useEffect(() => {
-    const target = archiveSectionRef.current;
-    if (!target || typeof IntersectionObserver === "undefined") {
-      setArchiveVisible(true);
-      return;
-    }
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          setArchiveVisible(true);
-          observer.disconnect();
-        }
-      },
-      { rootMargin: "800px 0px" },
-    );
-    observer.observe(target);
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
     if (!archiveVisible) return;
-    if (isArchiveSearchActive) {
+    if (isArchiveKeywordActive) {
       void loadPublishedReportsForSearch();
       return;
     }
     void loadPublishedReportsPage();
   }, [
     archiveVisible,
-    isArchiveSearchActive,
+    isArchiveKeywordActive,
     loadPublishedReportsForSearch,
     loadPublishedReportsPage,
   ]);
 
   useEffect(() => {
+    if (!claimsVisible) return;
+
     const unsubscribe = subscribeOpenReportClaims(
       setOpenClaims,
       (claimError) => {
@@ -533,7 +546,7 @@ const UploadDashboard = () => {
     );
 
     return unsubscribe;
-  }, []);
+  }, [claimsVisible]);
 
   useEffect(() => {
     const run = async () => {
@@ -655,6 +668,7 @@ const UploadDashboard = () => {
         description: reason,
       });
     } finally {
+      files.forEach(releasePdfFileBuffer);
       setLoading(false);
     }
   };
@@ -762,14 +776,14 @@ const UploadDashboard = () => {
     [archiveClassFilter, archiveReadFilter, deferredArchiveStudentFilter, searchablePublishedReports],
   );
   const archivePageCount = getReportArchivePageCount(
-    isArchiveSearchActive ? filteredPublishedReports.length : publishedReportCount,
+    isArchiveKeywordActive ? filteredPublishedReports.length : publishedReportCount,
     PUBLISHED_REPORT_PAGE_SIZE,
   );
   const archivePageResult = useMemo(
-    () => isArchiveSearchActive
+    () => isArchiveKeywordActive
       ? getReportArchivePage(filteredPublishedReports, archivePage, PUBLISHED_REPORT_PAGE_SIZE)
       : { page: archivePage, reports: filteredPublishedReports },
-    [archivePage, filteredPublishedReports, isArchiveSearchActive],
+    [archivePage, filteredPublishedReports, isArchiveKeywordActive],
   );
 
   const beginArchiveSearchMeasurement = useCallback((trigger: "class" | "keyword" | "page" | "read") => {
@@ -800,7 +814,7 @@ const UploadDashboard = () => {
 
   const handleArchivePageChange = (nextPage: number) => {
     beginArchiveSearchMeasurement("page");
-    if (!isArchiveSearchActive && nextPage > archivePage) {
+    if (!isArchiveKeywordActive && nextPage > archivePage) {
       if (!publishedNextCursor) return;
       setPublishedPageCursors((prev) => {
         const cursors = prev.slice(0, archivePage);
@@ -1050,7 +1064,7 @@ const UploadDashboard = () => {
       const [reports, pendingCount, publishedCount] = await Promise.all([
         fetchReportsByClassId(selectedClass.id),
         fetchPendingReportCount(),
-        fetchPublishedReportCount(),
+        fetchPublishedReportCount(publishedFilters),
       ]);
       setClassReports(reports);
       setPendingReportCount(pendingCount);
@@ -1082,7 +1096,7 @@ const UploadDashboard = () => {
 
   const handleRefreshReadStatus = async () => {
     const [, reports, pendingCount] = await Promise.all([
-      isArchiveSearchActive
+      isArchiveKeywordActive
         ? loadPublishedReportsForSearch(true)
         : loadPublishedReportsPage(),
       selectedClass ? fetchReportsByClassId(selectedClass.id) : Promise.resolve(classReports),
@@ -1836,7 +1850,7 @@ const UploadDashboard = () => {
           </div>
         </div>
 
-        <div className="rounded-lg border border-border bg-card p-5 shadow-card">
+        <div ref={claimsSectionRef} className="rounded-lg border border-border bg-card p-5 shadow-card">
           <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h3 className="text-sm font-semibold text-card-foreground">오배송 신고 관리</h3>
@@ -1902,7 +1916,7 @@ const UploadDashboard = () => {
             <p className="text-xs text-muted-foreground">
               {publishedReportsLoading && !publishedReportsLoaded
                 ? "불러오는 중..."
-                : `총 ${isArchiveSearchActive ? filteredPublishedReports.length : publishedReportCount}건`}
+                : `총 ${isArchiveKeywordActive ? filteredPublishedReports.length : publishedReportCount}건`}
             </p>
           </div>
 
@@ -2021,7 +2035,7 @@ const UploadDashboard = () => {
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={isArchiveSearchActive
+                disabled={isArchiveKeywordActive
                   ? archivePageResult.page >= archivePageCount
                   : !publishedHasNextPage}
                 onClick={() => handleArchivePageChange(archivePageResult.page + 1)}
@@ -2032,7 +2046,7 @@ const UploadDashboard = () => {
           )}
         </div>
 
-        <div className="rounded-lg border border-border bg-card p-5 shadow-card">
+        <div ref={pendingSectionRef} className="rounded-lg border border-border bg-card p-5 shadow-card">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-card-foreground">미연결 학습 자료 정리</h3>
             <p className="text-xs text-muted-foreground">

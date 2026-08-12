@@ -415,7 +415,7 @@ export const publishReportBatch = async (
         averageScores: row.parsed.averageScores,
         convertedScores: row.parsed.convertedScores,
         parsedJson: {
-          ...row.parsed,
+          ...legacy.stripParsedRawText(row.parsed),
           scores: { ...row.parsed.scores, total: totalScore },
         },
         totalScore,
@@ -467,7 +467,7 @@ export const updatePublishedReport = async (
   };
   const reportRef = doc(db, "reports", reportId);
   const snapshot = await getDoc(reportRef);
-  const previous = (snapshot.data() ?? {}) as { parsedJson?: ParsedPdfData };
+  const previous = (snapshot.data() ?? {}) as { parsedJson?: legacy.PersistedParsedPdfData };
   const updatePayload: Record<string, unknown> = {
     reviewer: payload.reviewer.trim(),
     feedback: payload.feedback.trim(),
@@ -477,12 +477,12 @@ export const updatePublishedReport = async (
   };
 
   if (previous.parsedJson) {
-    updatePayload.parsedJson = {
+    updatePayload.parsedJson = legacy.stripParsedRawText({
       ...previous.parsedJson,
       reviewer: payload.reviewer.trim(),
       feedback: payload.feedback.trim(),
       scores: normalizedScores,
-    };
+    });
   }
 
   await updateDoc(reportRef, updatePayload);

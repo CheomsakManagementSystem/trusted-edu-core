@@ -20,10 +20,11 @@ import {
   updateDoc,
   where,
   type DocumentData,
+  type QueryConstraint,
   type QueryDocumentSnapshot,
   type WriteBatch,
 } from "firebase/firestore";
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import pdfWorkerUrl from "./pdfWorkerCompat.ts?worker&url";
 import { db } from "@/lib/firebase";
 import { isStaffRole } from "@/lib/authz";
 import { normalizeClassIds } from "@/services/classTransferService";
@@ -45,6 +46,10 @@ export const readPdfFileBuffer = (file: File): Promise<ArrayBuffer> => {
   });
   pdfFileBufferCache.set(file, read);
   return read;
+};
+
+export const releasePdfFileBuffer = (file: File): void => {
+  pdfFileBufferCache.delete(file);
 };
 
 export type MatchStatus = "ready" | "unregistered";
@@ -78,7 +83,7 @@ export type ClassLite = {
 };
 
 const resolvePrimaryClassId = (student: Pick<StudentLite, "classIds">): string | null =>
-  normalizeClassIds(student.classIds).at(0) ?? null;
+  normalizeClassIds(student.classIds)[0] ?? null;
 
 export type ScoreBreakdown = {
   reading: number | null;
@@ -112,6 +117,17 @@ export type ParsedPdfData = {
   convertedScores: ScoreBreakdown;
   scoreParse?: ScoreParseMeta;
   rawText: string;
+};
+
+export type PersistedParsedPdfData = Omit<ParsedPdfData, "rawText"> & {
+  rawText?: string;
+};
+
+export const stripParsedRawText = (
+  parsed: ParsedPdfData | PersistedParsedPdfData,
+): PersistedParsedPdfData => {
+  const { rawText: _rawText, ...persisted } = parsed;
+  return persisted;
 };
 
 export type UploadCandidate = {
@@ -160,7 +176,7 @@ export type ReportRecord = {
   scores: ScoreBreakdown;
   averageScores?: ScoreBreakdown;
   convertedScores?: ScoreBreakdown;
-  parsedJson?: ParsedPdfData;
+  parsedJson?: PersistedParsedPdfData;
   totalScore: number;
   isRead: boolean;
   fileUrl: string;
@@ -756,9 +772,10 @@ const parsePdfText = (rawText: string): ParsedPdfData => {
 
 type PdfJsModule = {
   GlobalWorkerOptions: { workerSrc: string };
-  getDocument: (params: { data?: ArrayBuffer; url?: string }) => {
+  getDocument: (params: { data?: ArrayBuffer | Uint8Array; url?: string }) => {
     promise: Promise<{
       numPages: number;
+      destroy?: () => Promise<void>;
       getPage: (pageNumber: number) => Promise<{
         getViewport?: (params: { scale: number }) => { width: number; height: number };
         render?: (params: { canvasContext: CanvasRenderingContext2D; viewport: { width: number; height: number } }) => {
@@ -1432,27 +1449,36 @@ const extractPdfDataByStudent = async (
 
   const pdfjs = await loadPdfJs();
   const bytes = await readPdfFileBuffer(file);
-  const pdf = await pdfjs.getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
-  const pageScopes = new Array<PageScope>(pdf.numPages);
-  let nextPageIndex = 0;
-  const workers = Array.from(
-    { length: Math.min(PDF_PAGE_PARSE_CONCURRENCY, pdf.numPages) },
-    async () => {
-      while (nextPageIndex < pdf.numPages) {
-        const pageIndex = nextPageIndex++;
-        pageScopes[pageIndex] = await extractPageScope(pdf, pageIndex + 1);
-      }
-    },
-  );
-  await Promise.all(workers);
+  let pdf: Awaited<ReturnType<PdfJsModule["getDocument"]>["promise"]> | null = null;
 
-  const markerPages = pageScopes.filter((scope) => STUDENT_SECTION_MARKER.test(scope.rawText));
-  const targetPages = markerPages.length > 0 ? markerPages : pageScopes.filter((scope) => scope.normalizedText);
+  try {
+    pdf = await pdfjs.getDocument({ data: new Uint8Array(bytes) }).promise;
+    const pageScopes = new Array<PageScope>(pdf.numPages);
+    let nextPageIndex = 0;
+    const workers = Array.from(
+      { length: Math.min(PDF_PAGE_PARSE_CONCURRENCY, pdf.numPages) },
+      async () => {
+        while (nextPageIndex < pdf!.numPages) {
+          const pageIndex = nextPageIndex++;
+          pageScopes[pageIndex] = await extractPageScope(pdf!, pageIndex + 1);
+        }
+      },
+    );
+    await Promise.all(workers);
 
-  return targetPages.map((scope) => ({
-    parsed: parsePdfPage(scope),
-    sourcePage: scope.pageIndex,
-  }));
+    const markerPages = pageScopes.filter((scope) => STUDENT_SECTION_MARKER.test(scope.rawText));
+    const targetPages = markerPages.length > 0
+      ? markerPages
+      : pageScopes.filter((scope) => scope.normalizedText);
+
+    return targetPages.map((scope) => ({
+      parsed: parsePdfPage(scope),
+      sourcePage: scope.pageIndex,
+    }));
+  } finally {
+    releasePdfFileBuffer(file);
+    await pdf?.destroy?.();
+  }
 };
 
 const byName = (students: StudentLite[], name: string) => {
@@ -1950,7 +1976,7 @@ export const publishReportBatch = async (
         averageScores: row.parsed.averageScores,
         convertedScores: row.parsed.convertedScores,
         parsedJson: {
-          ...row.parsed,
+          ...stripParsedRawText(row.parsed),
           scores: { ...row.parsed.scores, total: totalScore },
         },
         totalScore,
@@ -2280,7 +2306,7 @@ export const subscribePendingReportsPage = (
         reports: pageDocs.map((docSnap) =>
           hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">),
         ),
-        nextCursor: pageDocs.at(-1) ?? null,
+        nextCursor: pageDocs[pageDocs.length - 1] ?? null,
         hasNextPage: snapshot.docs.length > pageSize,
       });
     },
@@ -2469,13 +2495,13 @@ export const fixAndAssignPendingReport = async (
 
   const prev = snap.data() as Partial<ReportRecord>;
   const parsedJson = prev.parsedJson
-    ? {
+    ? stripParsedRawText({
         ...prev.parsedJson,
         name: source.sourceName.trim(),
         studentId: source.sourceStudentId.trim(),
         phoneSuffix: source.sourcePhoneSuffix.trim(),
         writtenAt: source.examDate.trim(),
-      }
+      })
     : undefined;
   const { classId, className } = resolveReportAssignmentClass(prev, student);
   const batch = writeBatch(db);
@@ -2640,13 +2666,14 @@ export const fetchPublishedReports = async (
       );
       pageCount += 1;
 
-      const sortedReports = [...reports].sort(compareReportsByExamDateDesc);
-      onProgress?.(sortedReports, pageCount);
+      if (onProgress) {
+        onProgress([...reports].sort(compareReportsByExamDateDesc), pageCount);
+      }
 
       if (snapshot.docs.length < PUBLISHED_REPORT_PAGE_SIZE) {
-        return sortedReports;
+        return [...reports].sort(compareReportsByExamDateDesc);
       }
-      cursor = snapshot.docs.at(-1) ?? null;
+      cursor = snapshot.docs[snapshot.docs.length - 1] ?? null;
     }
   };
 
@@ -2673,9 +2700,24 @@ export type PublishedReportsPage = {
   hasNextPage: boolean;
 };
 
-export const fetchPublishedReportCount = async (): Promise<number> => {
+export type PublishedReportFilters = {
+  classId?: string | null;
+  isRead?: boolean | null;
+};
+
+const getPublishedReportFilterConstraints = (
+  filters: PublishedReportFilters,
+): QueryConstraint[] => [
+  where("assignmentStatus", "==", "completed"),
+  ...(filters.classId ? [where("classId", "==", filters.classId)] : []),
+  ...(typeof filters.isRead === "boolean" ? [where("isRead", "==", filters.isRead)] : []),
+];
+
+export const fetchPublishedReportCount = async (
+  filters: PublishedReportFilters = {},
+): Promise<number> => {
   const snapshot = await getCountFromServer(
-    query(collection(db, "reports"), where("assignmentStatus", "==", "completed")),
+    query(collection(db, "reports"), ...getPublishedReportFilterConstraints(filters)),
   );
   return snapshot.data().count;
 };
@@ -2683,9 +2725,10 @@ export const fetchPublishedReportCount = async (): Promise<number> => {
 export const fetchPublishedReportsPage = async (
   cursor: PublishedReportCursor | null,
   pageSize: number,
+  filters: PublishedReportFilters = {},
 ): Promise<PublishedReportsPage> => {
   const constraints = [
-    where("assignmentStatus", "==", "completed"),
+    ...getPublishedReportFilterConstraints(filters),
     orderBy("createdAt", "desc"),
     ...(cursor ? [startAfter(cursor)] : []),
     limit(pageSize + 1),
@@ -2699,7 +2742,7 @@ export const fetchPublishedReportsPage = async (
         hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">),
       )
       .sort(compareReportsByExamDateDesc),
-    nextCursor: pageDocs.at(-1) ?? null,
+    nextCursor: pageDocs[pageDocs.length - 1] ?? null,
     hasNextPage: snapshot.docs.length > pageSize,
   };
 };
@@ -2720,14 +2763,14 @@ export const updatePublishedReport = async (
   const reportRef = doc(db, "reports", reportId);
   const snap = await getDoc(reportRef);
   const prev = (snap.data() ?? {}) as {
-    parsedJson?: ParsedPdfData;
+    parsedJson?: PersistedParsedPdfData;
   };
   const updatePayload: {
     reviewer: string;
     feedback: string;
     scores: ScoreBreakdown;
     totalScore: number;
-    parsedJson?: ParsedPdfData;
+    parsedJson?: PersistedParsedPdfData;
     updatedAt: ReturnType<typeof serverTimestamp>;
   } = {
     reviewer: payload.reviewer.trim(),
@@ -2738,12 +2781,12 @@ export const updatePublishedReport = async (
   };
 
   if (prev.parsedJson) {
-    updatePayload.parsedJson = {
+    updatePayload.parsedJson = stripParsedRawText({
       ...prev.parsedJson,
       reviewer: payload.reviewer.trim(),
       feedback: payload.feedback.trim(),
       scores: normalizedScores,
-    };
+    });
   }
 
   await updateDoc(reportRef, updatePayload);
