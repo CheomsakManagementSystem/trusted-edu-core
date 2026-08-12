@@ -2,14 +2,19 @@ import {
   collection,
   doc,
   documentId,
+  getCountFromServer,
   getDoc,
   getDocs,
+  limit,
   orderBy,
   query,
   serverTimestamp,
   setDoc,
+  startAfter,
   where,
   writeBatch,
+  type DocumentData,
+  type QueryDocumentSnapshot,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { normalizeRole, type CanonicalRole } from "@/lib/authz";
@@ -40,6 +45,26 @@ export type ManagedUser = {
   studentId?: string | null;
   phoneSuffix?: string | null;
 };
+
+export type ManagedUserCursor = QueryDocumentSnapshot<DocumentData>;
+
+export type ManagedUsersPage = {
+  users: ManagedUser[];
+  nextCursor: ManagedUserCursor | null;
+  hasNextPage: boolean;
+};
+
+const hydrateManagedUser = (
+  id: string,
+  data: Record<string, unknown>,
+): ManagedUser => ({
+  uid: typeof data.uid === "string" ? data.uid : id,
+  name: typeof data.name === "string" ? data.name : "이름 없음",
+  email: typeof data.email === "string" ? data.email : "",
+  role: normalizeRole(typeof data.role === "string" ? data.role : undefined),
+  studentId: typeof data.studentId === "string" ? data.studentId : null,
+  phoneSuffix: typeof data.phoneSuffix === "string" ? data.phoneSuffix : null,
+});
 
 const chunkBy = <T>(rows: T[], size: number): T[][] => {
   const chunks: T[][] = [];
@@ -90,51 +115,46 @@ export const saveMasterControls = async (
 export const fetchManagedUsers = async (): Promise<ManagedUser[]> => {
   try {
     const snap = await getDocs(query(collection(db, "users"), orderBy("name", "asc")));
-
-    return snap.docs.map((docSnap) => {
-      const data = docSnap.data() as {
-        uid?: string;
-        name?: string;
-        email?: string;
-        role?: string;
-        studentId?: string;
-        phoneSuffix?: string;
-      };
-
-      return {
-        uid: data.uid ?? docSnap.id,
-        name: data.name ?? "이름 없음",
-        email: data.email ?? "",
-        role: normalizeRole(data.role),
-        studentId: data.studentId ?? null,
-        phoneSuffix: data.phoneSuffix ?? null,
-      };
-    });
+    return snap.docs.map((docSnap) =>
+      hydrateManagedUser(docSnap.id, docSnap.data() as Record<string, unknown>),
+    );
   } catch {
     const snap = await getDocs(collection(db, "users"));
-
     return snap.docs
-      .map((docSnap) => {
-        const data = docSnap.data() as {
-          uid?: string;
-          name?: string;
-          email?: string;
-          role?: string;
-          studentId?: string;
-          phoneSuffix?: string;
-        };
-
-        return {
-          uid: data.uid ?? docSnap.id,
-          name: data.name ?? "이름 없음",
-          email: data.email ?? "",
-          role: normalizeRole(data.role),
-          studentId: data.studentId ?? null,
-          phoneSuffix: data.phoneSuffix ?? null,
-        };
-      })
+      .map((docSnap) => hydrateManagedUser(
+        docSnap.id,
+        docSnap.data() as Record<string, unknown>,
+      ))
       .sort((a, b) => a.name.localeCompare(b.name, "ko"));
   }
+};
+
+export const fetchManagedUserCount = async (): Promise<number> => {
+  const snapshot = await getCountFromServer(
+    query(collection(db, "users"), orderBy("name", "asc")),
+  );
+  return snapshot.data().count;
+};
+
+export const fetchManagedUsersPage = async (
+  cursor: ManagedUserCursor | null,
+  pageSize: number,
+): Promise<ManagedUsersPage> => {
+  const snapshot = await getDocs(query(
+    collection(db, "users"),
+    orderBy("name", "asc"),
+    ...(cursor ? [startAfter(cursor)] : []),
+    limit(pageSize + 1),
+  ));
+  const pageDocs = snapshot.docs.slice(0, pageSize);
+
+  return {
+    users: pageDocs.map((docSnap) =>
+      hydrateManagedUser(docSnap.id, docSnap.data() as Record<string, unknown>),
+    ),
+    nextCursor: pageDocs[pageDocs.length - 1] ?? null,
+    hasNextPage: snapshot.docs.length > pageSize,
+  };
 };
 
 export const updateManagedUserRole = async (

@@ -41,7 +41,7 @@ Performance SDK는 첫 KPI 기록 시점에 지연 로드되므로 공개 첫 �
 | `pdf_parse_batch` | PDF 해시·2개 제한 병렬 분석 처리 | `file_count`, `parsed_row_count`, `parse_failure_count`, `total_bytes` |
 | `report_publish_batch` | 리포트 배포 전체 처리 | `file_count`, `success_count`, `pending_count`, `failure_count` |
 
-모든 trace에는 `build`와 `status(success/partial/error/cancelled)` 속성이 기록된다. `admin_published_search`에는 검색 종류를 구분하는 `trigger(keyword/class/read/page)`와 선택한 필터 종류만 추가된다. 학생 이름, 검색어, 이메일, UID, 반 이름, 파일명 등 식별정보는 기록하지 않는다.
+모든 trace에는 `build`, `status(success/partial/error/cancelled)`, `browser_family`, `browser_context`, `ios_major` 속성이 기록된다. `admin_published_search`에는 검색 종류를 구분하는 `trigger(keyword/class/read/page)`와 선택한 필터 종류만 추가된다. 학생 이름, 검색어, 이메일, UID, 반 이름, 파일명 등 식별정보는 기록하지 않는다.
 
 ## 배포 전 검증
 

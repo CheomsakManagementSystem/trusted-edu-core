@@ -25,7 +25,7 @@ const MobileBottomNav = () => {
         ];
 
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 backdrop-blur md:hidden">
+    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card px-3 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 md:hidden">
       <div
         className={`mx-auto grid max-w-md gap-2 ${
           items.length === 1 ? "grid-cols-1" : items.length === 2 ? "grid-cols-2" : "grid-cols-3"
@@ -60,7 +60,7 @@ interface DashboardLayoutProps {
 
 const DashboardLayout = ({ children }: DashboardLayoutProps) => {
   return (
-    <div className="flex h-dvh overflow-hidden">
+    <div className="flex h-screen h-dvh overflow-hidden">
       <AppSidebar />
       <div className="flex flex-1 flex-col overflow-hidden">
         <AppHeader />

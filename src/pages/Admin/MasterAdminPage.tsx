@@ -29,11 +29,14 @@ import {
 import {
   cascadeUpdateStudentId,
   deleteManagedUserCompletely,
+  fetchManagedUserCount,
   fetchManagedUsers,
+  fetchManagedUsersPage,
   getMasterControls,
   notifyDuplicatePhoneSuffixUsers,
   saveMasterControls,
   updateManagedUserRole,
+  type ManagedUserCursor,
   type ManagedUser,
 } from "@/services/masterAdminService";
 import { Search } from "lucide-react";
@@ -108,6 +111,13 @@ const MasterAdminPage = () => {
   const [loading, setLoading] = useState(true);
   const [savingControls, setSavingControls] = useState(false);
   const [users, setUsers] = useState<ManagedUser[]>([]);
+  const [allUsersForSearch, setAllUsersForSearch] = useState<ManagedUser[] | null>(null);
+  const [searchUsersLoading, setSearchUsersLoading] = useState(false);
+  const [userCount, setUserCount] = useState(0);
+  const [userHasNextPage, setUserHasNextPage] = useState(false);
+  const [userNextCursor, setUserNextCursor] = useState<ManagedUserCursor | null>(null);
+  const [userPageCursors, setUserPageCursors] = useState<Array<ManagedUserCursor | null>>([null]);
+  const searchUsersRequestRef = useRef(false);
   const [search, setSearch] = useState("");
   const [userPage, setUserPage] = useState(1);
   const userSearchMeasurementRef = useRef<ReturnType<typeof startPerformanceTrace> | null>(null);
@@ -158,13 +168,23 @@ const MasterAdminPage = () => {
     setLoading(true);
     const measurement = startPerformanceTrace("master_admin_load");
     try {
-      const [controls, userRows] = await Promise.all([getMasterControls(), fetchManagedUsers()]);
+      const [controls, userPageResult, totalCount] = await Promise.all([
+        getMasterControls(),
+        fetchManagedUsersPage(null, USER_PAGE_SIZE),
+        fetchManagedUserCount(),
+      ]);
       setInstructorSignupCode(controls.instructorSignupCode);
       setAutoNotifyOnFeedbackComplete(controls.autoNotifyOnFeedbackComplete);
-      setUsers(userRows);
+      setUsers(userPageResult.users);
+      setUserCount(totalCount);
+      setUserHasNextPage(userPageResult.hasNextPage);
+      setUserNextCursor(userPageResult.nextCursor);
+      setUserPage(1);
+      setUserPageCursors([null]);
+      setAllUsersForSearch(null);
       stopPerformanceTraceAfterPaint(measurement, {
         status: "success",
-        metrics: { user_count: userRows.length, rendered_count: Math.min(userRows.length, USER_PAGE_SIZE) },
+        metrics: { user_count: totalCount, rendered_count: userPageResult.users.length },
       });
     } catch (error) {
       measurement.stop({ status: "error" });
@@ -183,23 +203,49 @@ const MasterAdminPage = () => {
   }, [loadData]);
 
   const deferredSearch = useDeferredValue(search);
+  const isUserSearchActive = deferredSearch.trim().length > 0;
+
+  useEffect(() => {
+    const needsAllUsers = isUserSearchActive || analysisQuery.trim().length > 0;
+    if (!needsAllUsers || allUsersForSearch || searchUsersRequestRef.current) return;
+
+    searchUsersRequestRef.current = true;
+    setSearchUsersLoading(true);
+    void fetchManagedUsers()
+      .then(setAllUsersForSearch)
+      .catch((error) => {
+        toast({
+          variant: "destructive",
+          title: "사용자 검색 준비 실패",
+          description: error instanceof Error ? error.message : "사용자 목록을 불러오지 못했습니다.",
+        });
+      })
+      .finally(() => {
+        searchUsersRequestRef.current = false;
+        setSearchUsersLoading(false);
+      });
+  }, [allUsersForSearch, analysisQuery, isUserSearchActive, toast]);
+
   const filteredUsers = useMemo(() => {
     const keyword = deferredSearch.trim().toLowerCase();
     if (!keyword) {
       return users;
     }
 
-    return users.filter((row) => {
+    return (allUsersForSearch ?? []).filter((row) => {
       const target = `${row.name} ${row.email} ${row.studentId || ""} ${row.uid}`.toLowerCase();
       return target.includes(keyword);
     });
-  }, [deferredSearch, users]);
-  const userPageCount = Math.max(1, Math.ceil(filteredUsers.length / USER_PAGE_SIZE));
+  }, [allUsersForSearch, deferredSearch, users]);
+  const userPageCount = Math.max(1, Math.ceil(
+    (isUserSearchActive ? filteredUsers.length : userCount) / USER_PAGE_SIZE,
+  ));
   const safeUserPage = Math.min(userPage, userPageCount);
   const visibleUsers = useMemo(() => {
+    if (!isUserSearchActive) return users;
     const start = (safeUserPage - 1) * USER_PAGE_SIZE;
     return filteredUsers.slice(start, start + USER_PAGE_SIZE);
-  }, [filteredUsers, safeUserPage]);
+  }, [filteredUsers, isUserSearchActive, safeUserPage, users]);
 
   const beginUserSearchMeasurement = (trigger: "keyword" | "page") => {
     userSearchMeasurementRef.current?.stop({ status: "cancelled" });
@@ -212,14 +258,46 @@ const MasterAdminPage = () => {
     setUserPage(1);
   };
 
-  const handleUserPageChange = (page: number) => {
+  const handleUserPageChange = async (page: number) => {
     beginUserSearchMeasurement("page");
-    setUserPage(page);
+    if (isUserSearchActive) {
+      setUserPage(page);
+      return;
+    }
+
+    const cursor = page > userPage
+      ? userNextCursor
+      : userPageCursors[page - 1] ?? null;
+    if (page > userPage && !cursor) return;
+
+    setLoading(true);
+    try {
+      const result = await fetchManagedUsersPage(cursor, USER_PAGE_SIZE);
+      if (page > userPage && cursor) {
+        setUserPageCursors((prev) => {
+          const next = prev.slice(0, userPage);
+          next[userPage] = cursor;
+          return next;
+        });
+      }
+      setUsers(result.users);
+      setUserHasNextPage(result.hasNextPage);
+      setUserNextCursor(result.nextCursor);
+      setUserPage(page);
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "사용자 페이지 조회 실패",
+        description: error instanceof Error ? error.message : "사용자 목록을 불러오지 못했습니다.",
+      });
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
     const measurement = userSearchMeasurementRef.current;
-    if (!measurement || search !== deferredSearch) return;
+    if (!measurement || search !== deferredSearch || (isUserSearchActive && searchUsersLoading)) return;
 
     stopPerformanceTraceAfterPaint(measurement, {
       status: "success",
@@ -227,11 +305,11 @@ const MasterAdminPage = () => {
         query_length: deferredSearch.trim().length,
         result_count: filteredUsers.length,
         rendered_count: visibleUsers.length,
-        total_count: users.length,
+        total_count: userCount,
       },
     });
     userSearchMeasurementRef.current = null;
-  }, [deferredSearch, filteredUsers.length, search, users.length, visibleUsers.length]);
+  }, [deferredSearch, filteredUsers.length, isUserSearchActive, search, searchUsersLoading, userCount, visibleUsers.length]);
 
   useEffect(
     () => () => userSearchMeasurementRef.current?.stop({ status: "cancelled" }),
@@ -239,8 +317,9 @@ const MasterAdminPage = () => {
   );
 
   const studentCandidates = useMemo(
-    () => users.filter((row) => normalizeRole(row.role) === "STUDENT"),
-    [users],
+    () => (allUsersForSearch ?? (analysisQuery.trim() ? [] : users))
+      .filter((row) => normalizeRole(row.role) === "STUDENT"),
+    [allUsersForSearch, analysisQuery, users],
   );
 
   const filteredStudentCandidates = useMemo(() => {
@@ -300,6 +379,9 @@ const MasterAdminPage = () => {
     try {
       await updateManagedUserRole(target.uid, nextRole);
       setUsers((prev) => prev.map((row) => (row.uid === target.uid ? { ...row, role: nextRole } : row)));
+      setAllUsersForSearch((prev) =>
+        prev?.map((row) => (row.uid === target.uid ? { ...row, role: nextRole } : row)) ?? null,
+      );
       const roleText = nextRole === "INSTRUCTOR" ? "선생님" : "학생";
       toast({
         title: "권한 변경 완료",
@@ -338,6 +420,8 @@ const MasterAdminPage = () => {
     try {
       await deleteManagedUserCompletely(target.uid);
       setUsers((prev) => prev.filter((row) => row.uid !== target.uid));
+      setAllUsersForSearch((prev) => prev?.filter((row) => row.uid !== target.uid) ?? null);
+      setUserCount((count) => Math.max(0, count - 1));
       toast({
         title: "계정 삭제 완료",
         description: "해당 가입자 정보를 정리했습니다.",
@@ -430,7 +514,8 @@ const MasterAdminPage = () => {
   };
 
   const handleSavePhone = async (uid: string) => {
-    const target = users.find((row) => row.uid === uid);
+    const target = users.find((row) => row.uid === uid)
+      ?? allUsersForSearch?.find((row) => row.uid === uid);
     if (!target) return;
 
     const oldStudentId = target.studentId ?? target.phoneSuffix ?? "";
@@ -444,6 +529,11 @@ const MasterAdminPage = () => {
         prev.map((row) =>
           row.uid === uid ? { ...row, phoneSuffix: normalized, studentId: normalized } : row,
         ),
+      );
+      setAllUsersForSearch((prev) =>
+        prev?.map((row) =>
+          row.uid === uid ? { ...row, phoneSuffix: normalized, studentId: normalized } : row,
+        ) ?? null,
       );
       toast({
         title: "전화번호 수정 완료",
@@ -702,7 +792,15 @@ const MasterAdminPage = () => {
                   </tr>
                 ))}
 
-                {!filteredUsers.length && (
+                {isUserSearchActive && searchUsersLoading && (
+                  <tr>
+                    <td colSpan={6} className="px-3 py-5 text-center text-muted-foreground">
+                      검색용 사용자 목록을 불러오는 중입니다...
+                    </td>
+                  </tr>
+                )}
+
+                {!searchUsersLoading && visibleUsers.length === 0 && (
                   <tr>
                     <td colSpan={6} className="px-3 py-5 text-center text-muted-foreground">
                       검색 결과가 없습니다.
@@ -713,7 +811,7 @@ const MasterAdminPage = () => {
             </table>
           </div>
 
-          {filteredUsers.length > USER_PAGE_SIZE && (
+          {userPageCount > 1 && (
             <div className="mt-3 flex items-center justify-end gap-2">
               <span className="text-xs text-muted-foreground">
                 {safeUserPage} / {userPageCount}페이지
@@ -731,7 +829,9 @@ const MasterAdminPage = () => {
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={safeUserPage >= userPageCount}
+                disabled={isUserSearchActive
+                  ? safeUserPage >= userPageCount
+                  : !userHasNextPage}
                 onClick={() => handleUserPageChange(safeUserPage + 1)}
               >
                 다음
@@ -750,7 +850,7 @@ const MasterAdminPage = () => {
             학생 획득 점수와 강사 총평을 한눈에 확인하세요.
           </p>
 
-          <div className="sticky top-0 z-20 mt-4 rounded-xl border border-slate-200 bg-white/95 p-3 shadow-sm backdrop-blur">
+          <div className="sticky top-0 z-20 mt-4 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
               <Input
@@ -766,7 +866,12 @@ const MasterAdminPage = () => {
                   이름, 전화번호 뒤 4자리, 이메일 중 하나를 입력하면 학생 목록이 실시간으로 표시됩니다.
                 </p>
               )}
-              {analysisQuery.trim().length > 0 && filteredStudentCandidates.length === 0 && (
+              {analysisQuery.trim().length > 0 && searchUsersLoading && (
+                <p className="rounded-lg border border-dashed border-slate-200 px-3 py-4 text-sm text-slate-500">
+                  학생 검색 목록을 불러오는 중입니다...
+                </p>
+              )}
+              {analysisQuery.trim().length > 0 && !searchUsersLoading && filteredStudentCandidates.length === 0 && (
                 <p className="rounded-lg border border-dashed border-slate-200 px-3 py-4 text-sm text-slate-500">
                   검색 결과가 없습니다.
                 </p>

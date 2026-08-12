@@ -6,6 +6,7 @@ import {
   resolveParsedTotalScore,
   resolveReportAssignmentClass,
   readPdfFileBuffer,
+  releasePdfFileBuffer,
   type PageToken,
   type ScoreBreakdown,
   type StudentLite,
@@ -25,6 +26,10 @@ describe("PDF file buffer cache", () => {
     expect(first).toBe(buffer);
     expect(second).toBe(buffer);
     expect(arrayBuffer).toHaveBeenCalledTimes(1);
+
+    releasePdfFileBuffer(file);
+    await readPdfFileBuffer(file);
+    expect(arrayBuffer).toHaveBeenCalledTimes(2);
   });
 });
 

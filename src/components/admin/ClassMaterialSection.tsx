@@ -71,10 +71,10 @@ const ClassMaterialSection = () => {
     const unsub = onSnapshot(q, (snap) => {
       const list: ClassDoc[] = [];
       snap.forEach((d) => {
-        const data = d.data() as any;
+        const data = d.data() as Partial<Omit<ClassDoc, "id">>;
         list.push({
           id: d.id,
-          name: data.name,
+          name: data.name ?? "",
           description: data.description,
           createdAt: data.createdAt,
         });
@@ -89,13 +89,14 @@ const ClassMaterialSection = () => {
     const unsub = onSnapshot(q, (snap) => {
       const list: MaterialDoc[] = [];
       snap.forEach((d) => {
-        const data = d.data() as any;
+        const data = d.data() as Partial<Omit<MaterialDoc, "id">>;
+        const driveUrl = data.driveUrl ?? "";
         list.push({
           id: d.id,
-          title: data.title,
-          driveUrl: data.driveUrl,
-          previewUrl: data.previewUrl ?? toDrivePreviewUrl(data.driveUrl),
-          classId: data.classId,
+          title: data.title ?? "",
+          driveUrl,
+          previewUrl: data.previewUrl ?? toDrivePreviewUrl(driveUrl),
+          classId: data.classId ?? "",
           className: data.className,
           createdAt: data.createdAt,
         });
@@ -454,4 +455,3 @@ const ClassMaterialSection = () => {
 };
 
 export default ClassMaterialSection;
-

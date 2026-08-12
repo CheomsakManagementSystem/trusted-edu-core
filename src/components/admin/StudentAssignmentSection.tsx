@@ -87,7 +87,7 @@ const buildPendingSelections = (rows: StudentDoc[]) => {
   const next: Record<string, string> = {};
   rows.forEach((student) => {
     if (normalizeRole(student.role) === "STUDENT") {
-      next[student.id] = normalizeClassIds(student.classIds).at(0) ?? "none";
+      next[student.id] = normalizeClassIds(student.classIds)[0] ?? "none";
     }
   });
   return next;
@@ -120,7 +120,7 @@ const SyncManager = ({
         }
 
         const normalizedUiClassId = uiClassId || "none";
-        const dbClassId = normalizeClassIds(student.classIds).at(0) ?? "none";
+        const dbClassId = normalizeClassIds(student.classIds)[0] ?? "none";
 
         if (normalizedUiClassId === dbClassId) {
           return null;
@@ -221,7 +221,7 @@ const SyncManager = ({
             </Badge>
           </div>
           <p className="text-xs text-slate-400">
-            기준: normalizeClassIds(user.classIds).at(0) === pendingClassSelections[user.id]
+            기준: normalizeClassIds(user.classIds)[0] === pendingClassSelections[user.id]
           </p>
         </div>
 
@@ -296,8 +296,8 @@ const StudentAssignmentSection = () => {
     const unsub = onSnapshot(q, (snap) => {
       const list: ClassDoc[] = [];
       snap.forEach((d) => {
-        const data = d.data() as any;
-        list.push({ id: d.id, name: data.name });
+        const data = d.data() as Partial<Omit<ClassDoc, "id">>;
+        list.push({ id: d.id, name: data.name ?? "" });
       });
       setClasses(list);
     });
@@ -338,7 +338,7 @@ const StudentAssignmentSection = () => {
     setPendingClassSelections((prev) => {
       const next: Record<string, string> = {};
       students.forEach((student) => {
-        next[student.id] = prev[student.id] ?? normalizeClassIds(student.classIds).at(0) ?? "none";
+        next[student.id] = prev[student.id] ?? normalizeClassIds(student.classIds)[0] ?? "none";
       });
       return next;
     });
@@ -422,7 +422,7 @@ const StudentAssignmentSection = () => {
                 <td className="px-4 py-2">
                   <div className="flex items-center gap-2">
                     <Select
-                      value={pendingClassSelections[s.id] ?? normalizeClassIds(s.classIds).at(0) ?? "none"}
+                      value={pendingClassSelections[s.id] ?? normalizeClassIds(s.classIds)[0] ?? "none"}
                       onValueChange={(v) =>
                         setPendingClassSelections((prev) => ({ ...prev, [s.id]: v }))
                       }
