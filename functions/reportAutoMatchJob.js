@@ -14,6 +14,7 @@ const LOCK_DOCUMENT = "system_jobs/report_auto_match";
 const RUNS_COLLECTION = "report_auto_match_runs";
 const LOCK_LEASE_MS = 10 * 60 * 1000;
 const WRITE_CONCURRENCY = 20;
+const ARCHIVE_PREFIX = "report-auto-match-runs";
 
 const MATCH_REASONS = {
   scheduled_class_name_exact: "오전 2시 자동 매칭: 반과 학생 이름이 단일 일치했습니다.",
@@ -121,6 +122,74 @@ const createEmptySummary = (runId) => ({
   },
 });
 
+const toTimeMs = (value) => {
+  if (value instanceof Date) return value.getTime();
+  if (value && typeof value.toMillis === "function") return value.toMillis();
+  return Number(value);
+};
+
+const createRunResult = ({ summary, status, startedMs, finishedMs }) => {
+  const normalizedStartedMs = toTimeMs(startedMs);
+  const normalizedFinishedMs = toTimeMs(finishedMs);
+  return {
+    ...summary,
+    schedule: "daily_02_kst",
+    status,
+    startedAt: new Date(normalizedStartedMs).toISOString(),
+    finishedAt: new Date(normalizedFinishedMs).toISOString(),
+    durationMs: Math.max(0, normalizedFinishedMs - normalizedStartedMs),
+  };
+};
+
+const createArchivePath = (runId) => {
+  const timestamp = String(runId).split("_", 1)[0];
+  if (!/^\d{14}$/.test(timestamp)) {
+    throw Object.assign(new Error("Invalid auto-match runId"), { code: "invalid-run-id" });
+  }
+  return `${ARCHIVE_PREFIX}/${timestamp.slice(0, 4)}/${timestamp.slice(4, 6)}/${timestamp.slice(6, 8)}/${runId}.json`;
+};
+
+const serializeRunResult = (runResult) => `${JSON.stringify(runResult, null, 2)}\n`;
+
+const archiveRunResult = async (storage, runResult) => {
+  const path = createArchivePath(runResult.runId);
+  await storage.bucket().file(path).save(serializeRunResult(runResult), {
+    contentType: "application/json; charset=utf-8",
+    resumable: false,
+  });
+  return path;
+};
+
+const safeErrorCode = (error) => {
+  const code = error && typeof error === "object" ? error.code : "";
+  return typeof code === "string" && /^[a-zA-Z0-9._/-]{1,100}$/.test(code)
+    ? code
+    : "archive-write-failed";
+};
+
+const tryArchiveRunResult = async ({ admin, storage, runRef, runResult, logger }) => {
+  try {
+    const archivePath = await archiveRunResult(storage ?? admin.storage(), runResult);
+    await runRef.set({ archiveStatus: "success", archivePath }, { merge: true });
+    return { archiveStatus: "success", archivePath };
+  } catch (error) {
+    const archiveErrorCode = safeErrorCode(error);
+    logger.warn("report_auto_match_archive_failed", {
+      runId: runResult.runId,
+      archiveErrorCode,
+    });
+    try {
+      await runRef.set({ archiveStatus: "failed", archiveErrorCode }, { merge: true });
+    } catch (metadataError) {
+      logger.warn("report_auto_match_archive_status_write_failed", {
+        runId: runResult.runId,
+        archiveErrorCode: safeErrorCode(metadataError),
+      });
+    }
+    return { archiveStatus: "failed", archiveErrorCode };
+  }
+};
+
 const countSkippedReason = (summary, reason) => {
   const keyByReason = {
     missing_name: "missingName",
@@ -184,7 +253,12 @@ const commitMatch = async (db, admin, runId, candidate) => {
   });
 };
 
-const runReportAutoMatchJob = async ({ admin, logger = console, now = () => Date.now() }) => {
+const runReportAutoMatchJob = async ({
+  admin,
+  logger = console,
+  now = () => Date.now(),
+  storage,
+}) => {
   const db = admin.firestore();
   const runId = createRunId();
   const startedMs = now();
@@ -244,43 +318,66 @@ const runReportAutoMatchJob = async ({ admin, logger = console, now = () => Date
     summary.errorCount = outcomes.filter((outcome) => outcome === "error").length;
     const status = summary.errorCount > 0 ? "partial" : "success";
     const finishedMs = now();
-    const finalSummary = { ...summary, durationMs: Math.max(0, finishedMs - startedMs) };
+    const runResult = createRunResult({ summary, status, startedMs, finishedMs });
 
     await runRef.set(
       {
-        ...finalSummary,
+        ...summary,
+        durationMs: runResult.durationMs,
         status,
         finishedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
       { merge: true },
     );
-    await releaseLease(db, admin, runId, status, finalSummary);
-    logger.info("report_auto_match_completed", finalSummary);
-    return { status, ...finalSummary };
+    await releaseLease(db, admin, runId, status, runResult);
+    logger.info("report_auto_match_completed", runResult);
+    const archive = await tryArchiveRunResult({
+      admin,
+      storage,
+      runRef,
+      runResult,
+      logger,
+    });
+    return { ...runResult, ...archive };
   } catch (error) {
     const finishedMs = now();
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const finalSummary = {
-      ...summary,
-      durationMs: Math.max(0, finishedMs - startedMs),
-      errorCount: summary.errorCount + 1,
-    };
+    summary.errorCount += 1;
+    const runResult = createRunResult({
+      summary,
+      status: "error",
+      startedMs,
+      finishedMs,
+    });
 
     await runRef.set(
       {
-        ...finalSummary,
+        ...summary,
+        durationMs: runResult.durationMs,
         status: "error",
         error: errorMessage,
         finishedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
       { merge: true },
     );
-    await releaseLease(db, admin, runId, "error", finalSummary);
+    await releaseLease(db, admin, runId, "error", runResult);
+    await tryArchiveRunResult({
+      admin,
+      storage,
+      runRef,
+      runResult,
+      logger,
+    });
     logger.error("report_auto_match_failed", { runId, error: errorMessage });
     throw error;
   }
 };
 
 module.exports = {
+  archiveRunResult,
+  createArchivePath,
+  createRunResult,
   runReportAutoMatchJob,
+  serializeRunResult,
+  tryArchiveRunResult,
 };
