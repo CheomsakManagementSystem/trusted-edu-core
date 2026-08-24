@@ -37,6 +37,9 @@ describe("reportArchiveSearch", () => {
     expect(
       filterReportArchive(index, { classId: "all", keyword: "사회", readStatus: "all" }),
     ).toEqual([reports[1]]);
+    expect(
+      filterReportArchive(index, { classId: "all", keyword: "김민지", readStatus: "all" }),
+    ).toEqual([reports[0]]);
   });
 
   it("combines class and read filters", () => {

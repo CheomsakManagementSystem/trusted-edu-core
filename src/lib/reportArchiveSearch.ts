@@ -1,3 +1,8 @@
+import {
+  normalizeReportSearchQuery,
+  reportMatchesSearchQuery,
+} from "@/lib/reportSearchTokens";
+
 export const REPORT_ARCHIVE_PAGE_SIZE = 50;
 
 export type ReportArchiveSearchSource = {
@@ -11,7 +16,6 @@ export type ReportArchiveSearchSource = {
 
 export type ReportArchiveSearchEntry<T extends ReportArchiveSearchSource> = {
   report: T;
-  searchText: string;
 };
 
 export type ReportArchiveFilters = {
@@ -21,19 +25,12 @@ export type ReportArchiveFilters = {
 };
 
 export const normalizeReportArchiveKeyword = (value: string): string =>
-  value.normalize("NFKC").trim().toLocaleLowerCase("ko-KR");
+  normalizeReportSearchQuery(value);
 
 export const buildReportArchiveSearchIndex = <T extends ReportArchiveSearchSource>(
   reports: T[],
 ): ReportArchiveSearchEntry<T>[] =>
-  reports.map((report) => ({
-    report,
-    searchText: normalizeReportArchiveKeyword(
-      [report.studentName, report.fileName, report.sourceName, report.essayTopic]
-        .filter(Boolean)
-        .join(" "),
-    ),
-  }));
+  reports.map((report) => ({ report }));
 
 export const filterReportArchive = <T extends ReportArchiveSearchSource>(
   entries: ReportArchiveSearchEntry<T>[],
@@ -42,9 +39,9 @@ export const filterReportArchive = <T extends ReportArchiveSearchSource>(
   const keyword = normalizeReportArchiveKeyword(filters.keyword);
 
   return entries
-    .filter(({ report, searchText }) => {
+    .filter(({ report }) => {
       if (filters.classId !== "all" && report.classId !== filters.classId) return false;
-      if (keyword && !searchText.includes(keyword)) return false;
+      if (keyword && !reportMatchesSearchQuery(report, keyword)) return false;
       if (filters.readStatus === "read" && !report.isRead) return false;
       if (filters.readStatus === "unread" && report.isRead) return false;
       return true;

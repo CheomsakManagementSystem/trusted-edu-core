@@ -19,6 +19,7 @@ import {
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { auth, db } from "@/lib/firebase";
+import { buildReportSearchTokens } from "@/lib/reportSearchTokens";
 
 type AccountDeletionStep = "reauth" | "firestore" | "auth";
 
@@ -67,12 +68,15 @@ const isolateStudentReports = async (studentUid: string) => {
   for (const docs of chunkBy(snapshot.docs, 400)) {
     const batch = writeBatch(db);
     docs.forEach((reportDoc) => {
+      const report = reportDoc.data();
+      const studentName = report.sourceName ?? "";
       batch.update(reportDoc.ref, {
         studentUid: null,
         studentId: null,
-        studentName: reportDoc.data().sourceName ?? "",
+        studentName,
         assignmentStatus: "unassigned_pending",
         status: "pending",
+        searchTokens: buildReportSearchTokens({ ...report, studentName }),
         assignedAt: null,
         updatedAt: serverTimestamp(),
       });
