@@ -8,6 +8,7 @@ const {
   resolvePendingReportMatch,
   validateSelectedStudent,
 } = require("./reportAutoMatcher");
+const { buildReportSearchTokens } = require("./reportSearchTokens");
 
 const LOCK_DOCUMENT = "system_jobs/report_auto_match";
 const RUNS_COLLECTION = "report_auto_match_runs";
@@ -167,6 +168,10 @@ const commitMatch = async (db, admin, runId, candidate) => {
         String(report.sourceClassName ?? "").trim(),
       assignmentStatus: "completed",
       status: "completed",
+      searchTokens: buildReportSearchTokens({
+        ...report,
+        studentName: student.name,
+      }),
       assignedAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       autoMatchedAt: admin.firestore.FieldValue.serverTimestamp(),

@@ -27,11 +27,14 @@ import {
 import pdfWorkerUrl from "./pdfWorkerCompat.ts?worker&url";
 import { db } from "@/lib/firebase";
 import { isStaffRole } from "@/lib/authz";
+import {
+  buildReportSearchTokens,
+  normalizeReportSearchQuery,
+} from "@/lib/reportSearchTokens";
 import { normalizeClassIds } from "@/services/classTransferService";
 
 const STORAGE_UPLOAD_TIMEOUT_MS = 60_000;
 const PDFJS_VERSION = "4.10.38";
-const PUBLISHED_REPORT_PAGE_SIZE = 100;
 const PDF_PARSE_CONCURRENCY = 2;
 const PDF_PAGE_PARSE_CONCURRENCY = 4;
 const pdfFileBufferCache = new WeakMap<File, Promise<ArrayBuffer>>();
@@ -182,6 +185,7 @@ export type ReportRecord = {
   fileUrl: string;
   fileName: string;
   createdAt: Timestamp | null;
+  searchTokens?: string[];
 };
 
 export type ClassJoinRequestRecord = {
@@ -1949,6 +1953,11 @@ export const publishReportBatch = async (
         updateProgress(index, fileProgress);
       });
       const totalScore = resolveParsedTotalScore(row.parsed);
+      const studentName = (resolvedStudent?.name ?? row.parsed.name ?? "").trim();
+      const sourceName = row.parsed.name || "";
+      const fileName = row.file.name;
+      const essayTopic = row.parsed.essayTopic || "";
+      const reviewer = row.parsed.reviewer || "";
 
       const created = await addDoc(collection(db, "reports"), {
         uid,
@@ -1958,18 +1967,18 @@ export const publishReportBatch = async (
         fileHash: row.fileHash ?? null,
         studentUid: resolvedStudent?.uid ?? null,
         studentId: (resolvedStudent?.studentId ?? "").trim() || null,
-        studentName: (resolvedStudent?.name ?? row.parsed.name ?? "").trim(),
+        studentName,
         assignmentStatus,
         status: resolvedStudent ? "completed" : "pending",
         assignedAt: resolvedStudent ? serverTimestamp() : null,
-        sourceName: row.parsed.name || "",
+        sourceName,
         sourceStudentId: row.parsed.studentId || null,
         sourcePhoneSuffix: row.parsed.phoneSuffix || null,
         sourceClassName: row.parsed.className || null,
         matchReason: row.matchReason ?? null,
         writtenAt: row.parsed.writtenAt || "",
-        reviewer: row.parsed.reviewer || "",
-        essayTopic: row.parsed.essayTopic || "",
+        reviewer,
+        essayTopic,
         grade: row.parsed.grade || "",
         feedback: row.parsed.feedback || "",
         scores: { ...row.parsed.scores, total: totalScore },
@@ -1982,7 +1991,14 @@ export const publishReportBatch = async (
         totalScore,
         isRead: false,
         fileUrl: url,
-        fileName: row.file.name,
+        fileName,
+        searchTokens: buildReportSearchTokens({
+          studentName,
+          sourceName,
+          fileName,
+          essayTopic,
+          reviewer,
+        }),
         sourcePage: row.sourcePage,
         pageNumber: row.sourcePage,
         createdAt: serverTimestamp(),
@@ -2255,17 +2271,6 @@ export const fetchReportsByStudentUid = async (studentUid: string): Promise<Repo
   }
 };
 
-export const fetchPendingReports = async (): Promise<ReportRecord[]> => {
-  const statuses: ReportAssignmentStatus[] = ["duplicate_pending", "unassigned_pending"];
-  const snapshot = await getDocs(
-    query(collection(db, "reports"), where("assignmentStatus", "in", statuses)),
-  );
-
-  return snapshot.docs
-    .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-    .sort(compareReportsByExamDateDesc);
-};
-
 export type PendingReportCursor = QueryDocumentSnapshot<DocumentData>;
 
 export type PendingReportsPage = {
@@ -2274,12 +2279,43 @@ export type PendingReportsPage = {
   hasNextPage: boolean;
 };
 
-export const fetchPendingReportCount = async (): Promise<number> => {
+const getPendingReportConstraints = (keyword = ""): QueryConstraint[] => {
   const statuses: ReportAssignmentStatus[] = ["duplicate_pending", "unassigned_pending"];
+  const searchToken = normalizeReportSearchQuery(keyword);
+  return [
+    where("assignmentStatus", "in", statuses),
+    ...(searchToken ? [where("searchTokens", "array-contains", searchToken)] : []),
+  ];
+};
+
+export const fetchPendingReportCount = async (keyword = ""): Promise<number> => {
   const snapshot = await getCountFromServer(
-    query(collection(db, "reports"), where("assignmentStatus", "in", statuses)),
+    query(collection(db, "reports"), ...getPendingReportConstraints(keyword)),
   );
   return snapshot.data().count;
+};
+
+export const fetchPendingReportsPage = async (
+  cursor: PendingReportCursor | null,
+  pageSize: number,
+  keyword: string,
+): Promise<PendingReportsPage> => {
+  const snapshot = await getDocs(query(
+    collection(db, "reports"),
+    ...getPendingReportConstraints(keyword),
+    orderBy("createdAt", "desc"),
+    ...(cursor ? [startAfter(cursor)] : []),
+    limit(pageSize + 1),
+  ));
+  const pageDocs = snapshot.docs.slice(0, pageSize);
+
+  return {
+    reports: pageDocs.map((docSnap) =>
+      hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">),
+    ),
+    nextCursor: pageDocs[pageDocs.length - 1] ?? null,
+    hasNextPage: snapshot.docs.length > pageSize,
+  };
 };
 
 export const subscribePendingReportsPage = (
@@ -2289,10 +2325,9 @@ export const subscribePendingReportsPage = (
   onError?: (error: Error) => void,
 ) => {
   const reportsRef = collection(db, "reports");
-  const statuses: ReportAssignmentStatus[] = ["duplicate_pending", "unassigned_pending"];
   const pendingQuery = query(
     reportsRef,
-    where("assignmentStatus", "in", statuses),
+    ...getPendingReportConstraints(),
     orderBy("createdAt", "desc"),
     ...(cursor ? [startAfter(cursor)] : []),
     limit(pageSize + 1),
@@ -2314,31 +2349,21 @@ export const subscribePendingReportsPage = (
   );
 };
 
-export const subscribePendingReports = (
-  onChange: (reports: ReportRecord[]) => void,
-  onError?: (error: Error) => void,
-) => {
-  const reportsRef = collection(db, "reports");
-  const statuses: ReportAssignmentStatus[] = ["duplicate_pending", "unassigned_pending"];
-  const pendingQuery = query(reportsRef, where("assignmentStatus", "in", statuses));
-
-  return onSnapshot(
-    pendingQuery,
-    (snapshot) => {
-      onChange(
-        snapshot.docs
-          .map((docSnap) => hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">))
-          .sort(compareReportsByExamDateDesc),
-      );
-    },
-    (error) => onError?.(error),
-  );
-};
-
 type ReportAssignmentStudent = Pick<
   StudentLite,
   "docId" | "uid" | "name" | "studentId" | "classIds" | "className"
 >;
+
+const rebuildReportSearchTokens = (
+  report: Partial<ReportRecord>,
+  updates: Partial<ReportRecord> = {},
+) => buildReportSearchTokens({
+  studentName: updates.studentName ?? report.studentName,
+  sourceName: updates.sourceName ?? report.sourceName,
+  fileName: updates.fileName ?? report.fileName,
+  essayTopic: updates.essayTopic ?? report.essayTopic,
+  reviewer: updates.reviewer ?? report.reviewer,
+});
 
 export const resolveReportAssignmentClass = (
   report: Partial<ReportRecord>,
@@ -2408,6 +2433,7 @@ export const assignPendingReportToStudent = async (
     className,
     assignmentStatus: "completed",
     status: "completed",
+    searchTokens: rebuildReportSearchTokens(previous, { studentName: student.name ?? "" }),
     assignedAt: serverTimestamp(),
     matchReason: classAdded
       ? "관리자가 학생을 반에 추가하고 리포트를 연결했습니다."
@@ -2450,6 +2476,7 @@ export const assignReportToStudentOverride = async (
     className,
     assignmentStatus: "completed",
     status: "completed",
+    searchTokens: rebuildReportSearchTokens(previous, { studentName: student.name ?? "" }),
     matchMethod: "admin_manual_override",
     matchReason: classAdded
       ? "관리자가 학생을 반에 추가하고 리포트를 변경했습니다."
@@ -2520,6 +2547,10 @@ export const fixAndAssignPendingReport = async (
     writtenAt: source.examDate.trim(),
     assignmentStatus: "completed",
     status: "completed",
+    searchTokens: rebuildReportSearchTokens(prev, {
+      studentName: student.name ?? "",
+      sourceName: source.sourceName.trim(),
+    }),
     matchMethod: "admin_manual_fix",
     matchReason: classAdded
       ? "관리자가 원본 정보를 수정하고 학생을 반에 추가한 뒤 배정했습니다."
@@ -2641,57 +2672,6 @@ export const fetchReportsByClassId = async (classId: string): Promise<ReportReco
   }
 };
 
-export const fetchPublishedReports = async (
-  onProgress?: (reports: ReportRecord[], pageCount: number) => void,
-): Promise<ReportRecord[]> => {
-  const reportsRef = collection(db, "reports");
-
-  const loadPages = async (ordered: boolean) => {
-    const reports: ReportRecord[] = [];
-    let cursor: Awaited<ReturnType<typeof getDocs>>["docs"][number] | null = null;
-    let pageCount = 0;
-
-    while (true) {
-      const constraints = [
-        where("assignmentStatus", "==", "completed"),
-        ...(ordered ? [orderBy("createdAt", "desc")] : []),
-        ...(cursor ? [startAfter(cursor)] : []),
-        limit(PUBLISHED_REPORT_PAGE_SIZE),
-      ];
-      const snapshot = await getDocs(query(reportsRef, ...constraints));
-      reports.push(
-        ...snapshot.docs.map((docSnap) =>
-          hydrateReportRecord(docSnap.id, docSnap.data() as Omit<ReportRecord, "id">),
-        ),
-      );
-      pageCount += 1;
-
-      if (onProgress) {
-        onProgress([...reports].sort(compareReportsByExamDateDesc), pageCount);
-      }
-
-      if (snapshot.docs.length < PUBLISHED_REPORT_PAGE_SIZE) {
-        return [...reports].sort(compareReportsByExamDateDesc);
-      }
-      cursor = snapshot.docs[snapshot.docs.length - 1] ?? null;
-    }
-  };
-
-  try {
-    return await loadPages(true);
-  } catch (error) {
-    if (
-      !error
-      || typeof error !== "object"
-      || !("code" in error)
-      || error.code !== "failed-precondition"
-    ) {
-      throw error;
-    }
-    return loadPages(false);
-  }
-};
-
 export type PublishedReportCursor = QueryDocumentSnapshot<DocumentData>;
 
 export type PublishedReportsPage = {
@@ -2703,15 +2683,20 @@ export type PublishedReportsPage = {
 export type PublishedReportFilters = {
   classId?: string | null;
   isRead?: boolean | null;
+  keyword?: string | null;
 };
 
 const getPublishedReportFilterConstraints = (
   filters: PublishedReportFilters,
-): QueryConstraint[] => [
-  where("assignmentStatus", "==", "completed"),
-  ...(filters.classId ? [where("classId", "==", filters.classId)] : []),
-  ...(typeof filters.isRead === "boolean" ? [where("isRead", "==", filters.isRead)] : []),
-];
+): QueryConstraint[] => {
+  const searchToken = normalizeReportSearchQuery(filters.keyword);
+  return [
+    where("assignmentStatus", "==", "completed"),
+    ...(filters.classId ? [where("classId", "==", filters.classId)] : []),
+    ...(typeof filters.isRead === "boolean" ? [where("isRead", "==", filters.isRead)] : []),
+    ...(searchToken ? [where("searchTokens", "array-contains", searchToken)] : []),
+  ];
+};
 
 export const fetchPublishedReportCount = async (
   filters: PublishedReportFilters = {},
@@ -2762,14 +2747,13 @@ export const updatePublishedReport = async (
   const nextTotal = normalizedScores.total ?? 0;
   const reportRef = doc(db, "reports", reportId);
   const snap = await getDoc(reportRef);
-  const prev = (snap.data() ?? {}) as {
-    parsedJson?: PersistedParsedPdfData;
-  };
+  const prev = (snap.data() ?? {}) as Partial<ReportRecord>;
   const updatePayload: {
     reviewer: string;
     feedback: string;
     scores: ScoreBreakdown;
     totalScore: number;
+    searchTokens: string[];
     parsedJson?: PersistedParsedPdfData;
     updatedAt: ReturnType<typeof serverTimestamp>;
   } = {
@@ -2777,6 +2761,7 @@ export const updatePublishedReport = async (
     feedback: payload.feedback.trim(),
     scores: normalizedScores,
     totalScore: nextTotal,
+    searchTokens: rebuildReportSearchTokens(prev, { reviewer: payload.reviewer.trim() }),
     updatedAt: serverTimestamp(),
   };
 
@@ -2796,13 +2781,15 @@ export const movePublishedReportToPending = async (reportId: string): Promise<vo
   const reportRef = doc(db, "reports", reportId);
   const snap = await getDoc(reportRef);
   const data = (snap.data() ?? {}) as Partial<ReportRecord>;
+  const studentName = data.sourceName ?? data.studentName ?? "";
 
   await updateDoc(reportRef, {
     studentUid: null,
     studentId: null,
-    studentName: data.sourceName ?? data.studentName ?? "",
+    studentName,
     assignmentStatus: "unassigned_pending",
     status: "pending",
+    searchTokens: rebuildReportSearchTokens(data, { studentName }),
     assignedAt: null,
     updatedAt: serverTimestamp(),
   });
@@ -2843,12 +2830,15 @@ export const isolateStudentReports = async (studentUid: string): Promise<void> =
   for (const batchDocs of chunkBy(docs, 400)) {
     const batch = writeBatch(db);
     for (const reportDoc of batchDocs) {
+      const report = reportDoc.data() as Partial<ReportRecord>;
+      const studentName = report.sourceName ?? "";
       batch.update(reportDoc.ref, {
         studentUid: null,
         studentId: null,
-        studentName: reportDoc.data().sourceName ?? "",
+        studentName,
         assignmentStatus: "unassigned_pending",
         status: "pending",
+        searchTokens: rebuildReportSearchTokens(report, { studentName }),
         assignedAt: null,
         updatedAt: serverTimestamp(),
       });

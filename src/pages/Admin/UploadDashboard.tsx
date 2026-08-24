@@ -1,4 +1,4 @@
-import { DragEvent, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import { Input } from "@/components/ui/input";
@@ -38,8 +38,8 @@ import {
   deleteReportRecord,
   fetchClasses,
   fetchPendingReportCount,
+  fetchPendingReportsPage,
   fetchPublishedReportCount,
-  fetchPublishedReports,
   fetchPublishedReportsPage,
   fetchReportsByClassId,
   fetchStudents,
@@ -56,7 +56,6 @@ import {
   resolveReportAssignmentClass,
   resolveMatchStatus,
   subscribeOpenReportClaims,
-  subscribePendingReports,
   subscribePendingReportsPage,
   updatePublishedReport,
   type ClassLite,
@@ -83,9 +82,12 @@ import {
 import {
   buildReportArchiveSearchIndex,
   filterReportArchive,
-  getReportArchivePage,
   getReportArchivePageCount,
 } from "@/lib/reportArchiveSearch";
+import {
+  normalizeReportSearchQuery,
+  reportMatchesSearchQuery,
+} from "@/lib/reportSearchTokens";
 
 const scoreFields: Array<{ key: keyof ScoreBreakdown; label: string }> = [
   { key: "reading", label: "독해력" },
@@ -105,6 +107,22 @@ const requiredScoreKeys: Array<keyof ScoreBreakdown> = [
 const PENDING_REPORT_PAGE_SIZE = 30;
 const PUBLISHED_REPORT_PAGE_SIZE = 50;
 const FILE_HASH_CONCURRENCY = 2;
+const SEARCH_DEBOUNCE_MS = 120;
+
+const useDebouncedSearch = (value: string): string => {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    if (!normalizeReportSearchQuery(value)) {
+      setDebouncedValue("");
+      return;
+    }
+    const timeoutId = window.setTimeout(() => setDebouncedValue(value), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [value]);
+
+  return debouncedValue;
+};
 
 const statusLabel = {
   ready: "자동 매칭 완료",
@@ -188,6 +206,8 @@ const UploadDashboard = () => {
   const { ref: archiveSectionRef, visible: archiveVisible } = useNearViewport();
   const { ref: pendingSectionRef, visible: pendingVisible } = useNearViewport();
   const archiveSearchMeasurementRef = useRef<ReturnType<typeof startPerformanceTrace> | null>(null);
+  const pendingLoadVersionRef = useRef(0);
+  const publishedLoadVersionRef = useRef(0);
   const toastRef = useRef(toast);
   const canManageReports = isStaffRole(user?.role);
 
@@ -196,8 +216,6 @@ const UploadDashboard = () => {
   const [classReports, setClassReports] = useState<ReportRecord[]>([]);
   const [publishedReports, setPublishedReports] = useState<ReportRecord[]>([]);
   const [publishedReportsLoading, setPublishedReportsLoading] = useState(false);
-  const [publishedReportsLoaded, setPublishedReportsLoaded] = useState(false);
-  const [publishedSearchLoaded, setPublishedSearchLoaded] = useState(false);
   const [publishedReportCount, setPublishedReportCount] = useState(0);
   const [publishedHasNextPage, setPublishedHasNextPage] = useState(false);
   const [publishedNextCursor, setPublishedNextCursor] = useState<PublishedReportCursor | null>(null);
@@ -258,20 +276,17 @@ const UploadDashboard = () => {
     sourcePhoneSuffix: "",
     examDate: "",
   });
-  const deferredArchiveStudentFilter = useDeferredValue(archiveStudentFilter);
-  const isArchiveKeywordActive = deferredArchiveStudentFilter.trim().length > 0;
+  const deferredArchiveStudentFilter = useDebouncedSearch(archiveStudentFilter);
+  const isArchiveKeywordActive = normalizeReportSearchQuery(deferredArchiveStudentFilter).length > 0;
   const publishedFilters = useMemo<PublishedReportFilters>(() => ({
     classId: archiveClassFilter === "all" ? null : archiveClassFilter,
     isRead: archiveReadFilter === "all" ? null : archiveReadFilter === "read",
-  }), [archiveClassFilter, archiveReadFilter]);
-  const publishedPageCursor = isArchiveKeywordActive
-    ? null
-    : publishedPageCursors[archivePage - 1] ?? null;
-  const deferredCleanupSearch = useDeferredValue(cleanupSearch);
-  const isPendingSearchActive = deferredCleanupSearch.trim().length > 0;
-  const pendingPageCursor = isPendingSearchActive
-    ? null
-    : pendingPageCursors[cleanupPage - 1] ?? null;
+    keyword: deferredArchiveStudentFilter,
+  }), [archiveClassFilter, archiveReadFilter, deferredArchiveStudentFilter]);
+  const publishedPageCursor = publishedPageCursors[archivePage - 1] ?? null;
+  const deferredCleanupSearch = useDebouncedSearch(cleanupSearch);
+  const isPendingSearchActive = normalizeReportSearchQuery(deferredCleanupSearch).length > 0;
+  const pendingPageCursor = pendingPageCursors[cleanupPage - 1] ?? null;
 
   useEffect(() => {
     toastRef.current = toast;
@@ -372,10 +387,10 @@ const UploadDashboard = () => {
   }, []);
 
   const refreshPendingReportCount = useCallback(async () => {
-    const count = await fetchPendingReportCount();
+    const count = await fetchPendingReportCount(deferredCleanupSearch);
     setPendingReportCount(count);
     return count;
-  }, []);
+  }, [deferredCleanupSearch]);
 
   const refreshPublishedReportCount = useCallback(async () => {
     const count = await fetchPublishedReportCount(publishedFilters);
@@ -386,12 +401,15 @@ const UploadDashboard = () => {
   useEffect(() => {
     if (!pendingVisible) return;
 
+    const requestVersion = ++pendingLoadVersionRef.current;
     const measurement = startPerformanceTrace("admin_pending_load", {
       mode: isPendingSearchActive ? "search" : "page",
       page: cleanupPage,
+      query_length: normalizeReportSearchQuery(deferredCleanupSearch).length,
     });
     let recorded = false;
     let active = true;
+    const isCurrent = () => active && requestVersion === pendingLoadVersionRef.current;
     setPendingReportsLoading(true);
 
     const record = (status: "success" | "error" | "cancelled", reportCount = 0) => {
@@ -405,7 +423,7 @@ const UploadDashboard = () => {
       }
     };
     const handleError = (pendingError: Error) => {
-      if (!active) return;
+      if (!isCurrent()) return;
       setPendingReportsLoading(false);
       record("error");
       toastRef.current({
@@ -415,49 +433,80 @@ const UploadDashboard = () => {
       });
     };
 
-    const unsubscribe = isPendingSearchActive
-      ? subscribePendingReports(
-        (reports) => {
-          if (!active) return;
-          setPendingReports(reports);
-          setPendingReportCount(reports.length);
-          setPendingHasNextPage(false);
-          setPendingNextCursor(null);
-          setPendingReportsLoading(false);
-          record("success", reports.length);
-        },
-        handleError,
-      )
-      : subscribePendingReportsPage(
+    if (isPendingSearchActive) {
+      setPendingReports([]);
+      void fetchPendingReportsPage(
         pendingPageCursor,
         PENDING_REPORT_PAGE_SIZE,
-        (page) => {
-          if (!active) return;
+        deferredCleanupSearch,
+      )
+        .then((page) => {
+          if (!isCurrent()) return;
           setPendingReports(page.reports);
-          setPendingReportCount((current) => current || (
-            page.reports.length + (page.hasNextPage ? 1 : 0)
-          ));
+          setPendingReportCount(page.reports.length + (page.hasNextPage ? 1 : 0));
           setPendingHasNextPage(page.hasNextPage);
           setPendingNextCursor(page.nextCursor);
           setPendingReportsLoading(false);
-          void refreshPendingReportCount().catch(() => undefined);
+          void fetchPendingReportCount(deferredCleanupSearch)
+            .then((count) => {
+              if (isCurrent()) setPendingReportCount(count);
+            })
+            .catch(() => undefined);
           record("success", page.reports.length);
-        },
-        handleError,
-      );
+        })
+        .catch((error) => handleError(
+          error instanceof Error ? error : new Error("미연결 자료를 검색하지 못했습니다."),
+        ));
+
+      return () => {
+        active = false;
+        record("cancelled");
+      };
+    }
+
+    const unsubscribe = subscribePendingReportsPage(
+      pendingPageCursor,
+      PENDING_REPORT_PAGE_SIZE,
+      (page) => {
+        if (!isCurrent()) return;
+        setPendingReports(page.reports);
+        setPendingReportCount((current) => current || (
+          page.reports.length + (page.hasNextPage ? 1 : 0)
+        ));
+        setPendingHasNextPage(page.hasNextPage);
+        setPendingNextCursor(page.nextCursor);
+        setPendingReportsLoading(false);
+        void fetchPendingReportCount()
+          .then((count) => {
+            if (isCurrent()) setPendingReportCount(count);
+          })
+          .catch(() => undefined);
+        record("success", page.reports.length);
+      },
+      handleError,
+    );
 
     return () => {
       active = false;
       record("cancelled");
       unsubscribe();
     };
-  }, [cleanupPage, isPendingSearchActive, pendingPageCursor, pendingVisible, refreshPendingReportCount]);
+  }, [
+    cleanupPage,
+    deferredCleanupSearch,
+    isPendingSearchActive,
+    pendingPageCursor,
+    pendingVisible,
+  ]);
 
   const loadPublishedReportsPage = useCallback(async () => {
+    const requestVersion = ++publishedLoadVersionRef.current;
     setPublishedReportsLoading(true);
+    if (isArchiveKeywordActive) setPublishedReports([]);
     const measurement = startPerformanceTrace("admin_published_load", {
-      mode: "page",
+      mode: isArchiveKeywordActive ? "search" : "page",
       page: archivePage,
+      query_length: normalizeReportSearchQuery(deferredArchiveStudentFilter).length,
     });
     try {
       const page = await fetchPublishedReportsPage(
@@ -465,19 +514,43 @@ const UploadDashboard = () => {
         PUBLISHED_REPORT_PAGE_SIZE,
         publishedFilters,
       );
+      if (requestVersion !== publishedLoadVersionRef.current) {
+        measurement.stop({ status: "cancelled" });
+        return;
+      }
       setPublishedReports(page.reports);
+      setPublishedReportCount(page.reports.length + (page.hasNextPage ? 1 : 0));
       setPublishedHasNextPage(page.hasNextPage);
       setPublishedNextCursor(page.nextCursor);
-      setPublishedSearchLoaded(false);
-      setPublishedReportsLoaded(true);
       stopPerformanceTraceAfterPaint(measurement, {
         status: "success",
         metrics: { report_count: page.reports.length },
       });
+      const searchMeasurement = archiveSearchMeasurementRef.current;
+      if (searchMeasurement) {
+        stopPerformanceTraceAfterPaint(searchMeasurement, {
+          status: "success",
+          metrics: {
+            query_length: normalizeReportSearchQuery(deferredArchiveStudentFilter).length,
+            rendered_count: page.reports.length,
+          },
+          attributes: {
+            class_filter: archiveClassFilter === "all" ? "all" : "specific",
+            read_filter: archiveReadFilter,
+          },
+        });
+        archiveSearchMeasurementRef.current = null;
+      }
       void fetchPublishedReportCount(publishedFilters)
-        .then(setPublishedReportCount)
+        .then((count) => {
+          if (requestVersion === publishedLoadVersionRef.current) setPublishedReportCount(count);
+        })
         .catch(() => undefined);
     } catch (error) {
+      if (requestVersion !== publishedLoadVersionRef.current) {
+        measurement.stop({ status: "cancelled" });
+        return;
+      }
       measurement.stop({ status: "error" });
       toastRef.current({
         variant: "destructive",
@@ -485,51 +558,24 @@ const UploadDashboard = () => {
         description: error instanceof Error ? error.message : "배포된 리포트를 불러오지 못했습니다.",
       });
     } finally {
-      setPublishedReportsLoading(false);
+      if (requestVersion === publishedLoadVersionRef.current) {
+        setPublishedReportsLoading(false);
+      }
     }
-  }, [archivePage, publishedFilters, publishedPageCursor]);
-
-  const loadPublishedReportsForSearch = useCallback(async (force = false) => {
-    if (publishedSearchLoaded && !force) return;
-
-    setPublishedReportsLoading(true);
-    const measurement = startPerformanceTrace("admin_published_load", { mode: "search" });
-    try {
-      const reports = await fetchPublishedReports();
-      const loadedPageCount = Math.ceil(reports.length / 100);
-      setPublishedReports(reports);
-      setPublishedReportCount(reports.length);
-      setPublishedSearchLoaded(true);
-      setPublishedReportsLoaded(true);
-      stopPerformanceTraceAfterPaint(measurement, {
-        status: "success",
-        metrics: { report_count: reports.length, page_count: loadedPageCount },
-      });
-    } catch (error) {
-      measurement.stop({ status: "error" });
-      toastRef.current({
-        variant: "destructive",
-        title: "리포트 보관함 조회 실패",
-        description: error instanceof Error ? error.message : "배포된 리포트를 불러오지 못했습니다.",
-      });
-    } finally {
-      setPublishedReportsLoading(false);
-    }
-  }, [publishedSearchLoaded]);
+  }, [
+    archiveClassFilter,
+    archivePage,
+    archiveReadFilter,
+    deferredArchiveStudentFilter,
+    isArchiveKeywordActive,
+    publishedFilters,
+    publishedPageCursor,
+  ]);
 
   useEffect(() => {
     if (!archiveVisible) return;
-    if (isArchiveKeywordActive) {
-      void loadPublishedReportsForSearch();
-      return;
-    }
     void loadPublishedReportsPage();
-  }, [
-    archiveVisible,
-    isArchiveKeywordActive,
-    loadPublishedReportsForSearch,
-    loadPublishedReportsPage,
-  ]);
+  }, [archiveVisible, loadPublishedReportsPage]);
 
   useEffect(() => {
     if (!claimsVisible) return;
@@ -776,14 +822,12 @@ const UploadDashboard = () => {
     [archiveClassFilter, archiveReadFilter, deferredArchiveStudentFilter, searchablePublishedReports],
   );
   const archivePageCount = getReportArchivePageCount(
-    isArchiveKeywordActive ? filteredPublishedReports.length : publishedReportCount,
+    publishedReportCount,
     PUBLISHED_REPORT_PAGE_SIZE,
   );
   const archivePageResult = useMemo(
-    () => isArchiveKeywordActive
-      ? getReportArchivePage(filteredPublishedReports, archivePage, PUBLISHED_REPORT_PAGE_SIZE)
-      : { page: archivePage, reports: filteredPublishedReports },
-    [archivePage, filteredPublishedReports, isArchiveKeywordActive],
+    () => ({ page: archivePage, reports: filteredPublishedReports }),
+    [archivePage, filteredPublishedReports],
   );
 
   const beginArchiveSearchMeasurement = useCallback((trigger: "class" | "keyword" | "page" | "read") => {
@@ -793,6 +837,10 @@ const UploadDashboard = () => {
 
   const handleArchiveClassFilterChange = (value: string) => {
     beginArchiveSearchMeasurement("class");
+    publishedLoadVersionRef.current += 1;
+    setPublishedReportsLoading(true);
+    setPublishedHasNextPage(false);
+    setPublishedNextCursor(null);
     setArchiveClassFilter(value);
     setArchivePage(1);
     setPublishedPageCursors([null]);
@@ -800,6 +848,11 @@ const UploadDashboard = () => {
 
   const handleArchiveKeywordChange = (value: string) => {
     beginArchiveSearchMeasurement("keyword");
+    publishedLoadVersionRef.current += 1;
+    setPublishedReportsLoading(true);
+    setPublishedReports([]);
+    setPublishedHasNextPage(false);
+    setPublishedNextCursor(null);
     setArchiveStudentFilter(value);
     setArchivePage(1);
     setPublishedPageCursors([null]);
@@ -807,14 +860,17 @@ const UploadDashboard = () => {
 
   const handleArchiveReadFilterChange = (value: string) => {
     beginArchiveSearchMeasurement("read");
+    publishedLoadVersionRef.current += 1;
+    setPublishedReportsLoading(true);
+    setPublishedHasNextPage(false);
+    setPublishedNextCursor(null);
     setArchiveReadFilter(value);
     setArchivePage(1);
     setPublishedPageCursors([null]);
   };
 
   const handleArchivePageChange = (nextPage: number) => {
-    beginArchiveSearchMeasurement("page");
-    if (!isArchiveKeywordActive && nextPage > archivePage) {
+    if (nextPage > archivePage) {
       if (!publishedNextCursor) return;
       setPublishedPageCursors((prev) => {
         const cursors = prev.slice(0, archivePage);
@@ -822,45 +878,11 @@ const UploadDashboard = () => {
         return cursors;
       });
     }
+    beginArchiveSearchMeasurement("page");
+    publishedLoadVersionRef.current += 1;
+    setPublishedReportsLoading(true);
     setArchivePage(nextPage);
   };
-
-  useEffect(() => {
-    const measurement = archiveSearchMeasurementRef.current;
-    if (
-      !measurement
-      || typeof window === "undefined"
-      || archiveStudentFilter !== deferredArchiveStudentFilter
-    ) return;
-
-    const frame = window.requestAnimationFrame(() => {
-      if (archiveSearchMeasurementRef.current !== measurement) return;
-      measurement.stop({
-        status: "success",
-        metrics: {
-          query_length: deferredArchiveStudentFilter.trim().length,
-          rendered_count: archivePageResult.reports.length,
-          result_count: filteredPublishedReports.length,
-          total_count: publishedReports.length,
-        },
-        attributes: {
-          class_filter: archiveClassFilter === "all" ? "all" : "specific",
-          read_filter: archiveReadFilter,
-        },
-      });
-      archiveSearchMeasurementRef.current = null;
-    });
-
-    return () => window.cancelAnimationFrame(frame);
-  }, [
-    archiveClassFilter,
-    archivePageResult,
-    archiveReadFilter,
-    archiveStudentFilter,
-    deferredArchiveStudentFilter,
-    filteredPublishedReports.length,
-    publishedReports.length,
-  ]);
 
   useEffect(
     () => () => archiveSearchMeasurementRef.current?.stop({ status: "cancelled" }),
@@ -873,43 +895,34 @@ const UploadDashboard = () => {
   );
 
   const filteredCleanupPendingReports = useMemo(() => {
-    const keyword = deferredCleanupSearch.trim().toLowerCase();
-    if (!keyword) {
+    if (!isPendingSearchActive) {
       return cleanupPendingReports;
     }
-
-    return cleanupPendingReports.filter((report) => {
-      const target = `${report.sourceName} ${report.fileName} ${report.essayTopic} ${report.reviewer}`.toLowerCase();
-      return target.includes(keyword);
-    });
-  }, [cleanupPendingReports, deferredCleanupSearch]);
+    return cleanupPendingReports.filter((report) =>
+      reportMatchesSearchQuery(report, deferredCleanupSearch),
+    );
+  }, [cleanupPendingReports, deferredCleanupSearch, isPendingSearchActive]);
   const cleanupPageCount = getReportArchivePageCount(
-    isPendingSearchActive ? filteredCleanupPendingReports.length : pendingReportCount,
+    pendingReportCount,
     PENDING_REPORT_PAGE_SIZE,
   );
   const cleanupPageResult = useMemo(
-    () => isPendingSearchActive
-      ? getReportArchivePage(
-        filteredCleanupPendingReports,
-        cleanupPage,
-        PENDING_REPORT_PAGE_SIZE,
-      )
-      : { page: cleanupPage, reports: filteredCleanupPendingReports },
-    [cleanupPage, filteredCleanupPendingReports, isPendingSearchActive],
+    () => ({ page: cleanupPage, reports: filteredCleanupPendingReports }),
+    [cleanupPage, filteredCleanupPendingReports],
   );
 
   const handleCleanupSearchChange = (value: string) => {
+    pendingLoadVersionRef.current += 1;
+    setPendingReportsLoading(true);
+    setPendingReports([]);
+    setPendingHasNextPage(false);
+    setPendingNextCursor(null);
     setCleanupSearch(value);
     setCleanupPage(1);
     setPendingPageCursors([null]);
   };
 
   const handleCleanupPageChange = (nextPage: number) => {
-    if (isPendingSearchActive) {
-      setCleanupPage(nextPage);
-      return;
-    }
-
     if (nextPage > cleanupPage) {
       if (!pendingNextCursor) return;
       setPendingPageCursors((prev) => {
@@ -918,19 +931,20 @@ const UploadDashboard = () => {
         return cursors;
       });
     }
+    pendingLoadVersionRef.current += 1;
+    setPendingReportsLoading(true);
     setCleanupPage(nextPage);
   };
 
   useEffect(() => {
     if (
-      isPendingSearchActive
-      || pendingReportsLoading
+      pendingReportsLoading
       || cleanupPage <= 1
       || cleanupPageResult.reports.length > 0
     ) return;
 
     setCleanupPage((page) => Math.max(1, page - 1));
-  }, [cleanupPage, cleanupPageResult.reports.length, isPendingSearchActive, pendingReportsLoading]);
+  }, [cleanupPage, cleanupPageResult.reports.length, pendingReportsLoading]);
 
   const pendingMatchCandidates = useMemo(() => {
     const keyword = pendingMatchSearch.trim();
@@ -1063,7 +1077,7 @@ const UploadDashboard = () => {
 
       const [reports, pendingCount, publishedCount] = await Promise.all([
         fetchReportsByClassId(selectedClass.id),
-        fetchPendingReportCount(),
+        fetchPendingReportCount(deferredCleanupSearch),
         fetchPublishedReportCount(publishedFilters),
       ]);
       setClassReports(reports);
@@ -1096,11 +1110,9 @@ const UploadDashboard = () => {
 
   const handleRefreshReadStatus = async () => {
     const [, reports, pendingCount] = await Promise.all([
-      isArchiveKeywordActive
-        ? loadPublishedReportsForSearch(true)
-        : loadPublishedReportsPage(),
+      loadPublishedReportsPage(),
       selectedClass ? fetchReportsByClassId(selectedClass.id) : Promise.resolve(classReports),
-      fetchPendingReportCount(),
+      fetchPendingReportCount(deferredCleanupSearch),
     ]);
     setClassReports(reports);
     setPendingReportCount(pendingCount);
@@ -1914,9 +1926,9 @@ const UploadDashboard = () => {
           <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <h3 className="text-sm font-semibold text-card-foreground">배포된 리포트 보관함</h3>
             <p className="text-xs text-muted-foreground">
-              {publishedReportsLoading && !publishedReportsLoaded
-                ? "불러오는 중..."
-                : `총 ${isArchiveKeywordActive ? filteredPublishedReports.length : publishedReportCount}건`}
+              {publishedReportsLoading
+                ? isArchiveKeywordActive ? "검색 중..." : "불러오는 중..."
+                : `총 ${publishedReportCount}건`}
             </p>
           </div>
 
@@ -2011,8 +2023,10 @@ const UploadDashboard = () => {
                 </div>
               );
             })}
-            {publishedReportsLoading && !publishedReportsLoaded ? (
-              <p className="text-sm text-muted-foreground">리포트 보관함을 불러오는 중입니다...</p>
+            {publishedReportsLoading ? (
+              <p className="text-sm text-muted-foreground">
+                {isArchiveKeywordActive ? "검색 결과를 불러오는 중입니다..." : "리포트 보관함을 불러오는 중입니다..."}
+              </p>
             ) : filteredPublishedReports.length === 0 ? (
               <p className="text-sm text-muted-foreground">검색 결과가 없습니다</p>
             ) : null}
@@ -2026,7 +2040,7 @@ const UploadDashboard = () => {
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={archivePageResult.page <= 1}
+                disabled={publishedReportsLoading || archivePageResult.page <= 1}
                 onClick={() => handleArchivePageChange(archivePageResult.page - 1)}
               >
                 이전
@@ -2035,9 +2049,7 @@ const UploadDashboard = () => {
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={isArchiveKeywordActive
-                  ? archivePageResult.page >= archivePageCount
-                  : !publishedHasNextPage}
+                disabled={publishedReportsLoading || !publishedHasNextPage}
                 onClick={() => handleArchivePageChange(archivePageResult.page + 1)}
               >
                 다음
@@ -2051,8 +2063,8 @@ const UploadDashboard = () => {
             <h3 className="text-sm font-semibold text-card-foreground">미연결 학습 자료 정리</h3>
             <p className="text-xs text-muted-foreground">
               {pendingReportsLoading
-                ? "불러오는 중..."
-                : `대기 ${isPendingSearchActive ? filteredCleanupPendingReports.length : pendingReportCount}건`}
+                ? isPendingSearchActive ? "검색 중..." : "불러오는 중..."
+                : `대기 ${pendingReportCount}건`}
             </p>
           </div>
           <p className="mb-3 text-xs text-muted-foreground">
@@ -2169,11 +2181,13 @@ const UploadDashboard = () => {
                 </div>
               );
             })}
-            {!pendingReportsLoading && filteredCleanupPendingReports.length === 0 && (
+            {pendingReportsLoading ? (
               <p className="text-sm text-muted-foreground">
-                {isPendingSearchActive && pendingReportCount > 0
-                  ? "검색 결과가 없습니다"
-                  : "현재 보류 중인 리포트가 없습니다."}
+                {isPendingSearchActive ? "검색 결과를 불러오는 중입니다..." : "미연결 자료를 불러오는 중입니다..."}
+              </p>
+            ) : filteredCleanupPendingReports.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                {isPendingSearchActive ? "검색 결과가 없습니다" : "현재 보류 중인 리포트가 없습니다."}
               </p>
             )}
           </div>
@@ -2186,7 +2200,7 @@ const UploadDashboard = () => {
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={cleanupPageResult.page <= 1}
+                disabled={pendingReportsLoading || cleanupPageResult.page <= 1}
                 onClick={() => handleCleanupPageChange(cleanupPageResult.page - 1)}
               >
                 이전
@@ -2195,9 +2209,7 @@ const UploadDashboard = () => {
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={isPendingSearchActive
-                  ? cleanupPageResult.page >= cleanupPageCount
-                  : !pendingHasNextPage}
+                disabled={pendingReportsLoading || !pendingHasNextPage}
                 onClick={() => handleCleanupPageChange(cleanupPageResult.page + 1)}
               >
                 다음

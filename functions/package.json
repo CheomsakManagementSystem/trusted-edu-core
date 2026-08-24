@@ -6,7 +6,8 @@
     "node": "22"
   },
   "scripts": {
-    "check": "node --check index.js && node --check reportAutoMatcher.js && node --check reportAutoMatchJob.js && node --check stripReportRawText.js",
+    "check": "node --check index.js && node --check reportAutoMatcher.js && node --check reportAutoMatchJob.js && node --check reportSearchTokens.js && node --check backfillReportSearchTokens.js && node --check stripReportRawText.js",
+    "backfill:report-search": "node backfillReportSearchTokens.js",
     "cleanup:report-raw-text": "node stripReportRawText.js",
     "deploy": "firebase deploy --only functions",
     "serve": "firebase emulators:start --only functions",

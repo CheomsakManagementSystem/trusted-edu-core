@@ -27,10 +27,9 @@ Performance SDK는 첫 KPI 기록 시점에 지연 로드되므로 공개 첫 �
 | `admin_base_load` | 관리자 반·학생 조회부터 최초 화면 반영까지 | `class_count`, `student_count` |
 | `integrity_audit` | 무결성 서버 진단부터 결과 화면 반영까지 | `student_count`, `issue_count` |
 | `integrity_repair` | 무결성 자동 복구부터 재진단 화면 반영까지 | `updated_count`, `remaining_issue_count` |
-| `admin_pending_load` | 미연결 리포트 최초 수신 | `report_count` |
-| `admin_published_first_page` | 보관함 조회 시작부터 첫 100건 화면 반영까지 | `report_count` |
-| `admin_published_load` | 배포 리포트 전체 점진 조회·화면 반영 | `report_count`, `page_count` |
-| `admin_published_search` | 보관함 검색·필터·페이지 결과가 화면에 반영될 때까지 | `query_length`, `result_count`, `rendered_count`, `total_count` |
+| `admin_pending_load` | 미연결 리포트 한 페이지 조회 또는 검색 결과 화면 반영 | `report_count`, `query_length` |
+| `admin_published_load` | 보관함 한 페이지 조회 또는 검색 결과 화면 반영 | `report_count`, `query_length` |
+| `admin_published_search` | 보관함 검색·필터·페이지 요청부터 결과 화면 반영까지 | `query_length`, `rendered_count` |
 | `admin_class_reports_load` | 선택 반 리포트 조회 | `report_count` |
 | `class_manager_load` | 반 관리 데이터 조회부터 첫 50명 화면 반영까지 | `class_count`, `student_count`, `rendered_count` |
 | `class_manager_search` | 학생 목록 검색·페이지 결과 화면 반영까지 | `query_length`, `result_count`, `rendered_count`, `total_count` |
@@ -72,5 +71,5 @@ npm run build
 PDF 인식 실패율(%) = parse_failure_count 합계 / file_count 합계 × 100
 배포 성공률(%) = success_count / (success_count + pending_count + failure_count) × 100
 파일당 처리 시간 = trace duration / file_count
-검색 결과 1건당 렌더링 비율 = rendered_count / result_count
+검색 결과 렌더링 건수 = rendered_count
 ```
