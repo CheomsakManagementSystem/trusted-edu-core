@@ -4,6 +4,9 @@ on:
   pull_request:
     branches:
       - main
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -29,6 +32,9 @@ jobs:
         with:
           node-version: 20
           cache: npm
+
+      - name: Validate Firestore indexes
+        run: npm run validate:firestore-indexes
 
       - name: Install dependencies
         run: npm ci
